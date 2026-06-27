@@ -1,0 +1,1 @@
+{"id":"TC-005","tier":2,"query":"Test neighborhood enrichment between macrophages and tumor cells","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation","neighborhood_enrichment"],"ground_truth":{"stats_expected":true},"dimension":"tool_selection","notes":"Spatial stats query."}

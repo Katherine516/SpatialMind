@@ -1,0 +1,1 @@
+{"id":"TC-006","tier":2,"query":"Which genes are spatially variable across this tissue?","dataset":"data/demo_manifest.json","expected_tools":["spatial_variable_genes"],"ground_truth":{"ranked_genes_expected":true},"dimension":"tool_selection","notes":"SVG not DE."}

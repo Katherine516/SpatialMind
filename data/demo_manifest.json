@@ -1,0 +1,29 @@
+{
+  "sample_id": "BRCA_04",
+  "project": "SpatialMind demo",
+  "coordinate_system": "pixel",
+  "sources": [
+    {
+      "path": "demo_spatial.csv",
+      "data_type": "tidy_csv",
+      "modality": "spatial_transcriptomics",
+      "sample_id": "BRCA_04",
+      "coordinate_system": "pixel",
+      "metadata": {
+        "assay": "demo Visium-like table",
+        "normalization_hint": "raw counts"
+      }
+    },
+    {
+      "path": "demo_he_image.tiff",
+      "data_type": "pathology_image",
+      "modality": "morphology_image",
+      "sample_id": "BRCA_04",
+      "coordinate_system": "pixel",
+      "metadata": {
+        "role": "overlay reference",
+        "status": "placeholder path for prototype metadata"
+      }
+    }
+  ]
+}

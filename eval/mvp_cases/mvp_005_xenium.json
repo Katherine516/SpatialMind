@@ -1,0 +1,1 @@
+{"id":"MVP-005","tier":1,"query":"Annotate the Xenium cells and show which cell types are co-located.","dataset":"data/demo_manifest.json","expected_tools":["qc_and_cluster","annotation","cell_neighborhood_enrichment"],"ground_truth":{"assay":"xenium","resolution":"subcellular"},"dimension":"mvp_xenium","notes":"Xenium standalone spatial enrichment."}

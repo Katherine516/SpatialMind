@@ -1,0 +1,21 @@
+__pycache__/
+.pycache/
+*.py[cod]
+.venv/
+*.egg-info/
+.spatialmind/
+outputs/
+.pytest_cache/
+.mypy_cache/
+.import_linter_cache/
+.DS_Store
+.env
+
+# Local raw datasets can be tens of GB and may carry licensing/consent constraints.
+# Keep only tiny demo/reference fixtures in Git; store real Xenium/omics data externally.
+data/**
+!data/
+!data/demo_manifest.json
+!data/demo_spatial.csv
+!data/cell_ontology_terms/
+!data/cell_ontology_terms/CL_0000127_astrocyte.json

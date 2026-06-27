@@ -1,0 +1,1 @@
+{"id":"MVP-010","tier":1,"query":"For this Xenium dataset, annotate cells and summarize cell types by region.","dataset":"data/demo_manifest.json","expected_tools":["qc_and_cluster","annotation","region_summary"],"ground_truth":{"assay":"xenium","regions_expected":true},"dimension":"mvp_xenium","notes":"v7 Xenium primary region summary over user-provided regions."}

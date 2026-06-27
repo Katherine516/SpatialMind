@@ -1,0 +1,26 @@
+sample_id,x,y,cell_type,region,gene_CD8A,gene_CD3D,gene_EPCAM,gene_KRT8,gene_VEGFA,gene_PTPRC
+BRCA_04,10,12,CD8+ T cell,stroma,90,75,4,6,12,80
+BRCA_04,14,18,CD8+ T cell,stroma,85,81,3,5,10,78
+BRCA_04,18,22,CD8+ T cell,interface,78,70,4,8,15,72
+BRCA_04,24,25,CD8+ T cell,interface,76,68,5,9,18,69
+BRCA_04,30,30,Tumor cell,tumor,7,5,88,76,35,8
+BRCA_04,34,34,Tumor cell,tumor,6,4,92,80,40,6
+BRCA_04,40,38,Tumor cell,tumor,5,4,86,72,38,5
+BRCA_04,45,42,Tumor cell,tumor,4,3,90,78,44,4
+BRCA_04,52,48,Tumor cell,tumor,5,4,82,70,42,6
+BRCA_04,57,54,CD8+ T cell,interface,70,66,8,10,25,68
+BRCA_04,60,58,CD8+ T cell,interface,74,69,7,11,22,70
+BRCA_04,64,62,Tumor cell,tumor,6,5,84,75,45,7
+BRCA_04,70,66,Tumor cell,tumor,5,4,89,79,48,5
+BRCA_04,72,30,Macrophage,stroma,15,12,8,9,30,55
+BRCA_04,75,34,Macrophage,stroma,12,10,7,8,28,58
+BRCA_04,78,38,Macrophage,stroma,10,9,6,7,26,60
+BRCA_04,84,70,Endothelial cell,vessel,8,7,5,4,75,12
+BRCA_04,88,74,Endothelial cell,vessel,7,6,4,5,80,10
+BRCA_04,90,80,Stromal cell,stroma,9,8,6,7,22,18
+BRCA_04,94,84,Stromal cell,stroma,8,7,5,6,20,16
+BRCA_05,12,82,CD8+ T cell,stroma,88,77,5,5,14,82
+BRCA_05,18,78,CD8+ T cell,stroma,84,72,4,5,12,79
+BRCA_05,78,18,Tumor cell,tumor,4,3,91,82,46,5
+BRCA_05,84,22,Tumor cell,tumor,5,4,89,80,44,6
+BRCA_05,50,50,Macrophage,stroma,12,10,8,8,28,54

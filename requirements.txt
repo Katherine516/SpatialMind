@@ -1,0 +1,96 @@
+# SpatialMind workstation/runtime requirements.
+#
+# Install on a development or analysis machine with:
+#   python3 -m pip install -r requirements.txt
+#
+# The source package itself stays dependency-light so tests can run in minimal
+# environments. This file is the comprehensive install target for real spatial
+# omics ingestion, analysis, visualization, reporting, API service, and eval.
+
+# Local package and development tools
+-e .
+setuptools<81
+pytest
+ruff
+mypy
+pre-commit
+import-linter
+
+# Core numerical and table processing
+numpy<2
+scipy
+pandas
+polars
+pyarrow
+h5py
+tables
+zarr
+dask
+numba
+scikit-learn
+statsmodels
+
+# Spatial omics and single-cell analysis
+anndata
+scanpy
+squidpy
+spatialdata
+spatialdata-io
+celltypist
+decoupler<1.9
+infercnvpy
+liana
+omnipath
+scvi-tools
+cell2location
+spatialDE
+
+# Graphs, clustering, and neighborhood analysis
+networkx
+igraph
+leidenalg
+pynndescent
+
+# Visualization and interactive figures
+matplotlib
+seaborn
+plotly
+bokeh
+altair
+datashader
+colorcet
+vitessce
+napari
+
+# Images, morphology, and microscopy file handling
+pillow
+imageio
+tifffile
+opencv-python<4.13
+scikit-image
+ome-types
+
+# Reports and document generation
+jinja2
+markdown
+reportlab
+weasyprint
+
+# API, background jobs, and storage adapters
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+redis
+celery[redis]
+flower
+chromadb
+
+# LLM/provider adapters and utilities
+openai
+anthropic
+loguru
+python-dotenv
+requests
+tqdm
+pyyaml

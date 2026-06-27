@@ -1,0 +1,1 @@
+{"id":"MVP-006","tier":2,"query":"For this Xenium dataset, overlay a gene feature and keep targeted panel limitations clear.","dataset":"data/demo_manifest.json","expected_tools":["qc_and_cluster","feature_overlay"],"ground_truth":{"assay":"xenium","honesty":"panel_absence_not_unexpressed"},"dimension":"mvp_xenium","notes":"Targeted-panel guard."}

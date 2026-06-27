@@ -1,0 +1,1 @@
+"""SpatialMind evaluation harness."""

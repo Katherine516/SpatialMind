@@ -1,0 +1,1 @@
+{"id":"TC-001","tier":1,"query":"Show me where the T cells are in sample BRCA_04","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation"],"ground_truth":{"no_stats_expected":true},"dimension":"tool_selection","notes":"Do not run deconvolution if labels are present."}

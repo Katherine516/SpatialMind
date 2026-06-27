@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpatialMind v2 — Production Build Plan</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Syne+Mono&display=swap');
+  :root {
+    --bg:#0d0d0d;--s1:#141414;--s2:#1c1c1c;--border:#252525;
+    --g:#b8ff57;--b:#57c8ff;--o:#ff7557;--p:#c457ff;--y:#ffd057;
+    --t:#e8e8e8;--t2:#888;--t3:#3a3a3a;--t4:#555;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--t);font-family:'Syne Mono',monospace;font-size:12px;line-height:1.75;}
+
+  /* HERO */
+  .hero{padding:64px 60px 52px;border-bottom:1px solid var(--border);position:relative;overflow:hidden;}
+  .hero::after{content:'V2';position:absolute;right:-10px;bottom:-40px;font-family:'Syne',sans-serif;font-size:220px;font-weight:800;color:rgba(184,255,87,0.03);pointer-events:none;line-height:1;}
+  .etag{display:inline-flex;align-items:center;gap:8px;font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--g);margin-bottom:24px;}
+  .etag::before{content:'';width:20px;height:1px;background:var(--g);}
+  h1{font-family:'Syne',sans-serif;font-size:64px;font-weight:800;line-height:.92;letter-spacing:-3px;margin-bottom:24px;}
+  h1 .d{color:var(--t3);}h1 .h{color:var(--g);}
+  .hero-sub{color:var(--t2);max-width:600px;font-size:12.5px;margin-bottom:36px;}
+  .hstats{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--border);border:1px solid var(--border);max-width:800px;}
+  .hs{background:var(--s1);padding:18px 20px;}
+  .hs-v{font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--g);line-height:1;margin-bottom:3px;}
+  .hs-l{font-size:9px;color:var(--t2);letter-spacing:1px;}
+
+  /* DIFF BANNER */
+  .diff-banner{background:var(--s1);border:1px solid var(--border);border-left:3px solid var(--y);padding:20px 24px;margin:32px 0;max-width:900px;}
+  .diff-banner .db-title{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--y);margin-bottom:12px;}
+  .diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+  .diff-col h4{font-size:10px;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;}
+  .diff-col.old h4{color:var(--t3);}
+  .diff-col.new h4{color:var(--g);}
+  .diff-item{font-size:11px;color:var(--t2);padding:3px 0;border-bottom:1px solid var(--border);display:flex;gap:8px;}
+  .diff-item::before{content:'—';color:var(--t3);}
+  .diff-col.new .diff-item::before{content:'→';color:var(--g);}
+
+  /* LAYOUT */
+  .wrap{display:grid;grid-template-columns:220px 1fr;}
+  aside{border-right:1px solid var(--border);padding:36px 0;position:sticky;top:0;height:100vh;overflow-y:auto;}
+  .al{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--t3);padding:0 20px;margin:20px 0 6px;}
+  aside a{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--t2);text-decoration:none;padding:6px 20px;border-left:2px solid transparent;}
+  aside a:hover{color:var(--t);border-left-color:var(--g);}
+  .an{color:var(--t3);font-size:9px;min-width:24px;}
+  .ap{font-size:8px;letter-spacing:1px;padding:1px 5px;border-radius:2px;margin-left:auto;}
+  .p1{background:rgba(184,255,87,.15);color:var(--g);}
+  .p2{background:rgba(87,200,255,.15);color:var(--b);}
+  .p3{background:rgba(255,117,87,.15);color:var(--o);}
+  .p4{background:rgba(196,87,255,.15);color:var(--p);}
+  .p5{background:rgba(255,208,87,.15);color:var(--y);}
+
+  main{padding:48px 60px 100px;}
+  .bs{margin-bottom:68px;padding-bottom:68px;border-bottom:1px solid var(--border);}
+  .bs:last-child{border-bottom:none;}
+  .ey{display:flex;align-items:center;gap:12px;margin-bottom:18px;}
+  .sn{font-family:'Syne',sans-serif;font-size:11px;font-weight:700;color:var(--t3);letter-spacing:2px;}
+  .pp{font-size:9px;letter-spacing:2px;text-transform:uppercase;padding:2px 10px;}
+  h2{font-family:'Syne',sans-serif;font-size:28px;font-weight:800;line-height:1.1;margin-bottom:14px;letter-spacing:-.5px;}
+  .sd{color:var(--t2);max-width:700px;margin-bottom:24px;font-size:12.5px;}
+  p{color:var(--t2);max-width:700px;margin-bottom:12px;}
+
+  /* PROMPT BOX */
+  .pb{border:1px solid var(--g);background:rgba(184,255,87,.03);padding:18px 22px;margin:18px 0;max-width:820px;}
+  .pb-l{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--g);margin-bottom:8px;}
+  .pb p{color:var(--t2);font-size:12px;font-style:italic;margin:0;max-width:none;}
+  .pb.blue{border-color:var(--b);background:rgba(87,200,255,.03);}
+  .pb.blue .pb-l{color:var(--b);}
+  .pb.orange{border-color:var(--o);background:rgba(255,117,87,.03);}
+  .pb.orange .pb-l{color:var(--o);}
+
+  /* CODE */
+  pre{background:var(--s1);border:1px solid var(--border);border-left:3px solid var(--g);padding:22px 26px;font-size:11px;line-height:1.8;overflow-x:auto;margin:14px 0;max-width:820px;font-family:'Syne Mono',monospace;}
+  pre.b{border-left-color:var(--b);}pre.o{border-left-color:var(--o);}pre.p{border-left-color:var(--p);}pre.y{border-left-color:var(--y);}
+  .c{color:#3d3d3d;}.k{color:#ff9f57;}.s{color:var(--b);}.fn{color:var(--p);}.n{color:#e0c87a;}.t{color:var(--g);}
+
+  /* FILE TREE */
+  .ft{background:var(--s1);border:1px solid var(--border);padding:22px 26px;font-size:11.5px;margin:16px 0;max-width:580px;}
+  .ft-ttl{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--t3);margin-bottom:14px;}
+  .fl{line-height:2.2;}.fd{color:var(--b);}.ff{color:var(--t2);}.fn2{color:var(--t3);font-size:10px;margin-left:8px;}
+  .new-file{color:var(--g)!important;}
+
+  /* TABLES */
+  table{width:100%;max-width:820px;border-collapse:collapse;margin:14px 0;font-size:11.5px;}
+  th{text-align:left;font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--t3);padding:10px 14px;border-bottom:1px solid var(--border);background:var(--s2);}
+  td{padding:12px 14px;border-bottom:1px solid rgba(37,37,37,.7);vertical-align:top;}
+  tr:hover td{background:var(--s2);}
+  td:first-child{color:var(--g);width:200px;font-size:11px;}
+  td.mono{font-family:'Syne Mono',monospace;font-size:10.5px;}
+  td.dim{color:var(--t2);}td.muted{color:var(--t3);font-size:11px;}
+
+  /* TOOL GRID */
+  .tg{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);margin:14px 0;max-width:820px;}
+  .tc{background:var(--s1);padding:18px 20px;}
+  .tc-n{color:var(--g);font-size:11px;font-weight:700;margin-bottom:4px;}
+  .tc-s{color:var(--p);font-size:10px;margin-bottom:7px;font-style:italic;}
+  .tc-d{color:var(--t2);font-size:11px;margin-bottom:8px;}
+  .tc-tags{display:flex;flex-wrap:wrap;gap:4px;}
+  .tctag{font-size:9px;padding:2px 6px;background:var(--s2);color:var(--t3);border:1px solid var(--border);}
+  .tctag.new{border-color:var(--g);color:var(--g);background:rgba(184,255,87,.08);}
+
+  /* TASK LIST */
+  .tl{margin:14px 0;max-width:820px;}
+  .task{display:grid;grid-template-columns:28px 1fr;border-bottom:1px solid var(--border);padding:12px 0;}
+  .task:last-child{border-bottom:none;}
+  .task-box{width:14px;height:14px;border:1px solid var(--border);margin-top:3px;}
+  .task-title{color:var(--t);font-size:12px;margin-bottom:2px;}
+  .task-detail{color:var(--t3);font-size:11px;}
+  .task-detail .new{color:var(--g);}
+
+  /* VIZ GRID */
+  .vg{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);margin:14px 0;max-width:820px;}
+  .vc{background:var(--s1);padding:16px 18px;}
+  .vc-n{color:var(--b);font-size:11px;font-weight:700;margin-bottom:5px;}
+  .vc-d{color:var(--t2);font-size:11px;margin-bottom:7px;}
+  .vc-tags{display:flex;flex-wrap:wrap;gap:3px;}
+  .vtag{font-size:9px;padding:1px 5px;background:var(--s2);color:var(--t3);}
+  .vtag.new{color:var(--o);background:rgba(255,117,87,.1);}
+
+  /* REPORT SECTION */
+  .report-preview{background:var(--s1);border:1px solid var(--border);padding:24px 28px;margin:16px 0;max-width:820px;}
+  .rp-title{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--t3);margin-bottom:16px;}
+  .rp-section{margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border);}
+  .rp-section:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0;}
+  .rp-label{font-size:10px;color:var(--g);letter-spacing:1px;margin-bottom:6px;}
+  .rp-content{font-size:11px;color:var(--t2);line-height:1.8;}
+  .rp-stat{display:inline-block;background:rgba(184,255,87,.08);color:var(--g);padding:1px 8px;font-size:10px;margin:2px 3px;}
+
+  /* PHASE BAR */
+  .pbar{display:flex;gap:0;border:1px solid var(--border);max-width:820px;margin:18px 0;overflow:hidden;}
+  .pbi{flex:1;padding:14px 16px;border-right:1px solid var(--border);}
+  .pbi:last-child{border-right:none;}
+  .pbi-p{font-size:9px;letter-spacing:2px;text-transform:uppercase;margin-bottom:3px;}
+  .pbi-t{font-family:'Syne',sans-serif;font-size:12px;font-weight:700;margin-bottom:3px;}
+  .pbi-w{font-size:10px;color:var(--t3);}
+
+  /* DEPLOY */
+  .dg{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);margin:14px 0;max-width:820px;}
+  .dc{background:var(--s1);padding:18px 20px;}
+  .dc-t{font-family:'Syne',sans-serif;font-size:12px;font-weight:700;margin-bottom:10px;}
+  .di{display:flex;gap:8px;font-size:11px;color:var(--t2);padding:4px 0;border-bottom:1px solid rgba(37,37,37,.5);}
+  .di:last-child{border-bottom:none;}
+  .di::before{content:'—';color:var(--t3);}
+
+  /* SCHEMA */
+  .schema{background:var(--s2);border:1px solid var(--border);padding:18px 22px;margin:14px 0;max-width:820px;}
+  .schema-t{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--t3);margin-bottom:12px;}
+
+  @media(max-width:1000px){
+    .wrap{grid-template-columns:1fr;}aside{display:none;}
+    h1{font-size:40px;}.hstats{grid-template-columns:1fr 1fr;}
+    main{padding:32px 24px 60px;}.hero{padding:48px 24px 40px;}
+    .tg{grid-template-columns:1fr;}.vg{grid-template-columns:1fr 1fr;}
+    .dg{grid-template-columns:1fr;}.diff-grid{grid-template-columns:1fr;}
+    .pbar{flex-direction:column;}
+  }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="etag">SpatialMind · Document 03 v2 · Production Engineering Spec</div>
+  <h1><span class="d">PRODUCTION</span><br><span class="h">BUILD</span><br><span class="d">PLAN</span></h1>
+  <p class="hero-sub">Upgraded from prototype spec to production-grade plan. Real bio data handling, 20+ algorithm tools, multi-modal data fusion, comprehensive HTML/PDF report generation, and 15 visualization types across all supported data modalities.</p>
+  <div class="hstats">
+    <div class="hs"><div class="hs-v">5</div><div class="hs-l">Build Phases</div></div>
+    <div class="hs"><div class="hs-v">16</div><div class="hs-l">Sections</div></div>
+    <div class="hs"><div class="hs-v">22</div><div class="hs-l">Algorithm Tools</div></div>
+    <div class="hs"><div class="hs-v">15</div><div class="hs-l">Viz Types</div></div>
+    <div class="hs"><div class="hs-v">~22w</div><div class="hs-l">To Production</div></div>
+  </div>
+
+  <div class="diff-banner">
+    <div class="db-title">What changed from v1 → v2</div>
+    <div class="diff-grid">
+      <div class="diff-col old">
+        <h4>v1 Prototype gaps</h4>
+        <div class="diff-item">8 tools, single-sample only</div>
+        <div class="diff-item">6 basic plot types</div>
+        <div class="diff-item">Report = one text string</div>
+        <div class="diff-item">No multi-modal data fusion</div>
+        <div class="diff-item">No batch / multi-sample</div>
+        <div class="diff-item">No CNV or tumor analysis</div>
+        <div class="diff-item">No real QC dashboard</div>
+        <div class="diff-item">Memory schema underspecified</div>
+      </div>
+      <div class="diff-col new">
+        <h4>v2 Production upgrades</h4>
+        <div class="diff-item">22 tools + multi-modal fusion layer</div>
+        <div class="diff-item">15 viz types, per-modality renderers</div>
+        <div class="diff-item">Structured HTML+PDF report with sections</div>
+        <div class="diff-item">scRNA + Visium + IMC + ATAC fusion</div>
+        <div class="diff-item">Batch engine with job queue (Celery)</div>
+        <div class="diff-item">CNV inference + tumor niche tools</div>
+        <div class="diff-item">Interactive QC dashboard pre-analysis</div>
+        <div class="diff-item">Full memory schema + user priors store</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+<aside>
+  <div class="al">Phase 1 · Foundation</div>
+  <a href="#s1"><span class="an">01</span>Repo & Env<span class="ap p1">P1</span></a>
+  <a href="#s2"><span class="an">02</span>Data Ingestion<span class="ap p1">P1</span></a>
+  <a href="#s3"><span class="an">03</span>QC Dashboard<span class="ap p1">P1</span></a>
+  <a href="#s4"><span class="an">04</span>Eval Harness<span class="ap p1">P1</span></a>
+  <div class="al">Phase 2 · Tools</div>
+  <a href="#s5"><span class="an">05</span>Tool Registry v2<span class="ap p2">P2</span></a>
+  <a href="#s6"><span class="an">06</span>Algorithm Impls<span class="ap p2">P2</span></a>
+  <a href="#s7"><span class="an">07</span>Multi-modal Fusion<span class="ap p2">P2</span></a>
+  <div class="al">Phase 3 · Agent</div>
+  <a href="#s8"><span class="an">08</span>LLM Agent Loop<span class="ap p3">P3</span></a>
+  <a href="#s9"><span class="an">09</span>Memory Layer<span class="ap p3">P3</span></a>
+  <a href="#s10"><span class="an">10</span>Batch Engine<span class="ap p3">P3</span></a>
+  <div class="al">Phase 4 · Output</div>
+  <a href="#s11"><span class="an">11</span>Visualization Layer<span class="ap p4">P4</span></a>
+  <a href="#s12"><span class="an">12</span>Report Generator<span class="ap p4">P4</span></a>
+  <a href="#s13"><span class="an">13</span>Storage & Provenance<span class="ap p4">P4</span></a>
+  <a href="#s14"><span class="an">14</span>API & CLI<span class="ap p4">P4</span></a>
+  <div class="al">Phase 5 · Production</div>
+  <a href="#s15"><span class="an">15</span>Frontend UI<span class="ap p5">P5</span></a>
+  <a href="#s16"><span class="an">16</span>Deploy & Monitor<span class="ap p5">P5</span></a>
+</aside>
+
+<main>
+
+<!-- OVERVIEW -->
+<div class="bs" id="overview">
+  <div class="ey"><span class="sn">OVERVIEW</span></div>
+  <h2>Phase Timeline</h2>
+  <p class="sd">16 sections across 5 phases. Each section is a self-contained Claude Code / Codex prompt. Build in order — later sections depend on earlier interfaces. The new Phase 2 (Tools) must be complete before Phase 3 (Agent) starts.</p>
+  <div class="pbar">
+    <div class="pbi"><div class="pbi-p" style="color:var(--g)">Phase 1</div><div class="pbi-t">Foundation</div><div class="pbi-w">Weeks 1–4</div></div>
+    <div class="pbi"><div class="pbi-p" style="color:var(--b)">Phase 2</div><div class="pbi-t">Tools & Algorithms</div><div class="pbi-w">Weeks 5–9</div></div>
+    <div class="pbi"><div class="pbi-p" style="color:var(--o)">Phase 3</div><div class="pbi-t">Agent Core</div><div class="pbi-w">Weeks 10–13</div></div>
+    <div class="pbi"><div class="pbi-p" style="color:var(--p)">Phase 4</div><div class="pbi-t">Output Layers</div><div class="pbi-w">Weeks 14–18</div></div>
+    <div class="pbi"><div class="pbi-p" style="color:var(--y)">Phase 5</div><div class="pbi-t">Production</div><div class="pbi-w">Weeks 19–22</div></div>
+  </div>
+</div>
+
+<!-- S01 REPO -->
+<div class="bs" id="s1">
+  <div class="ey"><span class="sn">01</span><span class="pp p1" style="color:var(--g);border:1px solid var(--g)">Phase 1</span></div>
+  <h2>Repo & Environment</h2>
+  <p class="sd">Unchanged from v1 except: add Celery + Flower to docker-compose for the batch engine, add a gpu profile for Cell2location and SpatialDE2, and extend pyproject.toml with new dependencies.</p>
+  <div class="ft">
+    <div class="ft-ttl">Updated File Structure (additions in green)</div>
+    <div class="fl"><span class="fd">spatialMind/</span></div>
+    <div class="fl">&nbsp;&nbsp;<span class="fd">spatialMind/</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;<span class="fd">ingestion/</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;<span class="fd">tools/</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="new-file fd">fusion/</span><span class="fn2">NEW — multi-modal data fusion</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="new-file fd">tumor/</span><span class="fn2">NEW — CNV, tumor niche tools</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;<span class="fd">agent/</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;<span class="new-file fd">batch/</span><span class="fn2">NEW — Celery job queue, multi-sample</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;<span class="fd">memory/</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;<span class="fd">viz/</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="new-file fd">modality/</span><span class="fn2">NEW — per-modality renderers</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="new-file fd">report/</span><span class="fn2">NEW — HTML+PDF report builder</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;<span class="fd">storage/</span></div>
+    <div class="fl">&nbsp;&nbsp;&nbsp;&nbsp;<span class="fd">api/</span></div>
+    <div class="fl">&nbsp;&nbsp;<span class="fd">eval/</span></div>
+    <div class="fl">&nbsp;&nbsp;<span class="fd">tests/</span></div>
+    <div class="fl">&nbsp;&nbsp;<span class="new-file fd">notebooks/</span><span class="fn2">NEW — validation notebooks per data type</span></div>
+    <div class="fl">&nbsp;&nbsp;<span class="fd">docker-compose.yml</span><span class="fn2">+ celery worker + flower</span></div>
+  </div>
+  <div class="pb">
+    <div class="pb-l">New deps to add to pyproject.toml</div>
+    <p>celery[redis], flower, infercnvpy, decoupler-py, liana-py, cell2location, spatialDE, scvi-tools, reportlab, weasyprint, vitessce-python, napari (optional), omnipath-py</p>
+  </div>
+</div>
+
+<!-- S02 INGESTION -->
+<div class="bs" id="s2">
+  <div class="ey"><span class="sn">02</span><span class="pp p1" style="color:var(--g);border:1px solid var(--g)">Phase 1</span></div>
+  <h2>Data Ingestion Layer — Production Grade</h2>
+  <p class="sd">The v1 ingestion was spec'd but not battle-tested. Real bio data has batch effects, missing spatial barcodes, inconsistent gene names (ENSEMBL vs HGNC), mismatched coordinate systems, and partial tissue sections. This version handles all of those explicitly.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"Upgrade spatialMind/ingestion/pipeline.py. Add: (1) automatic ENSEMBL→HGNC gene symbol mapping via MyGene.info, (2) barcode validation against known 10x whitelists, (3) mitochondrial gene auto-detection by species (human: MT-, mouse: mt-), (4) ambient RNA detection flag using scrublet scores, (5) spatial coordinate system normalization to microns. All issues go into IngestionReport.warnings — never silently fix data."</p>
+  </div>
+  <table>
+    <thead><tr><th>Data Format</th><th>Loader</th><th>Real-world Issues Handled</th></tr></thead>
+    <tbody>
+      <tr><td>10x Visium H5 / SpaceRanger</td><td class="dim">spatialdata-io</td><td class="muted">Missing tissue_positions.csv, barcode mismatch, scalefactor JSON absent</td></tr>
+      <tr><td>MERFISH / Xenium</td><td class="dim">spatialdata-io</td><td class="muted">Transcript table vs cell table alignment, z-stack collapsing, cell boundary polygons</td></tr>
+      <tr><td>CODEX CSV</td><td class="dim">custom pandas loader</td><td class="muted">Marker name normalization, negative control subtraction, spillover correction flag</td></tr>
+      <tr><td>IMC (MCD / TIFF)</td><td class="dim">readimc + custom</td><td class="muted">Multi-ROI per file, ablation artifact detection, hot pixel filtering</td></tr>
+      <tr><td>Generic H5AD</td><td class="dim">anndata.read_h5ad</td><td class="muted">Validate .obsm["spatial"] present, gene name format detection, layer names</td></tr>
+      <tr><td>GeoMx DSP (DCC + PKC)</td><td class="dim">custom NanoString loader</td><td class="muted">ROI metadata parsing, probe normalization (HK genes vs Q3)</td></tr>
+      <tr><td>H&E / WSI TIFF</td><td class="dim">tifffile + OpenSlide</td><td class="muted">Pyramid level selection, coordinate alignment to molecular data, stain normalization</td></tr>
+      <tr><td>Spatial ATAC H5</td><td class="dim">snapatac2 + custom</td><td class="muted">Fragment file validation, peak-calling output vs fragment input routing</td></tr>
+    </tbody>
+  </table>
+<pre class="b"><span class="c"># Key addition: multi-sample batch ingestion</span>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">BatchIngestionConfig</span>:
+    samples: list[<span class="t">SampleConfig</span>]
+    harmonize_genes: bool = <span class="s">True</span>   <span class="c"># intersect gene sets across samples</span>
+    batch_key: str = <span class="s">"sample_id"</span>
+    run_harmony: bool = <span class="s">False</span>       <span class="c"># batch correction — off by default</span>
+    species: str = <span class="s">"human"</span>
+
+<span class="k">class</span> <span class="t">BatchIngestionPipeline</span>:
+    <span class="k">def</span> <span class="fn">ingest_batch</span>(
+        self, config: <span class="t">BatchIngestionConfig</span>
+    ) -> tuple[list[sd.<span class="t">SpatialData</span>], <span class="t">BatchIngestionReport</span>]:
+        <span class="c"># ingest each sample independently first</span>
+        <span class="c"># then align gene spaces</span>
+        <span class="c"># flag samples that failed QC — never silently drop</span>
+        ...
+</pre>
+</div>
+
+<!-- S03 QC DASHBOARD -->
+<div class="bs" id="s3">
+  <div class="ey"><span class="sn">03</span><span class="pp p1" style="color:var(--g);border:1px solid var(--g)">Phase 1</span></div>
+  <h2>Interactive QC Dashboard <span style="color:var(--g);font-size:14px;">NEW</span></h2>
+  <p class="sd">Before the agent runs any analysis, the biologist must see a QC summary and approve it. Skipping this is the single most common cause of downstream garbage results. This is not optional — the API blocks analysis until QC is acknowledged.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"In spatialMind/viz/qc/, implement a QCReportBuilder that takes an IngestionReport + raw SpatialData and generates an interactive HTML QC dashboard. It must render: per-sample violin plots (UMI counts, gene counts, % mito), spatial scatter of QC metrics overlaid on tissue, doublet score distribution, and a filtration waterfall (how many spots removed at each step). The agent API must return this dashboard URL and require qc_approved=True in the next request before proceeding."</p>
+  </div>
+  <div class="tl">
+    <div class="task"><div class="task-box"></div><div><div class="task-title">Violin plots per QC metric</div><div class="task-detail">nUMI, nGenes, pct_mito, pct_ribo per sample. Highlight outlier spots. Threshold lines shown as draggable (future interactive feature).</div></div></div>
+    <div class="task"><div class="task-box"></div><div><div class="task-title">Spatial QC overlay</div><div class="task-detail">Plot nUMI and pct_mito on tissue coordinates. Low-quality spatial zones visible immediately — critical for slide artifacts.</div></div></div>
+    <div class="task"><div class="task-box"></div><div><div class="task-title">Filtration waterfall chart</div><div class="task-detail">Shows: raw spots → after min_counts filter → after min_genes → after mito filter → after doublet removal. Makes data loss visible.</div></div></div>
+    <div class="task"><div class="task-box"></div><div><div class="task-title">Gene detection rate heatmap</div><div class="task-detail">For multi-sample: which genes are detected in ≥80% of samples. Flags genes that will be noisy in cross-sample analyses.</div></div></div>
+    <div class="task"><div class="task-box"></div><div><div class="task-title">QC gate in API</div><div class="task-detail"><span class="new">NEW</span> POST /sessions/{id}/approve-qc endpoint. Agent checks qc_approved flag before executing any tool. Unapproved sessions return 403.</div></div></div>
+  </div>
+</div>
+
+<!-- S04 EVAL -->
+<div class="bs" id="s4">
+  <div class="ey"><span class="sn">04</span><span class="pp p1" style="color:var(--g);border:1px solid var(--g)">Phase 1</span></div>
+  <h2>Eval Harness — Extended</h2>
+  <p class="sd">Same architecture as v1, but expand to 60 test cases covering all 7 data modalities and multi-sample queries. Add a modality-coverage report to the suite output so you can see which data types are under-tested.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"Extend eval/ to cover all 7 data formats. Add 45 new test cases (Tier 1–4) covering: MERFISH single-molecule queries, IMC protein co-expression, ATAC motif queries, multi-sample comparisons, batch queries, and tumor niche analyses. Add a coverage report to EvalRunner output showing test case counts per modality and per tool."</p>
+  </div>
+  <table>
+    <thead><tr><th>Modality</th><th>Tier 1</th><th>Tier 2</th><th>Tier 3</th><th>Tier 4</th></tr></thead>
+    <tbody>
+      <tr><td>Visium (v1 coverage)</td><td class="dim">5</td><td class="dim">5</td><td class="dim">3</td><td class="dim">2</td></tr>
+      <tr><td>MERFISH / Xenium</td><td class="dim">3</td><td class="dim">3</td><td class="dim">2</td><td class="dim">2</td></tr>
+      <tr><td>IMC / CODEX</td><td class="dim">3</td><td class="dim">3</td><td class="dim">2</td><td class="dim">2</td></tr>
+      <tr><td>Spatial ATAC</td><td class="dim">2</td><td class="dim">2</td><td class="dim">1</td><td class="dim">1</td></tr>
+      <tr><td>Multi-sample batch</td><td class="dim">2</td><td class="dim">3</td><td class="dim">2</td><td class="dim">2</td></tr>
+      <tr><td>Multi-modal fusion</td><td class="dim">1</td><td class="dim">2</td><td class="dim">2</td><td class="dim">1</td></tr>
+      <tr><td>Tumor / cancer</td><td class="dim">2</td><td class="dim">3</td><td class="dim">1</td><td class="dim">2</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- S05 TOOL REGISTRY -->
+<div class="bs" id="s5">
+  <div class="ey"><span class="sn">05</span><span class="pp p2" style="color:var(--b);border:1px solid var(--b)">Phase 2</span></div>
+  <h2>Tool Registry v2 — 22 Tools</h2>
+  <p class="sd">The v1 registry had 8 tools covering basic transcriptomics. v2 adds 14 tools covering protein imaging, chromatin, multi-modal fusion, and tumor biology. Each new tool follows the same SpatialTool schema — when_to_use / when_not_to_use descriptions are mandatory for LLM disambiguation.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"Add the 14 new SpatialTool definitions to spatialMind/tools/registry.py. Implement them as stubs with full schemas first — implementations come in Section 06. For each tool, the when_not_to_use field must explicitly name at least one similar tool it could be confused with."</p>
+  </div>
+
+  <p style="color:var(--t3);font-size:10px;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">Existing tools (v1) — kept</p>
+  <div class="tg">
+    <div class="tc"><div class="tc-n">cell_type_annotation</div><div class="tc-d">CellTypist reference-based labeling</div><div class="tc-tags"><span class="tctag">CellTypist</span><span class="tctag">scType</span></div></div>
+    <div class="tc"><div class="tc-n">spatial_deconvolution</div><div class="tc-d">Cell2location spot decomposition</div><div class="tc-tags"><span class="tctag">Cell2location</span><span class="tctag">RCTD</span></div></div>
+    <div class="tc"><div class="tc-n">spatial_variable_genes</div><div class="tc-d">SpatialDE2 / SPARK-X SVG detection</div><div class="tc-tags"><span class="tctag">SpatialDE2</span><span class="tctag">SPARK-X</span></div></div>
+    <div class="tc"><div class="tc-n">neighborhood_enrichment</div><div class="tc-d">Squidpy cell-type co-localization test</div><div class="tc-tags"><span class="tctag">Squidpy</span><span class="tctag">permutation</span></div></div>
+    <div class="tc"><div class="tc-n">ligand_receptor_analysis</div><div class="tc-d">CellChat / LIANA signaling inference</div><div class="tc-tags"><span class="tctag">LIANA</span><span class="tctag">CellChat</span></div></div>
+    <div class="tc"><div class="tc-n">trajectory_inference</div><div class="tc-d">Palantir pseudotime + spatial anchor</div><div class="tc-tags"><span class="tctag">Palantir</span><span class="tctag">PAGA</span></div></div>
+    <div class="tc"><div class="tc-n">spatial_clustering</div><div class="tc-d">Leiden + spatial graph clustering</div><div class="tc-tags"><span class="tctag">Squidpy</span><span class="tctag">BayesSpace</span></div></div>
+    <div class="tc"><div class="tc-n">differential_expression</div><div class="tc-d">scanpy rank_genes between groups</div><div class="tc-tags"><span class="tctag">scanpy</span><span class="tctag">DESeq2-py</span></div></div>
+  </div>
+
+  <p style="color:var(--g);font-size:10px;letter-spacing:2px;text-transform:uppercase;margin:20px 0 8px;">New tools (v2)</p>
+  <div class="tg">
+    <div class="tc">
+      <div class="tc-n">cnv_inference <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, ref_normal_key) → CNV score per cell</div>
+      <div class="tc-d">Infer copy number variation from scRNA/spatial expression to identify aneuploid (malignant) cells. Primary tool for cancer cell detection without a known marker panel.</div>
+      <div class="tc-tags"><span class="tctag new">inferCNVpy</span><span class="tctag">requires: normal ref cells</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">tumor_niche_analysis <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, tumor_label) → niche composition + stats</div>
+      <div class="tc-d">Characterize the cellular and molecular composition of the tumor microenvironment: immune infiltration score, exclusion score, fibroblast density, vascular proximity.</div>
+      <div class="tc-tags"><span class="tctag new">custom + Squidpy</span><span class="tctag">requires: cell-type labels</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">protein_coexpression <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, markers) → correlation matrix + clusters</div>
+      <div class="tc-d">For IMC/CODEX data: compute pairwise protein co-expression correlations across cells, cluster into protein modules, identify cell phenotypes by marker co-expression pattern.</div>
+      <div class="tc-tags"><span class="tctag new">IMC/CODEX specific</span><span class="tctag">requires: protein matrix</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">cell_phenotyping_spatial <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, panel_type="immune") → phenotype labels</div>
+      <div class="tc-d">Unsupervised phenotyping of cells in protein imaging data using FlowSOM-style hierarchical clustering. Produces cell phenotype maps on tissue. Use for IMC/CODEX, NOT for RNA data.</div>
+      <div class="tc-tags"><span class="tctag new">FlowSOM-py</span><span class="tctag">IMC/CODEX only</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">pathway_activity <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, resource="progeny") → pathway scores per cell</div>
+      <div class="tc-d">Infer activity of 14 cancer-relevant signaling pathways (MAPK, PI3K, TGFb, etc.) per cell using decoupleR. Spatially maps pathway activation across tissue.</div>
+      <div class="tc-tags"><span class="tctag new">decoupleR</span><span class="tctag">PROGENy</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">transcription_factor_activity <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, network="collectri") → TF scores per cell</div>
+      <div class="tc-d">Estimate transcription factor activity from expression of their target gene sets. Reveals regulatory drivers of spatial gene expression patterns.</div>
+      <div class="tc-tags"><span class="tctag new">decoupleR</span><span class="tctag">CollecTRI</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">spatial_communication_flow <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, method="liana") → directional comm. matrix</div>
+      <div class="tc-d">Multi-method consensus ligand-receptor analysis using LIANA (aggregates CellChat, CellPhoneDB, NicheNet scores). Use instead of ligand_receptor_analysis when you need cross-method confidence scores.</div>
+      <div class="tc-tags"><span class="tctag new">LIANA-py</span><span class="tctag">multi-method consensus</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">niche_differential_analysis <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, niche_key, condition_key) → DE per niche</div>
+      <div class="tc-d">Compare gene expression within matched spatial niches across conditions (e.g. treated vs untreated tumor core). Accounts for spatial autocorrelation in the statistical model.</div>
+      <div class="tc-tags"><span class="tctag new">spatially-aware DE</span><span class="tctag">requires: niche labels + condition</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">chromatin_accessibility_spatial <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, peak_matrix) → DA peaks per region</div>
+      <div class="tc-d">For spatial ATAC data: identify differentially accessible chromatin regions per spatial cluster. Links regulatory elements to tissue context.</div>
+      <div class="tc-tags"><span class="tctag new">ATAC specific</span><span class="tctag">snapatac2</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">motif_enrichment_spatial <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, da_peaks_df) → TF motif enrichment</div>
+      <div class="tc-d">Given differentially accessible peaks per spatial region, identify enriched transcription factor binding motifs. Use after chromatin_accessibility_spatial.</div>
+      <div class="tc-tags"><span class="tctag new">ATAC specific</span><span class="tctag">pyscenicplus</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">multi_sample_comparison <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata_list, metric, group_key) → comparison table</div>
+      <div class="tc-d">Compare a spatial metric (cell-type composition, niche structure, pathway activity) across multiple samples or conditions. Handles batch correction and sample-level statistics.</div>
+      <div class="tc-tags"><span class="tctag new">batch-aware</span><span class="tctag">requires: ≥3 samples per group</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">tissue_segmentation <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(he_image, model="cellpose") → cell mask + coords</div>
+      <div class="tc-d">Segment individual cells from H&E or immunofluorescence images using Cellpose or StarDist. Provides cell coordinates for downstream spatial analysis when no molecular barcoding exists.</div>
+      <div class="tc-tags"><span class="tctag new">Cellpose</span><span class="tctag">StarDist</span><span class="tctag">image input</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">spatial_gene_programs <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, n_programs=10) → gene program × spot matrix</div>
+      <div class="tc-d">Decompose spatial gene expression into interpretable spatial gene programs using NMF. Each program represents a co-expressed gene module with a spatial pattern.</div>
+      <div class="tc-tags"><span class="tctag new">NMF / MEFISTO</span><span class="tctag">interpretable factors</span></div>
+    </div>
+    <div class="tc">
+      <div class="tc-n">cell_abundance_heatmap_regions <span style="color:var(--g);font-size:9px;">NEW</span></div>
+      <div class="tc-s">run(sdata, region_annotations) → abundance per region</div>
+      <div class="tc-d">Quantify cell-type or protein marker abundance within manually or automatically defined tissue regions (tumor core, margin, stroma). Outputs a region × cell-type matrix for statistical testing.</div>
+      <div class="tc-tags"><span class="tctag new">region-aware</span><span class="tctag">requires: region labels</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- S06 ALGORITHM IMPLS -->
+<div class="bs" id="s6">
+  <div class="ey"><span class="sn">06</span><span class="pp p2" style="color:var(--b);border:1px solid var(--b)">Phase 2</span></div>
+  <h2>Algorithm Implementations</h2>
+  <p class="sd">Implement all 22 tool callables. Key upgrade from v1: every wrapper must handle real-world data failure modes, not just happy-path execution. Each implementation file has a corresponding test using real public datasets.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"Implement all 22 SpatialTool callables in spatialMind/tools/implementations/. For each: validate inputs using the precondition checker, wrap the algorithm, handle the 5 typed exceptions (InsufficientDataError, MissingPreconditionError, AlgorithmConvergenceError, InvalidParameterError, DataModalityError). Use public benchmark datasets for tests: spatialLIBD for Visium, MIBI-TOF breast cancer for IMC, 10x Xenium lung for single-molecule."</p>
+  </div>
+  <div class="pb blue">
+    <div class="pb-l">Critical real-data issues each wrapper must handle</div>
+    <p>CNV inference: needs ≥50 normal reference cells or raises InsufficientDataError. Cell2location: fails gracefully if scRNA reference has different gene set — intersects and warns. SpatialDE2: minimum 100 spots required, raises with specific count if below. LIANA: some databases require internet access — cache OmniPath locally on first run. Cellpose: GPU detection + CPU fallback with runtime warning.</p>
+  </div>
+<pre class="b"><span class="c"># New: DataModalityError for wrong data type</span>
+<span class="k">class</span> <span class="t">DataModalityError</span>(<span class="t">SpatialToolError</span>):
+    <span class="s">"""Raised when a tool is called on wrong data type.
+    e.g. protein_coexpression called on RNA data."""</span>
+    <span class="k">def</span> <span class="fn">__init__</span>(self, tool: str, got: str, expected: str):
+        super().__init__(
+            f<span class="s">"{tool} requires {expected} data, got {got}. "</span>
+            f<span class="s">"Use {suggest_alternative(tool, got)} instead."</span>
+        )
+</pre>
+</div>
+
+<!-- S07 MULTI-MODAL FUSION -->
+<div class="bs" id="s7">
+  <div class="ey"><span class="sn">07</span><span class="pp p2" style="color:var(--b);border:1px solid var(--b)">Phase 2</span></div>
+  <h2>Multi-modal Data Fusion <span style="color:var(--g);font-size:14px;">NEW</span></h2>
+  <p class="sd">The most scientifically powerful capability: combining scRNA-seq + Visium + IMC from the same tissue. This is not a single tool — it's a fusion layer that aligns multiple modalities into a shared coordinate space so downstream tools can query across all of them simultaneously.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"In spatialMind/tools/fusion/, implement a ModalityFuser class. It accepts a list of SpatialData objects from different modalities and aligns them: (1) scRNA + Visium: transfer cell-type labels via Cell2location, (2) Visium + H&E: register molecular coordinates to tissue morphology, (3) IMC + Visium: spatial join by nearest-neighbor if coordinates overlap, (4) Visium + ATAC: link gene expression peaks to open chromatin per spot. Output a FusedDataset with a shared obs/var space and provenance of which data came from where."</p>
+  </div>
+<pre class="p"><span class="c"># spatialMind/tools/fusion/fuser.py</span>
+
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">FusedDataset</span>:
+    sdata: sd.<span class="t">SpatialData</span>
+    modalities_present: list[str]         <span class="c"># ["visium", "scrna", "imc"]</span>
+    fusion_method: dict[str, str]         <span class="c"># how each modality was aligned</span>
+    shared_cells_n: int                   <span class="c"># cells/spots with all modalities</span>
+    fusion_quality_score: float           <span class="c"># 0-1, lower = warn user</span>
+    warnings: list[str]
+
+<span class="k">class</span> <span class="t">ModalityFuser</span>:
+    supported_pairs = [
+        (<span class="s">"scrna"</span>,   <span class="s">"visium"</span>),   <span class="c"># label transfer via Cell2location</span>
+        (<span class="s">"visium"</span>,  <span class="s">"he_image"</span>), <span class="c"># coord registration</span>
+        (<span class="s">"imc"</span>,     <span class="s">"visium"</span>),   <span class="c"># nearest-neighbor spatial join</span>
+        (<span class="s">"visium"</span>,  <span class="s">"atac"</span>),     <span class="c"># peak-gene linkage</span>
+        (<span class="s">"codex"</span>,   <span class="s">"he_image"</span>), <span class="c"># protein + morphology</span>
+    ]
+    <span class="k">def</span> <span class="fn">fuse</span>(
+        self, datasets: list[tuple[str, sd.<span class="t">SpatialData</span>]]
+    ) -> <span class="t">FusedDataset</span>: ...
+</pre>
+</div>
+
+<!-- S08 LLM AGENT -->
+<div class="bs" id="s8">
+  <div class="ey"><span class="sn">08</span><span class="pp p3" style="color:var(--o);border:1px solid var(--o)">Phase 3</span></div>
+  <h2>LLM Agent Loop — Production</h2>
+  <p class="sd">Same ReAct architecture as v1, but upgraded with: modality-aware routing (different system prompt context per data type), multi-step dependency resolution (CNV must run before tumor_niche_analysis), and a correction replay mechanism.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"Upgrade spatialMind/agent/agent.py. Add: (1) modality detection at session start — reads sdata and adds data type context to the system prompt, (2) tool dependency graph — some tools require others to run first, enforce this automatically, (3) correction_replay — when user submits a correction, identify which tool calls are affected and re-run only those, (4) multi-sample routing — if dataset_ids is a list, route to BatchAgent instead of SpatialAgent."</p>
+  </div>
+<pre class="o"><span class="c"># Tool dependency graph — enforced by agent, not user</span>
+TOOL_DEPS = {
+    <span class="s">"tumor_niche_analysis"</span>:     [<span class="s">"cell_type_annotation"</span>],
+    <span class="s">"neighborhood_enrichment"</span>:  [<span class="s">"cell_type_annotation"</span>],
+    <span class="s">"ligand_receptor_analysis"</span>: [<span class="s">"cell_type_annotation"</span>],
+    <span class="s">"motif_enrichment_spatial"</span>: [<span class="s">"chromatin_accessibility_spatial"</span>],
+    <span class="s">"niche_differential_analysis"</span>:[<span class="s">"spatial_clustering"</span>],
+    <span class="s">"spatial_communication_flow"</span>:[<span class="s">"cell_type_annotation"</span>],
+    <span class="s">"cnv_inference"</span>:            [],  <span class="c"># can run standalone</span>
+}
+
+<span class="c"># Modality-specific system prompt extensions</span>
+MODALITY_PROMPTS = {
+    <span class="s">"visium"</span>:  <span class="s">"Data is spot-resolution (~50µm). Deconvolution is needed for single-cell resolution..."</span>,
+    <span class="s">"merfish"</span>: <span class="s">"Data is single-molecule resolution. Cell segmentation already done. Do NOT run deconvolution..."</span>,
+    <span class="s">"imc"</span>:     <span class="s">"Data is protein-based. Use protein_coexpression and cell_phenotyping_spatial, NOT RNA tools..."</span>,
+    <span class="s">"atac"</span>:    <span class="s">"Data is chromatin accessibility. Use chromatin_accessibility_spatial and motif_enrichment..."</span>,
+}
+</pre>
+</div>
+
+<!-- S09 MEMORY -->
+<div class="bs" id="s9">
+  <div class="ey"><span class="sn">09</span><span class="pp p3" style="color:var(--o);border:1px solid var(--o)">Phase 3</span></div>
+  <h2>Memory Layer — Full Schema</h2>
+  <p class="sd">v1 described memory abstractly. v2 specifies the exact schema, what gets embedded, how retrieval works, and the user priors store — a critical missing piece that lets the agent remember biology-specific context the researcher provides.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"Implement spatialMind/memory/ with three stores: SessionMemory (Redis), AnalysisMemory (ChromaDB), and UserPriorStore (PostgreSQL). Full schemas below. Key requirement: before every tool call, agent queries AnalysisMemory for 'have I run a similar analysis on this dataset?' and UserPriorStore for 'does this user have priors about this cell type or tissue?'"</p>
+  </div>
+  <div class="schema">
+    <div class="schema-t">Complete Memory Schema</div>
+<pre style="margin:0;border:none;padding:0;background:none;border-left:none;font-size:11px;"><span class="c"># 1. SessionMemory (Redis, TTL=24h)</span>
+SessionContext:
+  session_id, dataset_ids: list[str], modalities: list[str]
+  conversation_history: list[{role, content, tool_calls}]
+  loaded_sdata_keys: dict[str, str]   <span class="c"># dataset_id → cache key</span>
+  prior_tool_results: dict[str, Any]  <span class="c"># tool_name → last result</span>
+  user_corrections: list[{turn, correction, affected_tools}]
+  fused_dataset_key: str | None       <span class="c"># if fusion has been run</span>
+  qc_approved: bool
+
+<span class="c"># 2. AnalysisMemory (ChromaDB — vector search)</span>
+AnalysisRecord:
+  id, dataset_id, query, tools_used: list[str]
+  key_findings: str                   <span class="c"># embedded for similarity search</span>
+  result_run_id: str                  <span class="c"># pointer to RunRecord in storage</span>
+  modality: str, tissue_type: str
+  cell_types_involved: list[str]
+  timestamp, tags: list[str]
+
+<span class="c"># 3. UserPriorStore (PostgreSQL — structured)</span>
+UserPrior:
+  user_id, prior_type: Enum[cell_type_alias, tissue_context,
+                             preferred_tool, known_artifact, biology_note]
+  key: str           <span class="c"># e.g. "CD8+" or "liver_section_B"</span>
+  value: str         <span class="c"># e.g. "always use CD8A+CD8B markers"</span>
+  confidence: float  <span class="c"># 0-1, decays over time if not reinforced</span>
+  source: Enum[user_explicit, correction_inferred]
+</pre>
+  </div>
+</div>
+
+<!-- S10 BATCH ENGINE -->
+<div class="bs" id="s10">
+  <div class="ey"><span class="sn">10</span><span class="pp p3" style="color:var(--o);border:1px solid var(--o)">Phase 3</span></div>
+  <h2>Batch Engine <span style="color:var(--g);font-size:14px;">NEW</span></h2>
+  <p class="sd">Most real projects have 10–50 samples. The batch engine lets a researcher say "run this analysis on all samples and compare" without triggering 50 individual queries. Built on Celery with Redis as the broker.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"In spatialMind/batch/, implement a BatchEngine using Celery. A batch job takes a query + list of dataset_ids, fans out to parallel SpatialAgent.run() calls (max 8 concurrent), collects results, runs multi_sample_comparison automatically, and generates a BatchReport. Expose job status via /batch/{job_id}/status endpoint. Failed samples are flagged but do not abort the batch."</p>
+  </div>
+<pre class="y"><span class="c"># spatialMind/batch/engine.py</span>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">BatchJob</span>:
+    job_id: str
+    query: str
+    dataset_ids: list[str]
+    status: <span class="t">Enum</span>[pending, running, partial, complete, failed]
+    results: dict[str, <span class="t">AgentResponse</span>]   <span class="c"># dataset_id → result</span>
+    failed_samples: dict[str, str]        <span class="c"># dataset_id → error message</span>
+    comparison_result: <span class="t">Any</span> | <span class="s">None</span>        <span class="c"># multi_sample_comparison output</span>
+    batch_report_path: str | <span class="s">None</span>
+    created_at: <span class="t">datetime</span>
+    completed_at: <span class="t">datetime</span> | <span class="s">None</span>
+
+<span class="c"># Celery task</span>
+<span class="k">@app.task</span>(bind=<span class="s">True</span>, max_retries=<span class="s">2</span>)
+<span class="k">def</span> <span class="fn">run_sample_task</span>(self, dataset_id: str, query: str, job_id: str):
+    <span class="c"># runs SpatialAgent.run() for one sample</span>
+    <span class="c"># updates job progress in Redis</span>
+    <span class="c"># on failure: marks sample failed, does NOT raise</span>
+    ...
+</pre>
+</div>
+
+<!-- S11 VISUALIZATION -->
+<div class="bs" id="s11">
+  <div class="ey"><span class="sn">11</span><span class="pp p4" style="color:var(--p);border:1px solid var(--p)">Phase 4</span></div>
+  <h2>Visualization Layer — 15 Types</h2>
+  <p class="sd">v1 had 6 generic plots. v2 has 15 visualization types organized by modality — each renderer knows what data type it expects and produces both a static PNG (publication-ready) and an interactive Plotly/Vitessce HTML (exploration). A VizRouter dispatches to the right renderer automatically.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"In spatialMind/viz/, implement a VizRouter and all 15 visualization functions. The router selects the right viz based on tool output type + data modality. Each function outputs two files: a high-res PNG (300dpi, publication-ready) and an interactive HTML. For spatial plots, always include a scalebar. For statistical plots, always show effect size alongside p-value."</p>
+  </div>
+
+  <p style="color:var(--t3);font-size:10px;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">Transcriptomics (RNA)</p>
+  <div class="vg">
+    <div class="vc"><div class="vc-n">spatial_scatter</div><div class="vc-d">Cells/spots on tissue coords, colored by cell type or continuous value. Scalebar required.</div><div class="vc-tags"><span class="vtag">Visium</span><span class="vtag">MERFISH</span></div></div>
+    <div class="vc"><div class="vc-n">expression_overlay</div><div class="vc-d">Gene expression heatmap over tissue. Multi-gene as separate panels or RGB composite.</div><div class="vc-tags"><span class="vtag">Visium</span><span class="vtag">MERFISH</span></div></div>
+    <div class="vc"><div class="vc-n">neighborhood_clustermap</div><div class="vc-d">Cell-type co-localization matrix. Significance stars. Hierarchical clustering of rows/cols.</div><div class="vc-tags"><span class="vtag">all RNA</span></div></div>
+    <div class="vc"><div class="vc-n">spatial_gene_program_map</div><div class="vc-d">NMF program activity across tissue. Each program as separate panel with top-5 genes labeled.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">Visium</span></div></div>
+    <div class="vc"><div class="vc-n">trajectory_umap_spatial</div><div class="vc-d">Side-by-side: UMAP colored by pseudotime + spatial scatter colored by pseudotime.</div><div class="vc-tags"><span class="vtag">RNA</span></div></div>
+    <div class="vc"><div class="vc-n">volcano_plot</div><div class="vc-d">DE results. Top genes labeled. Color by significance × effect size. logFC on x, -log10p on y.</div><div class="vc-tags"><span class="vtag">DE results</span></div></div>
+  </div>
+
+  <p style="color:var(--t3);font-size:10px;letter-spacing:2px;text-transform:uppercase;margin:16px 0 8px;">Protein Imaging (IMC / CODEX)</p>
+  <div class="vg">
+    <div class="vc"><div class="vc-n">protein_composite_image</div><div class="vc-d">Multi-channel protein overlay on tissue. Up to 6 channels as RGB+opacity composites. Channel selector in interactive version.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">IMC</span><span class="vtag">CODEX</span></div></div>
+    <div class="vc"><div class="vc-n">cell_phenotype_map</div><div class="vc-d">Cells colored by FlowSOM phenotype cluster on tissue. Donut chart of cluster proportions inset.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">IMC</span><span class="vtag">CODEX</span></div></div>
+    <div class="vc"><div class="vc-n">protein_coexpression_heatmap</div><div class="vc-d">Pairwise protein correlation heatmap. Hierarchical clustering. Annotated with known co-expression biology.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">IMC</span><span class="vtag">CODEX</span></div></div>
+  </div>
+
+  <p style="color:var(--t3);font-size:10px;letter-spacing:2px;text-transform:uppercase;margin:16px 0 8px;">Chromatin (ATAC)</p>
+  <div class="vg">
+    <div class="vc"><div class="vc-n">accessibility_spatial_map</div><div class="vc-d">Chromatin accessibility score per spot on tissue. Gene-linked peaks overlaid on expression.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">ATAC</span></div></div>
+    <div class="vc"><div class="vc-n">motif_enrichment_dotplot</div><div class="vc-d">Top enriched TF motifs per spatial cluster. Dot size = -log10p, color = enrichment score.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">ATAC</span></div></div>
+  </div>
+
+  <p style="color:var(--t3);font-size:10px;letter-spacing:2px;text-transform:uppercase;margin:16px 0 8px;">Multi-sample & Tumor</p>
+  <div class="vg">
+    <div class="vc"><div class="vc-n">multi_sample_composition</div><div class="vc-d">Stacked bar per sample showing cell-type proportions. Statistical comparison brackets between groups.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">batch</span></div></div>
+    <div class="vc"><div class="vc-n">cnv_heatmap</div><div class="vc-d">Inferred CNV profile per cell (rows) × chromosome (cols). Tumor vs normal cells annotated. Spatial map of CNV score inset.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">tumor</span></div></div>
+    <div class="vc"><div class="vc-n">tumor_microenvironment_summary</div><div class="vc-d">Radial composition chart of TME components (tumor, immune, stroma, vasculature) + spatial map of zones.</div><div class="vc-tags"><span class="vtag new">NEW</span><span class="vtag">tumor</span></div></div>
+  </div>
+</div>
+
+<!-- S12 REPORT GENERATOR -->
+<div class="bs" id="s12">
+  <div class="ey"><span class="sn">12</span><span class="pp p4" style="color:var(--p);border:1px solid var(--p)">Phase 4</span></div>
+  <h2>Report Generator <span style="color:var(--g);font-size:14px;">MAJOR UPGRADE</span></h2>
+  <p class="sd">v1 report = one text string. v2 generates a structured, multi-section HTML report (exportable to PDF) that a researcher can send to a PI or attach to a manuscript. Sections are auto-generated from the tool trace and results — the LLM writes interpretations per section, not just one final summary.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"In spatialMind/viz/report/, implement a ReportBuilder that takes an AgentResponse (or BatchJobResult) and generates a full HTML report. Structure: Executive Summary, Data Quality, Methods, Results (one subsection per tool run), Figures Gallery, Statistical Summary table, and Appendix (full provenance). Export to PDF via WeasyPrint. Each section is independently generated by a separate LLM call with section-specific context."</p>
+  </div>
+
+  <div class="report-preview">
+    <div class="rp-title">Report Structure Preview — what gets generated</div>
+    <div class="rp-section">
+      <div class="rp-label">1 · Executive Summary</div>
+      <div class="rp-content">LLM-generated 3–5 sentence summary of key findings. Includes: primary biological conclusion, statistical confidence, and one recommended follow-up experiment. Written for a PI-level audience.</div>
+    </div>
+    <div class="rp-section">
+      <div class="rp-label">2 · Data Quality Report</div>
+      <div class="rp-content">QC dashboard embedded. Filtration waterfall. Per-sample quality flags. <span class="rp-stat">n=12,450 spots passed QC</span> <span class="rp-stat">median UMI: 3,241</span> <span class="rp-stat">2 samples flagged: low spot density</span></div>
+    </div>
+    <div class="rp-section">
+      <div class="rp-label">3 · Methods</div>
+      <div class="rp-content">Auto-generated methods section with exact software versions, parameter values, and citations. Ready to paste into a manuscript Methods section. Formatted as: "Cell type deconvolution was performed using Cell2location v0.1.3 (Kleshchevnikov et al. 2022) with [params]..."</div>
+    </div>
+    <div class="rp-section">
+      <div class="rp-label">4 · Results (per tool)</div>
+      <div class="rp-content">One subsection per tool executed. Each contains: figure, statistical output table, LLM interpretation paragraph. Example: <span class="rp-stat">CD8+ T cells: z-score 3.4</span> <span class="rp-stat">p &lt; 0.001</span> <span class="rp-stat">immune-excluded phenotype</span></div>
+    </div>
+    <div class="rp-section">
+      <div class="rp-label">5 · Figures Gallery</div>
+      <div class="rp-content">All figures at full resolution with captions. Interactive HTML versions linked. Download individual figures as SVG/PNG.</div>
+    </div>
+    <div class="rp-section">
+      <div class="rp-label">6 · Statistical Summary Table</div>
+      <div class="rp-content">All computed statistics in one table: metric, value, test used, sample size, p-value, adjusted p-value, effect size. Machine-readable CSV export included.</div>
+    </div>
+    <div class="rp-section">
+      <div class="rp-label">7 · Appendix — Full Provenance</div>
+      <div class="rp-content">Complete tool trace with timestamps. All parameter values. Software version manifest. Reproducibility hash. "To reproduce: spatialMind replay --run-id {uuid}"</div>
+    </div>
+  </div>
+
+<pre class="p"><span class="c"># spatialMind/viz/report/builder.py</span>
+<span class="k">class</span> <span class="t">ReportBuilder</span>:
+    <span class="k">def</span> <span class="fn">build</span>(
+        self,
+        response: <span class="t">AgentResponse</span> | <span class="t">BatchJobResult</span>,
+        format: <span class="t">Literal</span>[<span class="s">"html"</span>, <span class="s">"pdf"</span>, <span class="s">"both"</span>] = <span class="s">"both"</span>
+    ) -> <span class="t">ReportPaths</span>:
+        sections = [
+            self.<span class="fn">_executive_summary</span>(response),   <span class="c"># LLM call</span>
+            self.<span class="fn">_data_quality</span>(response),         <span class="c"># from IngestionReport</span>
+            self.<span class="fn">_methods_text</span>(response),          <span class="c"># LLM call with citations</span>
+            self.<span class="fn">_results_per_tool</span>(response),      <span class="c"># LLM call per tool</span>
+            self.<span class="fn">_figures_gallery</span>(response),       <span class="c"># embed figures</span>
+            self.<span class="fn">_stats_table</span>(response),           <span class="c"># structured extraction</span>
+            self.<span class="fn">_provenance_appendix</span>(response),   <span class="c"># from RunRecord</span>
+        ]
+        <span class="k">return</span> self.<span class="fn">_render</span>(sections, format)
+</pre>
+</div>
+
+<!-- S13 STORAGE -->
+<div class="bs" id="s13">
+  <div class="ey"><span class="sn">13</span><span class="pp p4" style="color:var(--p);border:1px solid var(--p)">Phase 4</span></div>
+  <h2>Storage & Provenance</h2>
+  <p class="sd">Same RunRecord architecture as v1, extended for batch jobs, fusion datasets, and report artifacts. Add a CLI replay command.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"Extend spatialMind/storage/ RunRecord to include batch_job_id and fusion_dataset_key fields. Add a ReportRecord table for generated reports. Implement `spatialMind replay --run-id {uuid}` CLI command that fully reconstructs and re-runs any past analysis with identical parameters."</p>
+  </div>
+</div>
+
+<!-- S14 API -->
+<div class="bs" id="s14">
+  <div class="ey"><span class="sn">14</span><span class="pp p4" style="color:var(--p);border:1px solid var(--p)">Phase 4</span></div>
+  <h2>API & CLI — Extended</h2>
+  <p class="sd">Add batch endpoints, QC approval gate, report download, and replay to the v1 API.</p>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Method</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>POST /sessions</td><td class="dim">POST</td><td class="dim">v1 — unchanged</td></tr>
+      <tr><td>/sessions/{id}/approve-qc</td><td class="dim">POST</td><td class="muted">NEW — required before any analysis</td></tr>
+      <tr><td>/sessions/{id}/query</td><td class="dim">POST</td><td class="dim">v1 — unchanged</td></tr>
+      <tr><td>/sessions/{id}/correct</td><td class="dim">POST</td><td class="dim">v1 — unchanged</td></tr>
+      <tr><td>/batch/jobs</td><td class="dim">POST</td><td class="muted">NEW — submit multi-sample batch job</td></tr>
+      <tr><td>/batch/jobs/{id}/status</td><td class="dim">GET</td><td class="muted">NEW — poll job progress</td></tr>
+      <tr><td>/batch/jobs/{id}/report</td><td class="dim">GET</td><td class="muted">NEW — download batch report</td></tr>
+      <tr><td>/runs/{run_id}/report</td><td class="dim">GET</td><td class="muted">NEW — download HTML or PDF report</td></tr>
+      <tr><td>/runs/{run_id}/replay</td><td class="dim">POST</td><td class="muted">NEW — re-run with same parameters</td></tr>
+      <tr><td>/datasets</td><td class="dim">POST</td><td class="dim">v1 — unchanged</td></tr>
+      <tr><td>/health</td><td class="dim">GET</td><td class="dim">v1 — unchanged</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- S15 FRONTEND -->
+<div class="bs" id="s15">
+  <div class="ey"><span class="sn">15</span><span class="pp p5" style="color:var(--y);border:1px solid var(--y)">Phase 5</span></div>
+  <h2>Frontend UI — Upgraded</h2>
+  <p class="sd">v1 had three panels. v2 adds: a QC dashboard view, a batch job tracker, a report viewer with PDF export, and a multi-modal data browser that shows what modalities are loaded and their fusion status.</p>
+  <div class="pb">
+    <div class="pb-l">Prompt for Claude Code</div>
+    <p>"Upgrade frontend/ to add four new views: (1) QC Dashboard view — displays QCReport before allowing analysis, with Approve button that calls /approve-qc, (2) Batch Tracker — shows job progress per sample with a live status grid, (3) Report Viewer — renders the HTML report inline with PDF download button, (4) Modality Browser — sidebar widget showing loaded data types, fusion status, and sample count."</p>
+  </div>
+  <div class="tl">
+    <div class="task"><div class="task-box"></div><div><div class="task-title">QC gate UI</div><div class="task-detail">Full-screen QC dashboard shown after upload. Cannot proceed until researcher clicks "Approve QC". Warnings shown as dismissable banners.</div></div></div>
+    <div class="task"><div class="task-box"></div><div><div class="task-title">Batch job tracker</div><div class="task-detail"><span class="new">NEW</span> Grid of sample cards, each showing status (queued / running / done / failed). Failed samples show error inline. Overall progress bar.</div></div></div>
+    <div class="task"><div class="task-box"></div><div><div class="task-title">Inline report viewer</div><div class="task-detail"><span class="new">NEW</span> Renders HTML report in right panel. Section navigation. Download PDF button. Share link button (generates signed S3 URL).</div></div></div>
+    <div class="task"><div class="task-box"></div><div><div class="task-title">Modality browser</div><div class="task-detail"><span class="new">NEW</span> Sidebar widget: icons for each loaded modality (RNA, Protein, ATAC, Image). Shows fusion status. Click to see per-modality metadata.</div></div></div>
+    <div class="task"><div class="task-box"></div><div><div class="task-title">Statistics table view</div><div class="task-detail"><span class="new">NEW</span> Sortable, filterable table of all computed statistics from the current session. CSV export. Linked to the figure that generated each stat.</div></div></div>
+  </div>
+</div>
+
+<!-- S16 DEPLOY -->
+<div class="bs" id="s16">
+  <div class="ey"><span class="sn">16</span><span class="pp p5" style="color:var(--y);border:1px solid var(--y)">Phase 5</span></div>
+  <h2>Deploy & Monitor</h2>
+  <div class="dg">
+    <div class="dc">
+      <div class="dc-t" style="color:var(--g)">Infrastructure</div>
+      <div class="di">Docker Compose (local)</div>
+      <div class="di">Kubernetes (cloud)</div>
+      <div class="di">GPU node pool (Cell2location, Cellpose)</div>
+      <div class="di">Celery workers (8 concurrent)</div>
+      <div class="di">MinIO → S3 in prod</div>
+      <div class="di">Nginx + rate limiting</div>
+    </div>
+    <div class="dc">
+      <div class="dc-t" style="color:var(--b)">Observability</div>
+      <div class="di">Structured JSON logs (loguru)</div>
+      <div class="di">Prometheus + Grafana</div>
+      <div class="di">Track: tool selection distribution</div>
+      <div class="di">Track: p90 per tool runtime</div>
+      <div class="di">Track: correction rate per tool</div>
+      <div class="di">Alert: graceful-fail rate > 15%</div>
+    </div>
+    <div class="dc">
+      <div class="dc-t" style="color:var(--o)">Pre-deploy Gates</div>
+      <div class="di">Eval suite overall ≥ 0.85</div>
+      <div class="di">Graceful-fail score ≥ 0.95</div>
+      <div class="di">All Tier 1 cases passing</div>
+      <div class="di">Report generates without errors</div>
+      <div class="di">Batch engine: 10-sample test</div>
+      <div class="di">Sign-off: 2 wet-lab users</div>
+    </div>
+  </div>
+  <div class="pb orange">
+    <div class="pb-l">Final note for Claude Code</div>
+    <p>"Run the full eval suite after each section is complete, not just at the end. If tool_selection accuracy drops below 0.80 at any point, stop and fix the system prompt or tool descriptions before proceeding. The correction rate metric in production tells you which tools biologists trust least — those are the ones to improve first."</p>
+  </div>
+</div>
+
+</main>
+</div>
+</body>
+</html>

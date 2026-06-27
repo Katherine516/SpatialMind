@@ -1,0 +1,1 @@
+{"id":"MVP-001","tier":1,"query":"QC and cluster this scRNA dataset and find markers for each cluster.","dataset":"data/demo_manifest.json","expected_tools":["qc_and_cluster","marker_detection"],"ground_truth":{"assay":"scrna"},"dimension":"mvp_scrna","notes":"v7 scRNA lite backbone."}

@@ -1,0 +1,1 @@
+{"id":"TC-003","tier":1,"query":"What cell types are present in BRCA_04?","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation"],"ground_truth":{"summary_expected":true},"dimension":"tool_selection","notes":"Cell-type inventory."}

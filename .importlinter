@@ -1,0 +1,36 @@
+[importlinter]
+root_package = spatialmind
+
+[importlinter:contract:contracts_keystone]
+name = contracts must not import layer packages
+type = forbidden
+source_modules =
+    spatialmind.contracts
+forbidden_modules =
+    spatialmind.agent
+    spatialmind.api
+    spatialmind.batch
+    spatialmind.ingestion
+    spatialmind.memory
+    spatialmind.storage
+    spatialmind.tools
+    spatialmind.viz
+
+[importlinter:contract:tools_do_not_import_agent]
+name = tools must not import the agent or API
+type = forbidden
+source_modules =
+    spatialmind.tools
+forbidden_modules =
+    spatialmind.agent
+    spatialmind.api
+
+[importlinter:contract:viz_storage_do_not_import_agent]
+name = viz and storage are pure consumers
+type = forbidden
+source_modules =
+    spatialmind.viz
+    spatialmind.storage
+forbidden_modules =
+    spatialmind.agent
+    spatialmind.api

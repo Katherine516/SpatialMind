@@ -1,0 +1,1 @@
+{"id":"TC-010","tier":2,"query":"Run ligand receptor signaling analysis between tumor and endothelial cells","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation","ligand_receptor_analysis"],"ground_truth":{"lr_expected":true},"dimension":"tool_selection","notes":"Communication query."}

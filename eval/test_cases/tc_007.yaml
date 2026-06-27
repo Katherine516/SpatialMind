@@ -1,0 +1,1 @@
+{"id":"TC-007","tier":2,"query":"Find genes upregulated in CD8+ T cells vs tumor cells","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation","differential_expression"],"ground_truth":{"de_expected":true},"dimension":"tool_selection","notes":"Differential expression query."}

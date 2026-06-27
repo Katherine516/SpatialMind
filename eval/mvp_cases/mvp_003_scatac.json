@@ -1,0 +1,1 @@
+{"id":"MVP-003","tier":1,"query":"Cluster this scATAC data and find gene-activity markers per cluster.","dataset":"data/demo_manifest.json","expected_tools":["qc_and_cluster","marker_detection"],"ground_truth":{"assay":"scatac","honesty":"accessibility_inferred"},"dimension":"mvp_scatac","notes":"v7 scATAC lite with gene-activity markers only."}

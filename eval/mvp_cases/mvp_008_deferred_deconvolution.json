@@ -1,0 +1,1 @@
+{"id":"MVP-008","tier":1,"query":"Run deconvolution on this MVP dataset.","dataset":"data/demo_manifest.json","expected_tools":[],"ground_truth":{"no_analysis_expected":true},"dimension":"mvp_refusal","notes":"Cell2location deconvolution is deferred to v1.0."}

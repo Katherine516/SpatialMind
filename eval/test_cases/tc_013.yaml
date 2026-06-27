@@ -1,0 +1,1 @@
+{"id":"TC-013","tier":1,"query":"Analyze this","dataset":"data/demo_manifest.json","expected_tools":[],"ground_truth":{"clarification_expected":true},"dimension":"ambiguity","notes":"Should ask a clarifying question before tools."}

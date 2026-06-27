@@ -1,0 +1,1 @@
+{"id":"TC-011","tier":2,"query":"Infer a trajectory or pseudotime from CD8+ T cells across tissue","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation","trajectory_inference"],"ground_truth":{"trajectory_expected":true},"dimension":"tool_selection","notes":"Trajectory query."}

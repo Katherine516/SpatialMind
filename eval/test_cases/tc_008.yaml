@@ -1,0 +1,1 @@
+{"id":"TC-008","tier":2,"query":"Discover spatial clusters or tissue domains in BRCA_04","dataset":"data/demo_manifest.json","expected_tools":["spatial_clustering"],"ground_truth":{"cluster_expected":true},"dimension":"tool_selection","notes":"Unsupervised domains."}

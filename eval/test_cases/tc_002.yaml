@@ -1,0 +1,1 @@
+{"id":"TC-002","tier":1,"query":"Map tumor cells in sample BRCA_04","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation"],"ground_truth":{"plot_type":"spatial_scatter"},"dimension":"tool_selection","notes":"Known cell-type map."}

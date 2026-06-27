@@ -1,0 +1,1 @@
+{"id":"MVP-002","tier":2,"query":"Run scRNA trajectory inference after QC and annotation.","dataset":"data/demo_manifest.json","expected_tools":[],"ground_truth":{"assay":"scrna","no_analysis_expected":true},"dimension":"mvp_refusal","notes":"Trajectory is deferred to v0.5 in v7."}

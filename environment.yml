@@ -1,0 +1,17 @@
+name: spatialmind
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - h5py
+  - numpy
+  - pandas
+  - scipy
+  - pip:
+      - -e .[full,dev]
+      - igraph
+      - leidenalg
+      - matplotlib
+      - pyarrow
+      - scikit-learn

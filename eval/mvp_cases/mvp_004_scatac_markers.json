@@ -1,0 +1,1 @@
+{"id":"MVP-004","tier":2,"query":"For this scATAC dataset, run chromVAR motif activity.","dataset":"data/demo_manifest.json","expected_tools":[],"ground_truth":{"assay":"scatac","honesty":"motif_deferred","no_analysis_expected":true},"dimension":"mvp_refusal","notes":"chromVAR/motif activity is deferred to v0.5 in v7."}

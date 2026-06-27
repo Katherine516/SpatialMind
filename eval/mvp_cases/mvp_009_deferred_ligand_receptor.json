@@ -1,0 +1,1 @@
+{"id":"MVP-009","tier":1,"query":"Run ligand receptor analysis between tumor and endothelial cells.","dataset":"data/demo_manifest.json","expected_tools":[],"ground_truth":{"no_analysis_expected":true},"dimension":"mvp_refusal","notes":"Ligand-receptor analysis is deferred to v1.0."}

@@ -1,0 +1,1 @@
+{"id":"TC-015","tier":2,"query":"Compare macrophage regions and tumor regions for differential expression","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation","differential_expression"],"ground_truth":{"comparative":true},"dimension":"tool_selection","notes":"Comparative expression query."}

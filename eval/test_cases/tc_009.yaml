@@ -1,0 +1,1 @@
+{"id":"TC-009","tier":2,"query":"Estimate cell type abundance proportions by region","dataset":"data/demo_manifest.json","expected_tools":["spatial_deconvolution"],"ground_truth":{"proportions_expected":true},"dimension":"tool_selection","notes":"Prototype uses labels as proportions."}

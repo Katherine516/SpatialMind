@@ -1,0 +1,1 @@
+{"id":"TC-012","tier":1,"query":"Show CD8+ T cells and test whether they are co-localized with tumor cells","dataset":"data/demo_manifest.json","expected_tools":["cell_type_annotation","neighborhood_enrichment"],"ground_truth":{"compound_query":true},"dimension":"tool_selection","notes":"Compound visualization/stat query."}

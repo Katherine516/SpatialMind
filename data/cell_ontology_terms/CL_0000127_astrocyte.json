@@ -1,0 +1,154 @@
+{
+  "iri": "http://purl.obolibrary.org/obo/CL_0000127",
+  "lang": "en",
+  "description": [
+    "Astrocytes are reportedly CD68-negative, CD121a-positive, CD184-positive, CD192-positive, CRF-positive, EGFR-positive, GFAP-positive, GLUT1-positive, MBP-negative, and NGFR-positive.",
+    "A class of large neuroglial (macroglial) cells in the central nervous system - the largest and most numerous neuroglial cells in the brain and spinal cord. Astrocytes (from 'star' cells) are irregularly shaped with many long processes, including those with 'end feet' which form the glial (limiting) membrane and directly and indirectly contribute to the blood-brain barrier. They regulate the extracellular ionic and chemical environment, and 'reactive astrocytes' (along with microglia) respond to injury."
+  ],
+  "synonyms": [
+    "astrocytic glia"
+  ],
+  "annotation": {
+    "database_cross_reference": [
+      "BTO:0000099",
+      "CALOHA:TS-0060",
+      "FMA:54537",
+      "ZFA:0009075"
+    ]
+  },
+  "label": "astrocyte",
+  "ontology_name": "cl",
+  "ontology_prefix": "CL",
+  "ontology_iri": "http://purl.obolibrary.org/obo/cl.owl",
+  "is_obsolete": false,
+  "term_replaced_by": null,
+  "is_defining_ontology": true,
+  "has_children": true,
+  "is_root": false,
+  "short_form": "CL_0000127",
+  "obo_id": "CL:0000127",
+  "in_subset": [
+    "cellxgene_subset",
+    "human_subset",
+    "mouse_subset",
+    "human_reference_atlas"
+  ],
+  "obo_definition_citation": [
+    {
+      "definition": "A class of large neuroglial (macroglial) cells in the central nervous system - the largest and most numerous neuroglial cells in the brain and spinal cord. Astrocytes (from 'star' cells) are irregularly shaped with many long processes, including those with 'end feet' which form the glial (limiting) membrane and directly and indirectly contribute to the blood-brain barrier. They regulate the extracellular ionic and chemical environment, and 'reactive astrocytes' (along with microglia) respond to injury.",
+      "oboXrefs": [
+        {
+          "database": "GOC",
+          "id": "dsd",
+          "description": null,
+          "url": null
+        },
+        {
+          "database": "GOC",
+          "id": "tfm",
+          "description": null,
+          "url": null
+        },
+        {
+          "database": "MESH",
+          "id": "D001253",
+          "description": null,
+          "url": "http://id.nlm.nih.gov/mesh/D001253"
+        },
+        {
+          "database": "PMID",
+          "id": "11746784",
+          "description": null,
+          "url": "https://pubmed.ncbi.nlm.nih.gov/11746784"
+        },
+        {
+          "database": "PMID",
+          "id": "12162730",
+          "description": null,
+          "url": "https://pubmed.ncbi.nlm.nih.gov/12162730"
+        },
+        {
+          "database": "PMID",
+          "id": "12898703",
+          "description": null,
+          "url": "https://pubmed.ncbi.nlm.nih.gov/12898703"
+        },
+        {
+          "database": "PMID",
+          "id": "20942978",
+          "description": null,
+          "url": "https://pubmed.ncbi.nlm.nih.gov/20942978"
+        },
+        {
+          "database": null,
+          "id": "http://en.wikipedia.org/wiki/Astrocyte",
+          "description": null,
+          "url": "http://en.wikipedia.org/wiki/Astrocyte"
+        }
+      ]
+    }
+  ],
+  "obo_xref": [
+    {
+      "database": "BTO",
+      "id": "0000099",
+      "description": null,
+      "url": "http://purl.obolibrary.org/obo/BTO_0000099"
+    },
+    {
+      "database": "CALOHA",
+      "id": "TS-0060",
+      "description": null,
+      "url": "https://www.nextprot.org/term/TS-0060"
+    },
+    {
+      "database": "FMA",
+      "id": "54537",
+      "description": null,
+      "url": "https://www.ebi.ac.uk/ols4/ontologies/fma/terms?obo_id=FMA:54537"
+    },
+    {
+      "database": "ZFA",
+      "id": "0009075",
+      "description": null,
+      "url": "https://zfin.org/action/ontology/term/ZFA:0009075"
+    }
+  ],
+  "obo_synonym": null,
+  "is_preferred_root": false,
+  "_links": {
+    "self": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127?lang=en"
+    },
+    "parents": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/parents"
+    },
+    "ancestors": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/ancestors"
+    },
+    "hierarchicalParents": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/hierarchicalParents"
+    },
+    "hierarchicalAncestors": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/hierarchicalAncestors"
+    },
+    "jstree": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/jstree"
+    },
+    "children": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/children"
+    },
+    "descendants": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/descendants"
+    },
+    "hierarchicalChildren": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/hierarchicalChildren"
+    },
+    "hierarchicalDescendants": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/hierarchicalDescendants"
+    },
+    "graph": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/cl/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCL_0000127/graph"
+    }
+  }
+}

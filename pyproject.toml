@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spatialmind"
+version = "0.1.0"
+description = "A validation-gated spatial omics analysis agent for Xenium, H5AD, and table workflows."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "SpatialMind" }]
+dependencies = []
+
+[project.optional-dependencies]
+full = [
+  "anndata",
+  "anthropic",
+  "celery[redis]",
+  "celltypist",
+  "cell2location",
+  "chromadb",
+  "decoupler<1.9",
+  "fastapi",
+  "flower",
+  "h5py",
+  "igraph",
+  "infercnvpy",
+  "leidenalg",
+  "liana",
+  "loguru",
+  "matplotlib",
+  "napari",
+  "numpy<2",
+  "omnipath",
+  "pandas",
+  "plotly",
+  "pyarrow",
+  "pydantic",
+  "pydantic-settings",
+  "reportlab",
+  "redis",
+  "scanpy",
+  "scikit-learn",
+  "scipy",
+  "scvi-tools",
+  "spatialDE",
+  "spatialdata",
+  "spatialdata-io",
+  "squidpy",
+  "vitessce",
+  "weasyprint",
+  "zarr",
+]
+dev = [
+  "import-linter",
+  "mypy",
+  "pre-commit",
+  "pytest",
+  "ruff",
+]
+
+[project.scripts]
+spatialmind = "spatialmind.cli:main"
+spatialmind-eval = "eval.runner:main"
+
+[tool.setuptools.packages.find]
+include = ["spatialmind*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_unused_ignores = true
