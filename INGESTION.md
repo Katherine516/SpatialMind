@@ -109,6 +109,29 @@ The loaded dataset metadata includes:
 
 This gives the agent an Explorer-style launch point while keeping manual annotation in specialist tools such as Xenium Explorer, QuPath, or napari.
 
+## Explorer-Lite Review Viewer
+
+SpatialMind can generate a local `explorer_lite_viewer.html` for any loaded Xenium directory or `experiment.xenium` file:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/build_xenium_explorer_lite.py \
+  --data "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs/experiment.xenium" \
+  --out outputs/xenium_brain_healthy_explorer_lite \
+  --max-records 1200
+```
+
+The viewer embeds the loaded cell map and supports:
+
+- color by current label, 10x graph cluster, or draft region,
+- label and cluster filters,
+- cell ID search and cell detail inspection,
+- rectangular cell selection,
+- draft ROI assignment and export as `cell_regions.csv`,
+- draft expert-label assignment and export as `expert_cell_labels.csv`,
+- linked Xenium asset inventory from `experiment.xenium`.
+
+The generated CSVs are review artifacts. They should be checked by a domain expert before being copied into the source Xenium folder and treated as validation inputs.
+
 ## Expert Label Tables
 
 The ingestion layer now preserves `cell_id` on records and can apply external expert or reference-transferred labels. Put one of these files inside a Xenium dataset folder:

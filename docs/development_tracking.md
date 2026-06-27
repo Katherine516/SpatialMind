@@ -1099,6 +1099,53 @@ Verification:
 - MVP eval passed 10/10 with mean score 1.0000.
 - Legacy eval passed 15/15 with mean score 1.0000.
 
+### Step 31: Explorer-Lite Xenium Review Viewer
+
+Status: Complete for local review preparation.
+
+Discussion and rationale:
+
+- The agent needed an internal tool closer to the daily Xenium Explorer review workflow.
+- A full Xenium Explorer replacement is not appropriate yet because morphology pyramid rendering, segmentation-boundary editing, and zarr-backed browsing need a dedicated frontend/backend.
+- The useful next step is a local HTML viewer that loads from the agent's Xenium ingestion contract and helps reviewers produce CSV validation inputs.
+
+Work completed:
+
+- Added `spatialmind/viz/explorer_lite.py` with `XeniumExplorerLiteViewer`.
+- Added `scripts/build_xenium_explorer_lite.py` for standalone viewer generation from a Xenium folder or `experiment.xenium`.
+- Wired the viewer into the validated Xenium pilot review artifacts as `explorer_lite_viewer.html`.
+- Added a unit test confirming the viewer includes review controls, CSV export names, embedded cells, and linked asset metadata.
+- Updated `README.md` and `INGESTION.md`.
+
+Supported now:
+
+- local static HTML viewer with embedded loaded cells,
+- color by current label, graph cluster, or draft region,
+- label and cluster filters,
+- cell ID search and selected-cell inspection,
+- rectangular cell selection,
+- draft ROI assignment and export as `cell_regions.csv`,
+- draft expert-label assignment and export as `expert_cell_labels.csv`,
+- linked Xenium asset inventory from `.xenium` metadata.
+
+Not implemented:
+
+- morphology image pyramid viewer,
+- segmentation-boundary-aware editing,
+- zarr-backed transcript/cell browser,
+- persistent multi-user annotation database,
+- direct writeback into source Xenium folders from the browser.
+
+Verification:
+
+- Standalone viewer generated for healthy brain from `data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs/experiment.xenium`.
+- Output viewer: `outputs/xenium_brain_healthy_explorer_lite/explorer_lite_viewer.html`.
+- Browser check rendered `1200` SVG cell points and all review/export controls.
+- Browser interaction selected `aaaaieod-1`, applied region `tumor_core`, and produced a valid CSV preview row.
+- Validated pilot generated `outputs/xenium_brain_healthy_pilot_explorer_lite/explorer_lite_viewer.html` as a review artifact.
+- Unit tests passed 47/47.
+- Import-linter passed with 3 contracts kept and 0 broken.
+
 ### Step 24: Glioblastoma Expert-Review Packet and Validation Gates
 
 Status: Complete for software implementation; blocked for biological validation until human-reviewed inputs are supplied.

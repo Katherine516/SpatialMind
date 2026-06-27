@@ -22,7 +22,7 @@ from spatialmind.pilot.claims import build_pilot_claim_ledger, claim_ledger_summ
 from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
-from spatialmind.viz import VisualizationLayer
+from spatialmind.viz import VisualizationLayer, XeniumExplorerLiteViewer
 
 
 DEFAULT_DATASET = "data/Human_Breast_Biomarkers_S1_Top_outs"
@@ -291,6 +291,13 @@ def _write_review_figures(dataset: SpatialDataset, output_dir: Path) -> List[str
     viz = VisualizationLayer()
     figures.append(viz.render_distribution_svg(dataset, str(output_dir), []))
     figures.append(viz.render_distribution_interactive_html(dataset, str(output_dir), []))
+    figures.append(
+        XeniumExplorerLiteViewer().render(
+            dataset,
+            str(output_dir),
+            dataset_path=str(dataset.metadata.get("analysis_dataset_path") or dataset.source_path),
+        )
+    )
     return figures
 
 

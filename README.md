@@ -80,6 +80,7 @@ Current capability status:
 | Tidy CSV/manifest ingestion | Ready | Useful for exported wet-lab/computational tables and demo fixtures. |
 | Direct FASTQ/BCL processing | Not in scope | Use platform pipelines first, then provide Xenium/AnnData/CSV outputs. |
 | Morphology image interpretation | Metadata/review support | Morphology files are tracked and review maps are produced; automated pathology interpretation is not claimed. |
+| Explorer-lite review UI | Ready for local review prep | Generates a browser-based cell map with filters, selection, cell inspection, ROI/label editing, and CSV export. |
 | Expert cell labels | Blocked until human review | Use `expert_cell_labels.csv`; review templates are generated. |
 | User ROI/tissue regions | Blocked until human review | Use `cell_regions.csv`; region templates are generated. |
 | Validated biological report | Conditionally ready | Runs only when label and region gates pass. Otherwise produces a comprehensive blocked/readiness/review report. |
@@ -108,16 +109,28 @@ Supported now:
 - cell table and coordinate loading,
 - H5 feature matrix loading,
 - panel and run metadata preservation,
-- report-ready provenance showing the `.xenium` file used as input.
+- report-ready provenance showing the `.xenium` file used as input,
+- Explorer-lite local HTML viewer for filtering, selecting cells, inspecting cell details, assigning draft ROI/labels, and exporting `cell_regions.csv` / `expert_cell_labels.csv`.
 
-Not yet a Xenium Explorer replacement:
+Still not a full Xenium Explorer replacement:
 
 - no full GUI image pyramid viewer,
-- no interactive manual ROI drawing inside SpatialMind,
-- no direct editing of expert labels from the report page,
+- no segmentation-boundary-aware image overlay editing,
+- no persistent browser-side label database,
 - no full zarr-backed image/cell browser.
 
-Recommended workflow: use Xenium Explorer, QuPath, or napari for manual review/ROI drawing, then let SpatialMind ingest the resulting label/region CSVs and generate the validated report.
+Recommended workflow: use the Explorer-lite viewer for fast cell-level review preparation and CSV export. Use Xenium Explorer, QuPath, or napari when morphology image context, segmentation boundaries, or pathology-grade ROI drawing are required, then let SpatialMind ingest the resulting label/region CSVs and generate the validated report.
+
+Build the viewer directly:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/build_xenium_explorer_lite.py \
+  --data "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs/experiment.xenium" \
+  --out outputs/xenium_brain_healthy_explorer_lite \
+  --max-records 1200
+```
+
+The validated pilot also writes `explorer_lite_viewer.html` into its output folder as a review artifact.
 
 ## Try It
 
@@ -269,6 +282,7 @@ Blocked validated-pilot runs still generate review-only visual artifacts:
 - `outputs/xenium_validated_pilot/review_cell_type_composition.svg`
 - `outputs/xenium_validated_pilot/spatial_distribution.svg`
 - `outputs/xenium_validated_pilot/spatial_distribution_interactive.html`
+- `outputs/xenium_validated_pilot/explorer_lite_viewer.html`
 
 To run the full local promotion workflow across everything under `data/`:
 

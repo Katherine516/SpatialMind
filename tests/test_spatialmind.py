@@ -40,7 +40,7 @@ from spatialmind.memory import PriorType, UserPriorStore
 from spatialmind.agent import build_xenium_mvp_plan, validate_tool_plan
 from spatialmind.planner import LLMReasoningLayer
 from spatialmind.promotion.local import build_local_promotion_report
-from spatialmind.viz import QCReportBuilder, VisualizationLayer, VizRouter
+from spatialmind.viz import QCReportBuilder, VisualizationLayer, VizRouter, XeniumExplorerLiteViewer
 from spatialmind.storage import StorageLayer
 from spatialmind.storage import index_run_records, verify_run_record
 from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_mvp_registry
@@ -648,6 +648,37 @@ class V2ScaffoldTests(unittest.TestCase):
             self.assertIn(">spatial1<", content)
             self.assertIn(">spatial2<", content)
             self.assertIn("Tumor cell", content)
+
+    def test_xenium_explorer_lite_viewer_exports_review_controls(self):
+        dataset = SpatialDataset(
+            sample_id="X1",
+            source_path="experiment.xenium",
+            modality="xenium_spatial_rna",
+            coordinate_system="microns",
+            records=[
+                SpotRecord("X1", 0.0, 0.0, "astrocyte", {"GFAP": 4.0, "AQP4": 2.0}, region="brain", cell_id="cell-a"),
+                SpotRecord("X1", 10.0, 8.0, "microglial cell", {"CX3CR1": 3.0}, region="brain", cell_id="cell-b"),
+            ],
+            metadata={
+                "xenium_explorer_assets": {
+                    "analysis_summary_filepath": {
+                        "relative_path": "analysis_summary.html",
+                        "resolved_path": "/tmp/analysis_summary.html",
+                        "exists": True,
+                    }
+                }
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = XeniumExplorerLiteViewer().render(dataset, tmp, dataset_path="experiment.xenium")
+            with open(path, encoding="utf-8") as handle:
+                content = handle.read()
+            self.assertIn("SpatialMind Explorer Lite", content)
+            self.assertIn("Export Regions", content)
+            self.assertIn("expert_cell_labels.csv", content)
+            self.assertIn("cell_regions.csv", content)
+            self.assertIn("cell-a", content)
+            self.assertIn("analysis_summary_filepath", content)
 
 
 class EvalHarnessTests(unittest.TestCase):
