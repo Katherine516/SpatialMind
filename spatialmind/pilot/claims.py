@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 from spatialmind.agent.grounding import ClaimGroundingChecker
 from spatialmind.contracts import BiologicalClaim
+from spatialmind.methods.reliability import build_claim_reliability_table
 from spatialmind.schemas import ToolResult
 
 
@@ -69,3 +70,7 @@ def claim_ledger_summary(ledger: List[Dict[str, Any]]) -> Dict[str, int]:
         status = str(item.get("status") or "unknown")
         counts[status] = counts.get(status, 0) + 1
     return counts
+
+
+def build_pilot_claim_reliability(payload: Dict[str, Any], results: List[ToolResult]) -> List[Dict[str, Any]]:
+    return build_claim_reliability_table(payload, results, method="weakest_link")

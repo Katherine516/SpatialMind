@@ -1146,6 +1146,105 @@ Verification:
 - Unit tests passed 47/47.
 - Import-linter passed with 3 contracts kept and 0 broken.
 
+### Step 32: v12 Claim-Level Reliability Scoring
+
+Status: Complete for conservative baseline; blocked for calibrated biological reliability until reviewed truth labels exist.
+
+Discussion and rationale:
+
+- The v12 plan makes claim reliability the central methodological contribution.
+- Reliability must be attached to each report claim, not averaged across the whole run.
+- The score should be interpretable enough for expert reviewers to see which evidence class limits a claim.
+- The current implementation therefore uses a transparent weakest-link baseline and refuses to fit a calibrated model without ground-truth claim correctness labels.
+
+Work completed:
+
+- Added typed reliability contracts in `spatialmind/contracts/reliability.py`.
+- Added `spatialmind/methods/reliability/` with claim scoring, S/A/P/R component scoring, weakest-link combination, and calibrated-combiner scaffolding.
+- Wired claim reliability into `spatialmind.pilot` so every pilot claim ledger entry receives:
+  - `S_statistical`
+  - `A_annotation`
+  - `P_panel`
+  - `R_spatial_robustness`
+  - final reliability score
+  - interpretation and provenance
+- Updated markdown and HTML validated-pilot reports with a Claim Reliability section.
+- Added `scripts/train_claim_reliability_local.py` for human-brain Xenium reliability/control runs.
+- Added tests for blocked biological claims and supported readiness claims.
+- Updated `README.md` and `docs/training_status.md`.
+
+Generated outputs:
+
+- `outputs/training/human_brain_claim_reliability_v12/claim_reliability_training_report.md`
+- `outputs/training/human_brain_claim_reliability_v12/claim_reliability_training_records.json`
+- `outputs/training/human_brain_claim_reliability_v12/claim_reliability_training_summary.json`
+- `outputs/training/human_brain_claim_reliability_v12/healthy_brain_pilot/validated_xenium_pilot_report.html`
+- `outputs/training/human_brain_claim_reliability_v12/glioblastoma_pilot/validated_xenium_pilot_report.html`
+
+Current result:
+
+- Human-brain reliability run generated 8 local claim/control records.
+- Local-control AUROC is 1.0000.
+- Calibrated model status is `not_fit`.
+- Biological claims remain blocked at reliability 0.0000 because expert labels and ROI regions are missing.
+- Non-biological readiness claims score 0.7500 because they are grounded in asset-readiness checks.
+
+Verification:
+
+- `PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache python3 -m compileall spatialmind/contracts/reliability.py spatialmind/methods scripts/train_claim_reliability_local.py spatialmind/pilot tests/test_spatialmind.py` passed.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_spatialmind.py'` passed 48/48 tests.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/train_claim_reliability_local.py --out outputs/training/human_brain_claim_reliability_v12 --max-records 800` completed successfully.
+
+### Step 33: Expert Claim-Truth Review Gate
+
+Status: Complete for software workflow; awaiting expert review for biological calibration.
+
+Discussion and rationale:
+
+- The next real step after v12 reliability scoring is not to fabricate labels; it is to collect auditable claim-level truth from an expert.
+- The agent now needs a concrete bridge from human review to calibrated reliability, including positive claims, negative/null claims, and provenance for why each claim is judged correct or unsupported.
+- The implementation creates that bridge while keeping calibration blocked until a completed review table exists.
+
+Work completed:
+
+- Added `spatialmind/review/claim_truth.py`.
+- Added `scripts/prepare_claim_reliability_review_packet.py`.
+- Added `spatialmind/methods/reliability/calibration.py`.
+- Updated `scripts/train_claim_reliability_local.py` to accept `--claim-truth`.
+- Added validation for reviewed claim-truth CSVs.
+- Added optional logistic calibration fitting when reviewed truth has both supported and unsupported claims.
+- Added tests for blocked incomplete review data and fitted reviewed calibration data.
+- Updated `README.md` and `docs/training_status.md`.
+
+Generated outputs:
+
+- `outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv`
+- `outputs/claim_reliability_review_packet_v12/README.md`
+- `outputs/claim_reliability_review_packet_v12/claim_truth_review_summary.json`
+- `outputs/claim_reliability_review_packet_v12/claim_truth_validation_report.json`
+- `outputs/claim_reliability_review_packet_v12/claim_truth_validation_report.md`
+- `outputs/claim_reliability_review_packet_v12/pilot_outputs/healthy_brain/validated_xenium_pilot_report.html`
+- `outputs/claim_reliability_review_packet_v12/pilot_outputs/glioblastoma/validated_xenium_pilot_report.html`
+- `outputs/training/human_brain_claim_reliability_review_gate_v12/claim_reliability_calibration_model.json`
+
+Current result:
+
+- Claim-truth draft rows: 11.
+- Reviewed calibration rows: 0.
+- Calibration status: `not_fit`.
+- Blockers:
+  - Need at least 4 reviewed calibration records.
+  - Need at least one reviewed supported/correct claim.
+  - Need at least one reviewed unsupported/false claim.
+
+Verification:
+
+- `PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache python3 -m compileall spatialmind/methods/reliability spatialmind/review scripts/prepare_claim_reliability_review_packet.py scripts/train_claim_reliability_local.py tests/test_spatialmind.py` passed.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_spatialmind.py'` passed 49/49 tests.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/prepare_claim_reliability_review_packet.py --out outputs/claim_reliability_review_packet_v12 --max-records 800` completed successfully.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/prepare_claim_reliability_review_packet.py --out outputs/claim_reliability_review_packet_v12 --validate-truth outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv` completed with expected block.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/train_claim_reliability_local.py --out outputs/training/human_brain_claim_reliability_review_gate_v12 --max-records 800 --claim-truth outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv` completed with expected `not_fit` calibration status.
+
 ### Step 24: Glioblastoma Expert-Review Packet and Validation Gates
 
 Status: Complete for software implementation; blocked for biological validation until human-reviewed inputs are supplied.

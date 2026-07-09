@@ -84,10 +84,87 @@ Current capability status:
 | Expert cell labels | Blocked until human review | Use `expert_cell_labels.csv`; review templates are generated. |
 | User ROI/tissue regions | Blocked until human review | Use `cell_regions.csv`; region templates are generated. |
 | Validated biological report | Conditionally ready | Runs only when label and region gates pass. Otherwise produces a comprehensive blocked/readiness/review report. |
+| Claim-level reliability scoring | Ready as conservative v12 baseline | Every report claim receives S/A/P/R component scores and a weakest-link reliability score. Calibrated reliability is blocked until expert-reviewed claim truth exists. |
 | LLM planning | Ready but optional | OpenAI/Anthropic adapters exist; LLM output remains locally validated before execution. |
 | Production multi-user deployment | Partial | API, batch scaffolding, and storage exist; auth, dataset allowlists, job queue hardening, and audit logs are still needed. |
 
 Bottom line: the agent is capable of ingesting supported wet-lab platform outputs and generating a comprehensive engineering/review report now. It becomes capable of generating a validated biological interpretation report after expert cell labels, ROI regions, and governance metadata are supplied.
+
+## Claim-Level Reliability
+
+The v12 agent adds a claim-level reliability layer. The scoring unit is one individual claim in the report, not the whole run. Each claim is decomposed into four interpretable components:
+
+- `S_statistical`: strength of statistical evidence, such as adjusted p-values, z-scores, or effect sizes.
+- `A_annotation`: expert-label or validated reference-label support, including coverage and confidence.
+- `P_panel`: whether the targeted panel contains enough markers to support the claim.
+- `R_spatial_robustness`: whether spatial evidence survives radius/graph/permutation checks.
+
+The current production-safe baseline is a weakest-link score:
+
+```text
+claim_reliability = min(S_statistical, A_annotation, P_panel, R_spatial_robustness)
+```
+
+This deliberately keeps unsupported biological claims at `0.0` when any required evidence class is missing. A calibrated logistic combiner is scaffolded, but it stays marked `not_fit` until the project has expert-reviewed spatial claim truth labels.
+
+Run the local human-brain reliability pass:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/train_claim_reliability_local.py \
+  --out outputs/training/human_brain_claim_reliability_v12 \
+  --max-records 800
+```
+
+Latest result on the local healthy-brain and glioblastoma Xenium datasets:
+
+- `8` claim/control records were generated.
+- AUROC on local refusal/null controls was `1.0000`.
+- Calibrated model status is `not_fit`.
+- Biological claims remain blocked at reliability `0.0000` because reviewed expert labels and ROI regions are missing.
+- Non-biological dataset-readiness claims score `0.7500` because they are supported by asset checks but are not biological findings.
+
+Generated artifacts:
+
+- `outputs/training/human_brain_claim_reliability_v12/claim_reliability_training_report.md`
+- `outputs/training/human_brain_claim_reliability_v12/claim_reliability_training_records.json`
+- `outputs/training/human_brain_claim_reliability_v12/healthy_brain_pilot/validated_xenium_pilot_report.html`
+- `outputs/training/human_brain_claim_reliability_v12/glioblastoma_pilot/validated_xenium_pilot_report.html`
+
+To turn this into a real calibrated reliability model, add reviewed `expert_cell_labels.csv`, reviewed `cell_regions.csv`, literature-anchored positive spatial claims, coordinate-permutation nulls, label-shuffle nulls, and a held-out cross-dataset validation split.
+
+Prepare the expert claim-truth review packet:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/prepare_claim_reliability_review_packet.py \
+  --out outputs/claim_reliability_review_packet_v12 \
+  --max-records 800
+```
+
+This writes:
+
+- `outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv`
+- `outputs/claim_reliability_review_packet_v12/README.md`
+- `outputs/claim_reliability_review_packet_v12/claim_truth_review_summary.json`
+- per-dataset pilot reports under `outputs/claim_reliability_review_packet_v12/pilot_outputs/`
+
+After a reviewer completes `reviewed_truth_label`, `use_for_calibration`, `truth_basis`, `source_citation`, and `reviewer_id`, validate the table:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/prepare_claim_reliability_review_packet.py \
+  --out outputs/claim_reliability_review_packet_v12 \
+  --validate-truth outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv
+```
+
+Then train the calibrated reliability model:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/train_claim_reliability_local.py \
+  --out outputs/training/human_brain_claim_reliability_review_gate_v12 \
+  --max-records 800 \
+  --claim-truth outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv
+```
+
+The current unreviewed draft correctly remains blocked: `0` reviewed calibration records, no positive reviewed claims, and no negative reviewed claims.
 
 ## Xenium Explorer-Style Entry Point
 

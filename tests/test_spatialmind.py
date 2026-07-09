@@ -51,12 +51,42 @@ from spatialmind.workflows import INTEGRATION_MODE, SCATAC_STANDALONE, SCRNA_STA
 from spatialmind.contracts import BiologicalClaim, CellByFeatureContract, CoreSpatialObject, ground_claim
 from spatialmind.schemas import SpatialDataset, SpotRecord
 from spatialmind.pilot import build_pilot_claim_ledger, pilot_gate
+from spatialmind.methods.reliability import build_claim_reliability_table, fit_claim_reliability_calibration
+from spatialmind.review import CLAIM_TRUTH_FIELDS, validate_claim_truth_table
 
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 DEMO = os.path.join(ROOT, "data", "demo_spatial.csv")
 MANIFEST = os.path.join(ROOT, "data", "demo_manifest.json")
 XENIUM_LYMPH = os.path.join(ROOT, "data", "Xenium lymph", "Xenium_V1_hLymphNode_nondiseased_section_outs")
+
+try:
+    import scanpy  # noqa: F401
+
+    _HAS_SCANPY = True
+except Exception:  # pragma: no cover - dependency-light environments
+    _HAS_SCANPY = False
+
+
+def _make_two_program_dataset():
+    """Two expression programs interleaved in space: expression clustering should
+    recover the programs while spatial clustering would mix them."""
+    records = []
+    for index in range(60):
+        program = "A" if index % 2 == 0 else "B"
+        other = "B" if program == "A" else "A"
+        genes = {}
+        for gene in range(6):
+            genes["%s_gene_%d" % (program, gene)] = 5.0 + float(index % 3)
+            genes["%s_gene_%d" % (other, gene)] = 0.0
+        # Programs alternate along x, so neighbors in space are always the other program.
+        records.append(SpotRecord("S1", float(index), 0.0, program, genes, cell_id="c%d" % index))
+    return SpatialDataset(
+        sample_id="S1",
+        source_path="synthetic",
+        modality="xenium_spatial_rna",
+        records=records,
+    )
 
 
 class PlannerTests(unittest.TestCase):
@@ -410,6 +440,176 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.quality_metrics.differential.n_significant.role, "statistical_evidence")
         self.assertIn("quality_metrics", result.metrics)
 
+    @unittest.skipUnless(_HAS_SCANPY, "scanpy required for expression clustering path")
+    def test_qc_and_cluster_defaults_to_expression_clustering_with_qc(self):
+        dataset = _make_two_program_dataset()
+        result = build_mvp_registry().get("qc_and_cluster").run(dataset, {})
+        metrics = result.metrics
+        self.assertEqual(metrics["engine"], "scanpy")
+        self.assertEqual(metrics["cluster_on"], "expression")
+        self.assertEqual(metrics["method"], "pca_neighbors_leiden")
+        self.assertTrue(str(metrics["representation"]).startswith("X_pca"))
+        # Two cleanly separated expression programs should not collapse to one cluster.
+        self.assertGreaterEqual(len(metrics["cluster_counts"]), 2)
+        qc = metrics["expression_qc"]
+        self.assertEqual(qc["n_cells"], 60)
+        self.assertEqual(qc["n_features"], 12)
+        self.assertGreater(qc["mean_total_counts"], 0.0)
+        self.assertGreater(qc["mean_features_per_cell"], 0.0)
+
+    @unittest.skipUnless(_HAS_SCANPY, "scanpy required for expression clustering path")
+    def test_qc_and_cluster_spatial_mode_is_opt_in(self):
+        dataset = _make_two_program_dataset()
+        result = build_mvp_registry().get("qc_and_cluster").run(dataset, {"cluster_on": "spatial"})
+        self.assertEqual(result.metrics["cluster_on"], "spatial")
+        self.assertEqual(result.metrics["method"], "spatial_neighbors_leiden")
+        self.assertEqual(result.metrics["representation"], "spatial")
+
+    def test_expression_matrix_excludes_qc_pseudo_features(self):
+        from spatialmind.tools.implementations import EXPRESSION_EXCLUDED_FEATURES, expression_feature_names
+
+        records = [
+            SpotRecord(
+                "S1",
+                float(index),
+                0.0,
+                "A" if index % 2 == 0 else "B",
+                {"CD8A": 2.0, "EPCAM": 1.0, "CELL_AREA": 500.0, "TOTAL_COUNTS": 300.0, "NUCLEUS_AREA": 90.0},
+                cell_id="c%d" % index,
+            )
+            for index in range(6)
+        ]
+        dataset = SpatialDataset(sample_id="S1", source_path="synthetic", modality="xenium_spatial_rna", records=records)
+        names = expression_feature_names(dataset)
+        self.assertIn("CD8A", names)
+        self.assertTrue(EXPRESSION_EXCLUDED_FEATURES.isdisjoint({name.upper() for name in names}))
+
+    def test_prototype_marker_detection_ignores_qc_pseudo_features(self):
+        records = [
+            SpotRecord("S1", 0.0, 0.0, "A", {"CD8A": 9.0, "EPCAM": 0.0, "CELL_AREA": 800.0, "TOTAL_COUNTS": 500.0}, cell_id="a"),
+            SpotRecord("S1", 1.0, 0.0, "B", {"CD8A": 0.0, "EPCAM": 8.0, "CELL_AREA": 20.0, "TOTAL_COUNTS": 15.0}, cell_id="b"),
+        ]
+        dataset = SpatialDataset(sample_id="S1", source_path="synthetic", modality="xenium_spatial_rna", records=records)
+        result = marker_detection(dataset, {"engine": "prototype", "group_key": "cell_type", "group1": "A", "group2": "B"})
+        genes = {row["gene"] for row in result.metrics["ranked_genes"]}
+        self.assertIn("CD8A", genes)
+        self.assertNotIn("CELL_AREA", genes)
+        self.assertNotIn("TOTAL_COUNTS", genes)
+
+    def test_neighborhood_robustness_summary_scores_stability(self):
+        from spatialmind.tools.implementations import summarize_neighborhood_robustness
+
+        def setting(n, pairs):
+            return {"n_neighs": n, "engine": "squidpy", "pairs": pairs}
+
+        stable = [
+            setting(6, [{"pair": "A | B", "zscore": 5.0}, {"pair": "A | C", "zscore": -3.0}]),
+            setting(10, [{"pair": "A | B", "zscore": 4.2}, {"pair": "A | C", "zscore": -2.5}]),
+        ]
+        stable_summary = summarize_neighborhood_robustness(stable, top_k=2)
+        self.assertEqual(stable_summary["status"], "computed")
+        self.assertEqual(stable_summary["mean_sign_agreement"], 1.0)
+        self.assertEqual(stable_summary["score"], 1.0)
+
+        flipped = [
+            setting(6, [{"pair": "A | B", "zscore": 5.0}, {"pair": "A | C", "zscore": -3.0}]),
+            setting(10, [{"pair": "A | B", "zscore": -4.0}, {"pair": "A | C", "zscore": 3.0}]),
+        ]
+        flipped_summary = summarize_neighborhood_robustness(flipped, top_k=2)
+        self.assertEqual(flipped_summary["mean_sign_agreement"], 0.0)
+        self.assertLess(flipped_summary["score"], stable_summary["score"])
+
+        # Prototype settings carry no z-scores, so robustness cannot be established.
+        proto = [{"n_neighs": 6, "engine": "prototype", "pairs": [{"pair": "A | B", "neighbor_count": 10}]}]
+        self.assertEqual(summarize_neighborhood_robustness(proto, top_k=2)["status"], "insufficient_settings")
+
+    def test_spatial_robustness_component_prefers_real_sweep(self):
+        from spatialmind.methods.reliability.scoring import _spatial_robustness_component
+
+        claim = {"claim_type": "spatial_colocalization", "status": "supported"}
+        payload = {
+            "spatial_robustness": {
+                "status": "computed",
+                "score": 0.82,
+                "mean_sign_agreement": 1.0,
+                "mean_topk_jaccard": 0.55,
+                "settings": [6, 10, 15],
+            }
+        }
+        component = _spatial_robustness_component(claim, payload, [])
+        self.assertEqual(component.status, "computed")
+        self.assertEqual(component.score, 0.82)
+        # Without a sweep, it falls back to the heuristic proxy (no crash, still a score).
+        fallback = _spatial_robustness_component(claim, {}, [])
+        self.assertIsNotNone(fallback.score)
+
+    def test_pilot_report_renders_per_group_markers(self):
+        from spatialmind.pilot.xenium import _marker_group_markdown, _marker_group_html
+        from spatialmind.schemas import ToolResult
+
+        result = ToolResult(
+            tool_name="marker_detection",
+            summary="Detected one-vs-rest marker candidates for 2 groups.",
+            metrics={
+                "mode": "one_vs_rest",
+                "markers_by_group": {
+                    "T cell": [{"gene": "CD8A"}, {"gene": "CD3D"}],
+                    "Tumor cell": [{"gene": "EPCAM"}],
+                },
+            },
+        )
+        md = "\n".join(_marker_group_markdown(result))
+        self.assertIn("Top markers (one-vs-rest)", md)
+        self.assertIn("CD8A", md)
+        self.assertIn("EPCAM", md)
+        self.assertIn("CD8A", _marker_group_html(result))
+        # Non-marker tools contribute no marker table.
+        other = ToolResult(tool_name="annotation", summary="x", metrics={})
+        self.assertEqual(_marker_group_markdown(other), [])
+        self.assertEqual(_marker_group_html(other), "")
+
+    def test_full_panel_loading_keeps_all_positive_genes(self):
+        from spatialmind.ingestion.pipeline import _matrix_row_to_features
+
+        gene_names = ["g0", "g1", "g2", "g3", "g4"]
+        row = [5.0, 3.0, 0.0, 4.0, 2.0]
+        # Full panel (0) keeps every positive gene; the zero-valued gene stays absent.
+        full = _matrix_row_to_features(row, gene_names, max_features_per_record=0)
+        self.assertEqual(set(full), {"g0", "g1", "g3", "g4"})
+        # A positive cap truncates to the top-N by value.
+        capped = _matrix_row_to_features(row, gene_names, max_features_per_record=2)
+        self.assertEqual(set(capped), {"g0", "g3"})
+
+    def test_marker_detection_defaults_to_one_vs_rest_per_group(self):
+        records = []
+        for index in range(12):
+            if index % 3 == 0:
+                cell_type, genes = "T cell", {"CD8A": 8.0, "EPCAM": 0.0, "PECAM1": 0.0}
+            elif index % 3 == 1:
+                cell_type, genes = "Tumor cell", {"CD8A": 0.0, "EPCAM": 8.0, "PECAM1": 0.0}
+            else:
+                cell_type, genes = "Endothelial cell", {"CD8A": 0.0, "EPCAM": 0.0, "PECAM1": 8.0}
+            records.append(SpotRecord("S1", float(index), 0.0, cell_type, genes, cell_id="c%d" % index))
+        dataset = SpatialDataset(sample_id="S1", source_path="synthetic", modality="xenium_spatial_rna", records=records)
+        result = marker_detection(dataset, {"engine": "prototype"})
+        self.assertEqual(result.metrics["mode"], "one_vs_rest")
+        markers = result.metrics["markers_by_group"]
+        self.assertEqual(set(markers), {"T cell", "Tumor cell", "Endothelial cell"})
+        # Each group's own defining gene should be its top up-regulated marker.
+        self.assertEqual(markers["T cell"][0]["gene"], "CD8A")
+        self.assertEqual(markers["Tumor cell"][0]["gene"], "EPCAM")
+        self.assertEqual(markers["Endothelial cell"][0]["gene"], "PECAM1")
+
+    def test_marker_detection_explicit_groups_stay_pairwise(self):
+        dataset = DataIngestionLayer().load_csv(DEMO, sample_id="BRCA_04")
+        result = marker_detection(
+            dataset,
+            {"engine": "prototype", "group_key": "cell_type", "group1": "CD8+ T cell", "group2": "Tumor cell"},
+        )
+        self.assertEqual(result.metrics["mode"], "pairwise")
+        self.assertEqual(result.metrics["group1"], "CD8+ T cell")
+        self.assertEqual(result.metrics["group2"], "Tumor cell")
+
     def test_mvp_honesty_tools_caveat_panel_and_transfer(self):
         dataset = DataIngestionLayer().load_csv(DEMO, sample_id="BRCA_04")
         dataset.metadata["is_targeted_panel"] = True
@@ -527,6 +727,57 @@ class ValidatedPilotTests(unittest.TestCase):
         self.assertEqual(ledger[0]["status"], "refused")
         self.assertEqual(ledger[0]["allowed_wording"], "")
         self.assertIn("expert", " ".join(ledger[0]["missing_inputs"]).lower())
+
+    def test_claim_reliability_scores_blocked_and_readiness_claims(self):
+        payload = {
+            "status": "blocked_missing_validation_inputs",
+            "required_next_inputs": ["Add expert_cell_labels.csv", "Add cell_regions.csv"],
+            "records_loaded": 10,
+            "features_loaded": 50,
+            "label_report": {"status": "missing_expert_labels", "matched_cells": 0, "total_records": 10},
+            "region_report": {"status": "missing_user_regions", "matched_cells": 0, "total_records": 10},
+            "asset_readiness": {
+                "has_cell_table": True,
+                "has_feature_matrix": True,
+                "has_morphology": True,
+                "has_boundaries": True,
+            },
+            "contract": {"assay_subtype": "xenium_spatial_rna", "n_features": 50, "is_targeted_panel": True},
+        }
+        payload["claim_ledger"] = build_pilot_claim_ledger(payload, [])
+        reliability = build_claim_reliability_table(payload, [])
+        self.assertEqual(len(reliability), 2)
+        self.assertEqual(reliability[0]["status"], "blocked")
+        self.assertEqual(reliability[0]["reliability"], 0.0)
+        self.assertGreater(reliability[1]["reliability"], reliability[0]["reliability"])
+        self.assertIn("A_annotation", reliability[0]["components"])
+
+    def test_claim_truth_validation_and_calibration_require_reviewed_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "spatial_claim_truth_draft_for_review.csv")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(",".join(CLAIM_TRUTH_FIELDS) + "\n")
+                handle.write(
+                    "r0,healthy,pilot_claim,pipeline_readiness_control,claim_001,visual_pattern,supported,ready,0.75,1,0.75,0.8,1,1,,no,,,,train,\n"
+                )
+            blocked = validate_claim_truth_table(path)
+            self.assertEqual(blocked["status"], "blocked")
+            self.assertIn("Need at least", " ".join(blocked["blockers"]))
+
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(",".join(CLAIM_TRUTH_FIELDS) + "\n")
+                rows = [
+                    "r1,healthy,pilot_claim,pipeline_readiness_control,c1,visual_pattern,supported,ready,0.75,1,0.75,0.8,1,1,1,yes,reviewer,2026-07-08,asset check,,train,",
+                    "r2,healthy,null_control,null_control,c2,spatial_colocalization,refused,null,0,0,0,0.5,0,0,0,yes,reviewer,2026-07-08,null,,train,",
+                    "r3,glioblastoma,pilot_claim,pipeline_readiness_control,c3,visual_pattern,supported,ready,0.75,1,0.75,0.8,1,1,1,yes,reviewer,2026-07-08,asset check,,validation,",
+                    "r4,glioblastoma,null_control,null_control,c4,spatial_colocalization,refused,null,0,0,0,0.5,0,0,0,yes,reviewer,2026-07-08,null,,test,",
+                ]
+                handle.write("\n".join(rows) + "\n")
+            ready = validate_claim_truth_table(path)
+            self.assertEqual(ready["status"], "ready_for_calibration")
+            model = fit_claim_reliability_calibration(ready["records"])
+            self.assertEqual(model["status"], "fit")
+            self.assertIn("A_annotation", model["weights"])
 
     def test_local_promotion_report_summarizes_available_gap_statuses(self):
         with tempfile.TemporaryDirectory() as tmp:

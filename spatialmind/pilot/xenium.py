@@ -18,10 +18,11 @@ from spatialmind.ingestion import (
     write_expert_label_template,
     write_region_label_template,
 )
-from spatialmind.pilot.claims import build_pilot_claim_ledger, claim_ledger_summary
+from spatialmind.pilot.claims import build_pilot_claim_ledger, build_pilot_claim_reliability, claim_ledger_summary
 from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
+from spatialmind.tools.implementations import run_neighborhood_robustness
 from spatialmind.viz import VisualizationLayer, XeniumExplorerLiteViewer
 
 
@@ -85,11 +86,17 @@ def run_pilot(
         gate["blocking_reasons"].extend(plan_validation.errors)
         gate["required_next_inputs"].append("Fix the typed Xenium MVP tool plan before running analysis.")
 
+    spatial_robustness: Dict[str, Any] = {
+        "status": "not_run",
+        "score": 0.0,
+        "reason": "Neighborhood robustness sweep runs only for validated pilots.",
+    }
     if gate["status"] == "validated_ready":
         results = _run_validated_tools(dataset, plan)
         for result in results:
             _write_json(output_dir / ("%s.json" % result.tool_name), result)
         figures.extend(_write_figures(dataset, output_dir))
+        spatial_robustness = run_neighborhood_robustness(dataset)
 
     payload = {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -120,6 +127,7 @@ def run_pilot(
             "review_figures": "Generated from current loader labels/clusters for expert review and QA only.",
             "validated_figures": "Generated only after expert labels and user regions pass the pilot gate.",
         },
+        "spatial_robustness": spatial_robustness,
         "report_md": str(output_dir / "validated_xenium_pilot_report.md"),
         "report_html": str(output_dir / "validated_xenium_pilot_report.html"),
         "run_record_path": "",
@@ -127,6 +135,7 @@ def run_pilot(
     planned_run_id = "mvp_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), uuid.uuid4().hex[:8])
     payload["run_record_path"] = str(output_dir / "runs" / ("%s.json" % planned_run_id))
     payload["claim_ledger"] = build_pilot_claim_ledger(payload, results)
+    payload["claim_reliability"] = build_pilot_claim_reliability(payload, results)
     payload["claim_summary"] = claim_ledger_summary(payload["claim_ledger"])
     _write_json(output_dir / "pilot_validation.json", payload)
     _write_markdown_report(output_dir / "validated_xenium_pilot_report.md", payload, results)
@@ -257,22 +266,12 @@ def pilot_gate(
 
 def _run_validated_tools(dataset: SpatialDataset, plan: List[Any]) -> List[ToolResult]:
     registry = build_mvp_registry()
-    group1, group2 = _choose_marker_groups(dataset)
     results = []
     for spec in plan:
-        params = dict(spec.params)
-        if spec.tool_name == "marker_detection":
-            params.update({"group1": group1, "group2": group2})
-        results.append(registry.get(spec.tool_name).run(dataset, params))
+        # marker_detection runs one-vs-rest across every reviewed cell type by
+        # default, so no arbitrary pairwise group selection is imposed here.
+        results.append(registry.get(spec.tool_name).run(dataset, dict(spec.params)))
     return results
-
-
-def _choose_marker_groups(dataset: SpatialDataset) -> Tuple[str, str]:
-    counts = Counter(record.cell_type for record in dataset.records)
-    labels = [label for label, _count in counts.most_common() if label and "unannotated" not in label.lower()]
-    first = "CD8+_T_Cells" if "CD8+_T_Cells" in counts else labels[0]
-    second = "Invasive_Tumor" if "Invasive_Tumor" in counts and "Invasive_Tumor" != first else labels[1]
-    return first, second
 
 
 def _write_figures(dataset: SpatialDataset, output_dir: Path) -> List[str]:
@@ -489,6 +488,7 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         lines.extend(["## Tool Results", ""])
         for result in results:
             lines.extend(["### `%s`" % result.tool_name, "", result.summary, ""])
+            lines.extend(_marker_group_markdown(result))
     lines.extend(["## Claim Ledger", ""])
     for item in payload["claim_ledger"]:
         lines.extend(
@@ -497,6 +497,29 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
                 "  Allowed wording: `%s`" % (item.get("allowed_wording") or "none"),
             ]
         )
+    lines.extend(["", "## Claim Reliability", ""])
+    if payload.get("claim_reliability"):
+        lines.extend(
+            [
+                "| Claim | Reliability | S_statistical | A_annotation | P_panel | R_spatial_robustness | Interpretation |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for index, item in enumerate(payload["claim_reliability"], start=1):
+            lines.append(
+                "| `%s` | %.4f | %.4f | %.4f | %.4f | %.4f | %s |"
+                % (
+                    item.get("claim_ref") or "claim_%03d" % index,
+                    float(item.get("reliability") or 0.0),
+                    float(item.get("S_statistical") or 0.0),
+                    float(item.get("A_annotation") or 0.0),
+                    float(item.get("P_panel") or 0.0),
+                    float(item.get("R_spatial_robustness") or 0.0),
+                    str(item.get("interpretation") or "").replace("|", "/"),
+                )
+            )
+    else:
+        lines.append("No claim reliability records were generated.")
     lines.extend(["", "## Limitations", ""])
     lines.extend("- %s" % item for item in _limitations(payload))
     if payload.get("run_record_path"):
@@ -514,7 +537,8 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
 
 def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolResult]) -> None:
     result_html = "".join(
-        "<section><h3>%s</h3><p>%s</p></section>" % (html.escape(result.tool_name), html.escape(result.summary))
+        "<section><h3>%s</h3><p>%s</p>%s</section>"
+        % (html.escape(result.tool_name), html.escape(result.summary), _marker_group_html(result))
         for result in results
     )
     gallery = "".join(_figure_html(item) for item in payload["review_figures"])
@@ -533,6 +557,19 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
             html.escape(str(item.get("allowed_wording") or "none")),
         )
         for item in payload["claim_ledger"]
+    )
+    reliability_rows = "".join(
+        "<tr><td>%s</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%s</td></tr>"
+        % (
+            html.escape(str(item.get("claim_ref") or "")),
+            float(item.get("reliability") or 0.0),
+            float(item.get("S_statistical") or 0.0),
+            float(item.get("A_annotation") or 0.0),
+            float(item.get("P_panel") or 0.0),
+            float(item.get("R_spatial_robustness") or 0.0),
+            html.escape(str(item.get("interpretation") or "")),
+        )
+        for item in payload.get("claim_reliability", [])
     )
     limitations = "".join("<li>%s</li>" % html.escape(item) for item in _limitations(payload))
     label_rows = "".join(
@@ -559,6 +596,7 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
 <section><h2>Generated Templates</h2><ul><li><code>%s</code></li><li><code>%s</code></li></ul></section>
 <section><h2>Tool Results</h2>%s</section>
 <section><h2>Claim Ledger</h2><ul>%s</ul></section>
+<section><h2>Claim Reliability</h2><table><tr><th>Claim</th><th>Reliability</th><th>S</th><th>A</th><th>P</th><th>R</th><th>Interpretation</th></tr>%s</table><p><small>S = statistical strength, A = annotation quality, P = panel adequacy, R = spatial robustness. The current default combiner is weakest-link.</small></p></section>
 <section><h2>Limitations</h2><ul>%s</ul></section>
 <section><h2>Run Record</h2><p><code>%s</code></p></section>
 <section><h2>Claim Policy</h2><p>Validated biological claims require expert labels and user-provided regions. Weak labels remain software QA only.</p></section>
@@ -578,10 +616,47 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         html.escape(payload["region_label_template"]),
         result_html or "<p>No analysis tools were run because validation inputs are incomplete.</p>",
         claims,
+        reliability_rows or "<tr><td colspan=\"7\">No reliability records generated.</td></tr>",
         limitations,
         html.escape(payload.get("run_record_path") or "not written"),
     )
     path.write_text(content, encoding="utf-8")
+
+
+def _marker_group_rows(result: ToolResult, top_n: int = 5) -> List[Tuple[str, List[str]]]:
+    if result.tool_name != "marker_detection":
+        return []
+    markers_by_group = result.metrics.get("markers_by_group")
+    if not isinstance(markers_by_group, dict):
+        return []
+    rows: List[Tuple[str, List[str]]] = []
+    for group, entries in markers_by_group.items():
+        genes = [str(entry.get("gene")) for entry in entries[:top_n] if isinstance(entry, dict) and entry.get("gene")]
+        if genes:
+            rows.append((str(group), genes))
+    return rows
+
+
+def _marker_group_markdown(result: ToolResult, top_n: int = 5) -> List[str]:
+    rows = _marker_group_rows(result, top_n)
+    if not rows:
+        return []
+    lines = ["| Cell type | Top markers (one-vs-rest) |", "| --- | --- |"]
+    for group, genes in rows:
+        lines.append("| `%s` | %s |" % (group, ", ".join("`%s`" % gene for gene in genes)))
+    lines.append("")
+    return lines
+
+
+def _marker_group_html(result: ToolResult, top_n: int = 5) -> str:
+    rows = _marker_group_rows(result, top_n)
+    if not rows:
+        return ""
+    body = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>" % (html.escape(group), html.escape(", ".join(genes)))
+        for group, genes in rows
+    )
+    return '<table><tr><th>Cell type</th><th>Top markers (one-vs-rest)</th></tr>%s</table>' % body
 
 
 def _write_scorecard_markdown(path: Path, summary: Dict[str, Any]) -> None:

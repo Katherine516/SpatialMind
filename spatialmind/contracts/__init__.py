@@ -23,6 +23,7 @@ from .metrics import (
 )
 from .plan import ExecutionPlan, NoAnalysisResponse, ToolCallSpec
 from .reports import DatasetReadinessReport, IngestionReport, WorkflowReadiness
+from .reliability import ClaimReliability, ReliabilityComponent
 from .response import AgentResponse, VizArtifact
 from .spatial_data import (
     CoreSpatialObject,
@@ -40,6 +41,7 @@ __all__ = [
     "BiologicalClaim",
     "CellByFeatureContract",
     "ClaimGroundingRule",
+    "ClaimReliability",
     "ContractViolationError",
     "CoreSpatialObject",
     "DatasetReadinessReport",
@@ -58,6 +60,7 @@ __all__ = [
     "QCMetrics",
     "QualityMetrics",
     "ResourceProfile",
+    "ReliabilityComponent",
     "SegmentationRef",
     "ShapesRef",
     "SpatialATACContract",

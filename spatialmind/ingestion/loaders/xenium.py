@@ -4,8 +4,22 @@ from spatialmind.ingestion.pipeline import DataIngestionLayer
 from spatialmind.schemas import SpatialDataset
 
 
-def load_xenium(path: str, sample_id: Optional[str] = None, max_records: int = 5000) -> SpatialDataset:
-    dataset = DataIngestionLayer().load_xenium_directory(path, sample_id=sample_id, max_records=max_records)
+def load_xenium(
+    path: str,
+    sample_id: Optional[str] = None,
+    max_records: int = 5000,
+    max_features_per_record: int = 0,
+) -> SpatialDataset:
+    # max_features_per_record=0 keeps the full targeted panel per cell. Per-cell
+    # top-N truncation drops mid/low-expression genes to implicit zeros, which
+    # distorts PCA/clustering and marker ranking; the sampled matrix stays bounded
+    # by max_records x panel size, so full-panel loading is the analysis default.
+    dataset = DataIngestionLayer().load_xenium_directory(
+        path,
+        sample_id=sample_id,
+        max_records=max_records,
+        max_features_per_record=max_features_per_record,
+    )
     dataset.modality = "xenium_spatial_rna"
     dataset.coordinate_system = "microns"
     dataset.metadata["assay_subtype"] = "xenium_spatial_rna"
