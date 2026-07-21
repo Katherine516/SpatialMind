@@ -23,7 +23,15 @@ from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
 from spatialmind.tools.implementations import run_neighborhood_robustness
-from spatialmind.viz import VisualizationLayer, XeniumExplorerLiteViewer
+from spatialmind.viz import (
+    PdfFigure,
+    PdfSection,
+    PdfTable,
+    VisualizationLayer,
+    XeniumExplorerLiteViewer,
+    normalize_report_format,
+    write_pdf_report,
+)
 
 
 DEFAULT_DATASET = "data/Human_Breast_Biomarkers_S1_Top_outs"
@@ -37,7 +45,9 @@ def run_pilot(
     min_label_coverage: float = 0.7,
     min_region_coverage: float = 0.7,
     allow_single_region: bool = False,
+    report_format: str = "html",
 ) -> Dict[str, Any]:
+    normalized_format = normalize_report_format(report_format)
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset = load_xenium(dataset_path, max_records=max_records)
     dataset.metadata["analysis_dataset_path"] = dataset_path
@@ -75,10 +85,9 @@ def run_pilot(
     figures: List[str] = list(review_figures)
     registry = build_mvp_registry()
     plan = build_xenium_mvp_plan()
-    available_inputs = _pilot_available_inputs(gate)
     plan_validation = validate_tool_plan(
         plan,
-        available_inputs=available_inputs,
+        available_inputs=_pilot_structural_inputs(),
         registry_tool_names=[tool.name for tool in registry.list_all()],
     )
     if gate["status"] == "validated_ready" and not plan_validation.ok:
@@ -130,6 +139,13 @@ def run_pilot(
         "spatial_robustness": spatial_robustness,
         "report_md": str(output_dir / "validated_xenium_pilot_report.md"),
         "report_html": str(output_dir / "validated_xenium_pilot_report.html"),
+        "report_pdf": str(output_dir / "validated_xenium_pilot_report.pdf")
+        if normalized_format in {"pdf", "both"}
+        else "",
+        "report_format": normalized_format,
+        "report_path": str(output_dir / "validated_xenium_pilot_report.pdf")
+        if normalized_format == "pdf"
+        else str(output_dir / "validated_xenium_pilot_report.html"),
         "run_record_path": "",
     }
     planned_run_id = "mvp_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), uuid.uuid4().hex[:8])
@@ -137,9 +153,18 @@ def run_pilot(
     payload["claim_ledger"] = build_pilot_claim_ledger(payload, results)
     payload["claim_reliability"] = build_pilot_claim_reliability(payload, results)
     payload["claim_summary"] = claim_ledger_summary(payload["claim_ledger"])
-    _write_json(output_dir / "pilot_validation.json", payload)
     _write_markdown_report(output_dir / "validated_xenium_pilot_report.md", payload, results)
     _write_html_report(output_dir / "validated_xenium_pilot_report.html", payload, results)
+    if payload["report_pdf"]:
+        _write_pilot_pdf_report(Path(payload["report_pdf"]), payload, results)
+    _write_json(output_dir / "pilot_validation.json", payload)
+    report_artifacts = {
+        "pilot_validation": str(output_dir / "pilot_validation.json"),
+        "markdown_report": str(output_dir / "validated_xenium_pilot_report.md"),
+        "html_report": str(output_dir / "validated_xenium_pilot_report.html"),
+    }
+    if payload["report_pdf"]:
+        report_artifacts["pdf_report"] = payload["report_pdf"]
     run_record = StorageLayer(root=str(output_dir)).write_mvp_run_record(
         query="Validated Xenium pilot: annotate cells, summarize user regions, and test neighborhoods.",
         tool_trace=[{"tool_name": result.tool_name, "summary": result.summary, "metrics": result.metrics} for result in results],
@@ -148,14 +173,11 @@ def run_pilot(
             "min_label_coverage": min_label_coverage,
             "min_region_coverage": min_region_coverage,
             "allow_single_region": allow_single_region,
+            "report_format": normalized_format,
             "tool_plan": _jsonable(plan),
         },
         input_files=[dataset_path],
-        artifacts={
-            "pilot_validation": str(output_dir / "pilot_validation.json"),
-            "markdown_report": str(output_dir / "validated_xenium_pilot_report.md"),
-            "html_report": str(output_dir / "validated_xenium_pilot_report.html"),
-        },
+        artifacts=report_artifacts,
         figures=figures,
         tables=[label_template, region_template],
         run_id=planned_run_id,
@@ -623,6 +645,138 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
     path.write_text(content, encoding="utf-8")
 
 
+def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[ToolResult]) -> None:
+    reliability_by_ref = {
+        str(item.get("claim_ref") or ""): item for item in payload.get("claim_reliability", [])
+    }
+    claim_rows = []
+    for index, item in enumerate(payload.get("claim_ledger", []), start=1):
+        claim_ref = str(item.get("claim_ref") or "claim_%03d" % index)
+        reliability = reliability_by_ref.get(claim_ref, {})
+        claim_rows.append(
+            (
+                claim_ref,
+                str(item.get("status") or ""),
+                "%.4f" % float(reliability.get("reliability") or 0.0),
+                str(item.get("claim_text") or ""),
+            )
+        )
+    tool_rows = [
+        (
+            str(item.get("tool_name") or ""),
+            ", ".join(item.get("requires") or item.get("depends_on") or []) or "none",
+        )
+        for item in payload.get("tool_plan", [])
+    ]
+    label_rows = [
+        (label, count)
+        for label, count in sorted(payload.get("cell_type_counts", {}).items(), key=lambda item: item[1], reverse=True)
+    ]
+    region_rows = [
+        (region, count)
+        for region, count in sorted(payload.get("region_counts", {}).items(), key=lambda item: item[1], reverse=True)
+    ]
+    result_sections = []
+    for result in results:
+        tables = []
+        marker_rows = _marker_group_rows(result)
+        if marker_rows:
+            tables.append(
+                PdfTable(
+                    headers=["Cell type", "Top markers (one-vs-rest)"],
+                    rows=[(group, ", ".join(genes)) for group, genes in marker_rows],
+                    column_widths=[1, 3],
+                )
+            )
+        result_sections.append(
+            PdfSection(
+                title="Tool Result: %s" % result.tool_name,
+                paragraphs=[result.summary],
+                bullets=list(result.caveats),
+                tables=tables,
+            )
+        )
+
+    raster_figures = [
+        PdfFigure(path=item, caption=Path(item).stem.replace("_", " ").title())
+        for item in payload.get("review_figures", [])
+        if Path(item).suffix.lower() in {".png", ".jpg", ".jpeg"}
+    ]
+    sections = [
+        PdfSection(
+            title="Executive Summary",
+            paragraphs=[
+                "This report records the validation-gated Xenium workflow. Biological interpretation is released only when expert labels and user-provided regions pass coverage and diversity gates."
+            ],
+        ),
+        PdfSection(title="Blocking Reasons", bullets=payload.get("blocking_reasons", []) or ["None"]),
+        PdfSection(title="Required Next Inputs", bullets=payload.get("required_next_inputs", []) or ["None"]),
+        PdfSection(
+            title="Review Visualizations",
+            paragraphs=[
+                "These figures use current loader labels or clusters for expert review and QA. They are not validated biological result figures unless the pilot gate passes."
+            ],
+            figures=raster_figures,
+            page_break_before=True,
+        ),
+        PdfSection(
+            title="Current Label Summary",
+            tables=[PdfTable(headers=["Label", "Count"], rows=label_rows, column_widths=[3, 1])],
+        ),
+        PdfSection(
+            title="Current Region Summary",
+            tables=[PdfTable(headers=["Region", "Count"], rows=region_rows, column_widths=[3, 1])],
+        ),
+        PdfSection(
+            title="Typed Tool Plan",
+            paragraphs=["Plan validation status: %s" % payload.get("plan_validation", {}).get("status", "unknown")],
+            tables=[PdfTable(headers=["Tool", "Required inputs"], rows=tool_rows, column_widths=[2, 3])],
+        ),
+    ]
+    sections.extend(result_sections)
+    sections.extend(
+        [
+            PdfSection(
+                title="Claim Ledger and Reliability",
+                paragraphs=[
+                    "Reliability is the weakest of statistical support, annotation quality, panel adequacy, and spatial robustness."
+                ],
+                tables=[
+                    PdfTable(
+                        headers=["Claim", "Status", "Reliability", "Text"],
+                        rows=claim_rows,
+                        column_widths=[1, 1.4, 1, 5],
+                    )
+                ],
+            ),
+            PdfSection(title="Limitations", bullets=_limitations(payload)),
+            PdfSection(
+                title="Provenance and Artifacts",
+                paragraphs=[
+                    "Run record: %s" % (payload.get("run_record_path") or "not written"),
+                    "Expert-label template: %s" % payload.get("expert_label_template", ""),
+                    "Region template: %s" % payload.get("region_label_template", ""),
+                    "HTML source: %s" % payload.get("report_html", ""),
+                ],
+            ),
+        ]
+    )
+    write_pdf_report(
+        str(path),
+        "Validated Xenium Pilot",
+        sections,
+        metadata=[
+            ("Status", payload.get("status", "unknown")),
+            ("Dataset", payload.get("dataset_path", "")),
+            ("Created", payload.get("created_at", "")),
+            ("Cells loaded", payload.get("records_loaded", 0)),
+            ("Features loaded", payload.get("features_loaded", 0)),
+            ("Label status", payload.get("label_report", {}).get("status", "unknown")),
+            ("Region status", payload.get("region_report", {}).get("status", "unknown")),
+        ],
+    )
+
+
 def _marker_group_rows(result: ToolResult, top_n: int = 5) -> List[Tuple[str, List[str]]]:
     if result.tool_name != "marker_detection":
         return []
@@ -705,11 +859,12 @@ def _dedupe(items: List[str]) -> List[str]:
     return result
 
 
-def _pilot_available_inputs(gate: Dict[str, Any]) -> List[str]:
-    available = list(DEFAULT_XENIUM_INPUTS)
-    if gate["status"] == "validated_ready":
-        available.extend(["expert_labels", "user_regions"])
-    return available
+def _pilot_structural_inputs() -> List[str]:
+    # Validate plan STRUCTURE (tool order, known tools, dependency wiring) assuming
+    # all external inputs are present. Input AVAILABILITY is owned by the pilot gate,
+    # so a blocked run reports a structurally valid plan instead of a misleading
+    # "invalid" caused only by pending expert labels / user regions.
+    return list(DEFAULT_XENIUM_INPUTS) + ["expert_labels", "user_regions"]
 
 
 def _limitations(payload: Dict[str, Any]) -> List[str]:

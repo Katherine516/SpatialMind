@@ -106,3 +106,4 @@ class AgentRun:
     results: List[ToolResult]
     report_path: str
     provenance_path: str
+    report_paths: Dict[str, str] = field(default_factory=dict)

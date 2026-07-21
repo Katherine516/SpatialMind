@@ -438,6 +438,13 @@ class DataIngestionLayer:
                 "n_obs_total": estimated_total,
                 "max_records": max_records,
                 "max_features_per_record": max_features_per_record,
+                "sampling": {
+                    "method": "deterministic_even_index" if target_indices is not None else "all_or_first_n",
+                    "requested_records": max_records,
+                    "loaded_records": len(records),
+                    "total_records": estimated_total,
+                    "fraction_loaded": round(len(records) / float(estimated_total or len(records)), 6),
+                },
                 **metadata,
             },
         )
@@ -525,6 +532,23 @@ class DataIngestionLayer:
         return features
 
     def _qc(self, dataset: SpatialDataset) -> None:
+        nonfinite_coordinate_records = sum(
+            1 for record in dataset.records if not math.isfinite(record.x) or not math.isfinite(record.y)
+        )
+        if nonfinite_coordinate_records:
+            dataset.records = [
+                record for record in dataset.records if math.isfinite(record.x) and math.isfinite(record.y)
+            ]
+        if not dataset.records:
+            raise IngestionValidationError("No records with finite spatial coordinates remain after ingestion QC.")
+
+        nonfinite_feature_values = 0
+        for record in dataset.records:
+            for feature, value in list(record.genes.items()):
+                if not math.isfinite(value):
+                    record.genes[feature] = 0.0
+                    nonfinite_feature_values += 1
+
         xs = [record.x for record in dataset.records]
         ys = [record.y for record in dataset.records]
         coordinate_pairs = [(record.x, record.y) for record in dataset.records]
@@ -542,6 +566,8 @@ class DataIngestionLayer:
                 "duplicate_coordinate_count": duplicate_coordinates,
                 "missing_feature_row_count": missing_feature_rows,
                 "negative_value_count": negative_values,
+                "nonfinite_feature_value_count": nonfinite_feature_values,
+                "nonfinite_coordinate_record_count": nonfinite_coordinate_records,
                 "median_total_feature_count": round(_median(positive_totals), 4) if positive_totals else 0.0,
                 "coordinate_bounds": {
                     "min_x": min(xs) if xs else 0.0,
@@ -560,6 +586,14 @@ class DataIngestionLayer:
             dataset.notes.append("%d observations have no numeric feature values." % missing_feature_rows)
         if negative_values:
             dataset.notes.append("%d negative feature values were clipped during normalization." % negative_values)
+        if nonfinite_feature_values:
+            dataset.notes.append(
+                "%d non-finite feature values were replaced with zero before normalization." % nonfinite_feature_values
+            )
+        if nonfinite_coordinate_records:
+            dataset.notes.append(
+                "%d observations with non-finite spatial coordinates were removed." % nonfinite_coordinate_records
+            )
         if duplicate_coordinates:
             dataset.notes.append("%d duplicate coordinate pairs were detected." % duplicate_coordinates)
 

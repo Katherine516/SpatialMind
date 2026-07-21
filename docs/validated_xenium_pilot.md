@@ -42,10 +42,10 @@ All four datasets have core Xenium assets, but all four still need:
 
 ## Run Commands
 
-Single dataset:
+Single dataset with both user-facing report formats:
 
 ```bash
-MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/run_validated_xenium_pilot.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_validated_pilot --max-records 2500
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/run_validated_xenium_pilot.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_validated_pilot --max-records 2500 --report-format both
 ```
 
 All local Xenium datasets:
@@ -65,6 +65,7 @@ MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spati
 - `outputs/xenium_validated_pilot/pilot_validation.json`
 - `outputs/xenium_validated_pilot/validated_xenium_pilot_report.md`
 - `outputs/xenium_validated_pilot/validated_xenium_pilot_report.html`
+- `outputs/xenium_validated_pilot/validated_xenium_pilot_report.pdf` when `--report-format pdf` or `both` is selected
 - `outputs/xenium_validated_pilot/expert_label_template.csv`
 - `outputs/xenium_validated_pilot/region_label_template.csv`
 - `outputs/xenium_validated_pilot/runs/*.json`

@@ -1307,3 +1307,115 @@ Evaluation:
 - `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/run_validated_xenium_pilot.py --data "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Glioblastoma_With_Addon_outs" --out outputs/xenium_brain_glioblastoma_pilot --max-records 2500` completed with expected validation block and regenerated review figures/report.
 - `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_spatialmind.py'` passed 45/45 tests.
 - `PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/lint-imports` passed with 3 import contracts kept and 0 broken.
+
+### Step 34: Full Data-Root Workflow, Numerical QC, and All-Xenium Training
+
+Status: Complete for software validation and exploratory training; biological validation remains blocked by reviewed inputs.
+
+Work completed on 2026-07-11:
+
+- Ran discovery, ingestion, review-packet generation, validated-pilot gates, Explorer-lite outputs, real Scanpy/Squidpy wrappers, behavioral training, claim-reliability controls, governance, benchmark/reference/comparison gates, replay verification, SQLite indexing, and both eval suites.
+- Corrected dataset discovery so ontology/reference JSON files are not treated as analysis manifests.
+- Corrected H5 readiness reporting to use actual matrix-load status.
+- Added deterministic sampling method, total-cell count, loaded-cell count, and sampling fraction to Xenium provenance.
+- Added finite-value QC before normalization; 77 non-finite values in the sampled breast data were detected and sanitized.
+- Removed undefined Squidpy permutation pairs from evidence tables, recorded omitted-pair counts, and enabled strict JSON serialization.
+- Marked label-dependent workflows as partial when labels are provisional.
+- Updated the local planner to recognize plain-language comparisons and neighborhood requests.
+- Generalized `train_spatialmind_local.py` from one hard-coded breast pipeline to every Xenium dataset discovered under `data/`, using strict real Scanpy/Squidpy wrappers.
+- Added OpenMP conflict detection to runtime preflight and training summaries.
+
+Latest results:
+
+- Analysis inputs discovered: 6 (4 Xenium, 1 demo manifest, 1 demo table).
+- Training records: 18, mean behavioral score 1.0000.
+- Real Xenium wrapper records: 4/4 completed with Scanpy and Squidpy.
+- MVP eval: 10/10; legacy eval: 15/15.
+- Validated-ready Xenium datasets: 0/4 because reviewed labels and ROIs are absent.
+- Claim-reliability controls: 8 records, local-control AUROC 1.0000, calibrated model `not_fit`.
+- Replay: all glioblastoma input/artifact hashes verified.
+- Run database: 10 records indexed.
+
+Detailed report:
+
+- `outputs/full_workflow_20260711/FULL_WORKFLOW_REPORT.md`
+
+### Step 35: Conflict-Free Core Scientific Environment
+
+Status: Complete.
+
+Work completed on 2026-07-11:
+
+- Split the default core runtime from optional PyTorch models.
+- Removed `scvi-tools` and `cell2location` from `requirements.txt` and the `full` package extra.
+- Added `requirements-deep-learning.txt` and a `deep-learning` package extra for isolated model environments.
+- Added `requirements-dev.txt` so lint/test tools do not block device runtime installation.
+- Preserved the previous environment as `.venv-deep` and rebuilt the default `.venv` without PyTorch.
+- Pinned the validated Python 3.9 `dask`, `fsspec`, and `s3fs` combination to avoid resolver backtracking.
+- Removed the previously unused ReportLab dependency at that stage; reports remained HTML/Markdown only.
+- Updated README, Makefile, `.gitignore`, dependency metadata, and runtime preflight guidance.
+
+Verification:
+
+- `pip check`: no broken requirements.
+- PyTorch, scvi-tools, and cell2location are absent from `.venv`.
+- Direct runtime probe: `torch_loaded=false`; only LLVM `libomp` is loaded, with no Intel `libiomp`.
+- Runtime version check passes with no mixed-OpenMP warning.
+- Scanpy DE, clustering, and HVG wrappers pass.
+- Squidpy neighborhood enrichment passes.
+- Xenium H5 matrix loading passes.
+- Unit tests pass 61/61.
+
+### Step 36: Post-Fix Training Refresh and Expert-Review Handoff
+
+Status: Complete for behavioral training and software evaluation; awaiting human biological review.
+
+Work completed on 2026-07-17:
+
+- Re-ran the behavioral/tool-selection trainer across all four local Xenium datasets with 1,200 deterministically sampled cells per dataset.
+- Exercised real Scanpy clustering/marker wrappers and Squidpy neighborhood enrichment on breast, glioblastoma brain, healthy brain, and lymph node data.
+- Re-ran human-brain claim-reliability training on healthy brain and glioblastoma pilots.
+- Validated the current glioblastoma label/region intake and claim-truth draft, preserving expected biological validation gates.
+- Added `docs/expert_review_workflow.md` with reviewer roles, schemas, reference resources, ROI procedure, claim adjudication, commands, and acceptance criteria.
+- Added `outputs/training/current_20260717/TRAINING_AND_REVIEW_REPORT.md` as the consolidated output example.
+
+Results:
+
+- Behavioral records: 18; mean score: 1.0000.
+- Real Xenium pipelines: 4/4 completed with Scanpy and Squidpy.
+- Runtime conflict warnings: 0.
+- Claim/control records: 8; local-control AUROC: 1.0000.
+- Claim calibration: `not_fit`, correctly blocked by missing reviewed biological truth.
+- Glioblastoma expert-label coverage: 0%; reviewed-region coverage: 0%.
+- Claim-truth rows: 11; reviewed calibration rows: 0.
+
+Required next inputs:
+
+- Reviewed `expert_cell_labels.csv` keyed to glioblastoma Xenium `cell_id`.
+- Reviewed `cell_regions.csv` keyed to the same cells and pathology-defined ROIs.
+- Completed claim-truth table with positive and negative claims, evidence provenance, reviewer identity, and stable train/validation/test splits.
+
+### Step 37: Selectable HTML and PDF Report Delivery
+
+Status: Complete.
+
+Work completed on 2026-07-18:
+
+- Added a shared ReportLab-based PDF renderer with page numbering, metadata, sections, bullets, tables, raster figures, and PDF signature/size validation.
+- Replaced the old PDF text placeholder and removed the native-library-dependent WeasyPrint runtime requirement.
+- Added `--report-format html|pdf|both` to the main agent CLI, validated Xenium pilot CLI, and replay CLI.
+- Added the same validated `report_format` choice to the `/runs` and `/pilot/xenium/run` API requests.
+- Added `report_paths` to agent run outputs and `report_html`, `report_pdf`, `report_path`, and `report_format` to Xenium pilot outputs.
+- Kept HTML as the default and retained HTML beside PDF for auditable, accessible source output.
+- Updated the README, validated-pilot documentation, dependency manifests, and tests.
+
+Verification:
+
+- Generated `outputs/xenium_brain_glioblastoma_selectable_report/validated_xenium_pilot_report.html` and `.pdf` with `--report-format both`.
+- The PDF is a valid three-page A4 document, starts with `%PDF-`, and contains the expected metadata, figure, label/region summaries, typed plan, claim reliability, limitations, and provenance sections.
+- Extracted PDF text contains `claim_002` with corrected reliability `0.7500`.
+- Rendered all three pages to PNG and visually checked figure scaling, table wrapping, page breaks, margins, and page-number footers; no clipping or overlap remained.
+- Main agent CLI generated both `report.html` and `report.pdf` from the demo data.
+- API OpenAPI schema exposes `html`, `pdf`, and `both` for both report-producing endpoints.
+- `pip check` reports no broken requirements.
+- Unit tests pass 63/63 and all three import contracts remain intact.

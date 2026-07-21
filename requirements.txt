@@ -1,4 +1,4 @@
-# SpatialMind workstation/runtime requirements.
+# SpatialMind core workstation/runtime requirements.
 #
 # Install on a development or analysis machine with:
 #   python3 -m pip install -r requirements.txt
@@ -6,15 +6,13 @@
 # The source package itself stays dependency-light so tests can run in minimal
 # environments. This file is the comprehensive install target for real spatial
 # omics ingestion, analysis, visualization, reporting, API service, and eval.
+# PyTorch-based optional models are intentionally kept in
+# requirements-deep-learning.txt so the core Scanpy/scikit-learn runtime does
+# not load both LLVM and Intel OpenMP libraries in one process.
 
-# Local package and development tools
+# Local package
 -e .
 setuptools<81
-pytest
-ruff
-mypy
-pre-commit
-import-linter
 
 # Core numerical and table processing
 numpy<2
@@ -25,7 +23,9 @@ pyarrow
 h5py
 tables
 zarr
-dask
+dask==2024.8.0
+fsspec==2023.6.0
+s3fs==2023.6.0
 numba
 scikit-learn
 statsmodels
@@ -41,8 +41,6 @@ decoupler<1.9
 infercnvpy
 liana
 omnipath
-scvi-tools
-cell2location
 spatialDE
 
 # Graphs, clustering, and neighborhood analysis
@@ -73,8 +71,7 @@ ome-types
 # Reports and document generation
 jinja2
 markdown
-reportlab
-weasyprint
+reportlab==4.2.5
 
 # API, background jobs, and storage adapters
 fastapi

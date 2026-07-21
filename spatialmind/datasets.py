@@ -4,7 +4,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .ingestion import DataIngestionLayer, IngestionConfig, infer_data_type
+from .ingestion import (
+    DataIngestionLayer,
+    IngestionConfig,
+    apply_best_available_labels,
+    apply_best_available_regions,
+    infer_data_type,
+)
 
 
 @dataclass
@@ -51,7 +57,9 @@ def discover_dataset_candidates(root: str) -> List[str]:
             continue
         for filename in files:
             lower = filename.lower()
-            if lower.endswith((".h5ad", ".zarr", ".csv", ".tsv", ".csv.gz", ".json")):
+            if lower.endswith((".h5ad", ".zarr", ".csv", ".tsv", ".csv.gz")):
+                candidates.append(os.path.join(current, filename))
+            elif lower.endswith(".json") and _looks_like_analysis_manifest(os.path.join(current, filename)):
                 candidates.append(os.path.join(current, filename))
     return sorted(set(candidates))
 
@@ -61,8 +69,11 @@ def inspect_dataset(path: str, config: Optional[IngestionConfig] = None) -> Data
     config = config or IngestionConfig(min_counts=0, min_genes=0, max_records=1000)
     try:
         layer = DataIngestionLayer()
-        if data_type in {"xenium_directory", "xenium_experiment_file"}:
+        is_xenium = data_type in {"xenium_directory", "xenium_experiment_file"}
+        if is_xenium:
             dataset = layer.load_xenium_directory(path, max_records=config.max_records)
+            label_report = apply_best_available_labels(dataset, path, fallback=None)
+            region_report = apply_best_available_regions(dataset, path)
         elif data_type == "h5ad_anndata":
             dataset = layer.load_h5ad(
                 path,
@@ -92,8 +103,14 @@ def inspect_dataset(path: str, config: Optional[IngestionConfig] = None) -> Data
         supported.extend(["expression_overlay", "spatial_variable_genes", "differential_expression"])
     else:
         blockers.append("Gene-level expression is unavailable or limited to Xenium summary counts.")
-    if dataset.metadata.get("xenium_files", {}).get("cell_feature_matrix_h5"):
-        blockers.append("cell_feature_matrix.h5 is present, but gene matrix parsing needs h5py/anndata installed.")
+    if data_type in {"xenium_directory", "xenium_experiment_file"}:
+        gene_matrix = dataset.metadata.get("gene_matrix", {})
+        if dataset.metadata.get("xenium_files", {}).get("cell_feature_matrix_h5") and not gene_matrix.get("available"):
+            blockers.append("cell_feature_matrix.h5 is present but its gene matrix was not loaded; inspect ingestion warnings.")
+        if label_report.status != "expert_labels_applied":
+            blockers.append("No reviewed expert/reference cell labels are available; current labels are exploratory only.")
+        if region_report.status != "user_regions_applied":
+            blockers.append("No reviewed user ROI/tissue regions are available.")
 
     readiness = "ready_for_agent" if not blockers else "partially_ready"
     return DatasetInspection(
@@ -114,6 +131,8 @@ def inspect_dataset(path: str, config: Optional[IngestionConfig] = None) -> Data
             "coordinate_system": dataset.coordinate_system,
             "qc_metrics": dataset.qc_metrics,
             "dataset_metadata": dataset.metadata,
+            "label_readiness": label_report.to_dict() if is_xenium else None,
+            "region_readiness": region_report.to_dict() if is_xenium else None,
         },
     )
 
@@ -133,3 +152,12 @@ def write_dataset_report(root: str, out_path: str) -> str:
 def _only_xenium_summary_features(genes: List[str]) -> bool:
     summary_features = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
     return bool(genes) and set(genes).issubset(summary_features)
+
+
+def _looks_like_analysis_manifest(path: str) -> bool:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return False
+    return isinstance(payload, dict) and isinstance(payload.get("sources"), list) and bool(payload["sources"])

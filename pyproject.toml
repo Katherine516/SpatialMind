@@ -17,7 +17,6 @@ full = [
   "anthropic",
   "celery[redis]",
   "celltypist",
-  "cell2location",
   "chromadb",
   "decoupler<1.9",
   "fastapi",
@@ -37,19 +36,21 @@ full = [
   "pyarrow",
   "pydantic",
   "pydantic-settings",
-  "reportlab",
   "redis",
+  "reportlab==4.2.5",
   "scanpy",
   "scikit-learn",
   "scipy",
-  "scvi-tools",
   "spatialDE",
   "spatialdata",
   "spatialdata-io",
   "squidpy",
   "vitessce",
-  "weasyprint",
   "zarr",
+]
+deep-learning = [
+  "cell2location",
+  "scvi-tools",
 ]
 dev = [
   "import-linter",

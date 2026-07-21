@@ -1,5 +1,6 @@
 import math
 import random
+import warnings
 from collections import Counter, defaultdict
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, List, Optional
@@ -740,7 +741,15 @@ def _scanpy_spatial_clustering(dataset: SpatialDataset, params: Dict[str, object
                 sc.pp.neighbors(adata, n_neighbors=max(2, n_neighbors), random_state=random_state)
                 representation = "X"
             method = "pca_neighbors_leiden"
-        sc.tl.leiden(adata, resolution=resolution, random_state=random_state, key_added="spatialmind_cluster")
+        sc.tl.leiden(
+            adata,
+            resolution=resolution,
+            random_state=random_state,
+            key_added="spatialmind_cluster",
+            flavor="igraph",
+            n_iterations=2,
+            directed=False,
+        )
         labels = [str(value) for value in adata.obs["spatialmind_cluster"].tolist()]
         counts = dict(Counter(labels))
         cluster_style = "spatial-domain" if cluster_on == "spatial" else "expression"
@@ -834,27 +843,48 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         backend = str(params.get("backend", "threading") or "threading")
         random_state = int(params.get("random_state", 0) or 0)
         sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=max(2, n_neighs))
-        sq.gr.nhood_enrichment(
-            adata,
-            cluster_key="cell_type",
-            n_perms=n_perms,
-            seed=random_state,
-            n_jobs=n_jobs,
-            backend=backend,
-            numba_parallel=False,
-            show_progress_bar=False,
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
+            sq.gr.nhood_enrichment(
+                adata,
+                cluster_key="cell_type",
+                n_perms=n_perms,
+                seed=random_state,
+                n_jobs=n_jobs,
+                backend=backend,
+                numba_parallel=False,
+                show_progress_bar=False,
+            )
         result = adata.uns.get("cell_type_nhood_enrichment", {})
         clusters = [str(value) for value in adata.obs["cell_type"].cat.categories]
-        top_pairs = _nhood_enrichment_pairs(result.get("zscore"), result.get("pvalue"), clusters)
-        metrics = {"engine": "squidpy", "method": "nhood_enrichment", "n_neighs": n_neighs, "n_perms": n_perms, "n_jobs": n_jobs, "backend": backend, "random_state": random_state, "top_pairs": top_pairs}
+        all_pairs = _nhood_enrichment_pairs(result.get("zscore"), result.get("pvalue"), clusters, limit=None)
+        expected_pair_count = len(clusters) * (len(clusters) + 1) // 2
+        nonfinite_pair_count = max(expected_pair_count - len(all_pairs), 0)
+        top_pairs = all_pairs[:10]
+        metrics = {
+            "engine": "squidpy",
+            "method": "nhood_enrichment",
+            "n_neighs": n_neighs,
+            "n_perms": n_perms,
+            "n_jobs": n_jobs,
+            "backend": backend,
+            "random_state": random_state,
+            "top_pairs": top_pairs,
+            "tested_pair_count": len(all_pairs),
+            "undefined_pair_count": nonfinite_pair_count,
+        }
         if params.get("include_all_pairs"):
-            metrics["all_pairs"] = _nhood_enrichment_pairs(result.get("zscore"), result.get("pvalue"), clusters, limit=None)
+            metrics["all_pairs"] = all_pairs
+        caveats = list(dataset.notes)
+        if nonfinite_pair_count:
+            caveats.append(
+                "%d cell-type pairs had zero/undefined permutation variance and were omitted." % nonfinite_pair_count
+            )
         return ToolResult(
             tool_name="neighborhood_enrichment",
             summary="Computed neighborhood enrichment with Squidpy for %d cell-type pairs." % len(top_pairs),
             metrics=metrics,
-            caveats=list(dataset.notes),
+            caveats=caveats,
         )
     except Exception as exc:
         if params.get("strict_engine"):
@@ -892,7 +922,8 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
             "region": [record.region or "" for record in dataset.records],
             "x": [record.x for record in dataset.records],
             "y": [record.y for record in dataset.records],
-        }
+        },
+        index=[record.cell_id or "cell_%d" % index for index, record in enumerate(dataset.records)],
     )
     obs["cell_type"] = obs["cell_type"].astype("category")
     adata = ad.AnnData(X=matrix, obs=obs)
@@ -947,10 +978,14 @@ def _nhood_enrichment_pairs(
                 zscore = float(zscores[left_index, right_index])
             except (TypeError, ValueError, IndexError):
                 continue
+            if not math.isfinite(zscore):
+                continue
             item: Dict[str, object] = {"pair": "%s | %s" % (left, right), "zscore": round(zscore, 5)}
             if pvalues is not None:
                 try:
-                    item["pval"] = round(float(pvalues[left_index, right_index]), 6)
+                    pvalue = float(pvalues[left_index, right_index])
+                    if math.isfinite(pvalue):
+                        item["pval"] = round(pvalue, 6)
                 except (TypeError, ValueError, IndexError):
                     pass
             pairs.append(item)

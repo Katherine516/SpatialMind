@@ -1,15 +1,9 @@
 import html
 import os
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from spatialmind.contracts import MethodCitation
-
-
-@dataclass
-class ReportPaths:
-    html: str
-    pdf: str = ""
+from spatialmind.viz.export import PdfSection, ReportPaths, normalize_report_format, write_pdf_report
 
 
 class ReportBuilder:
@@ -22,6 +16,7 @@ class ReportBuilder:
         format: str = "html",
         citations: Optional[Dict[str, MethodCitation]] = None,
     ) -> ReportPaths:
+        report_format = normalize_report_format(format)
         os.makedirs(output_dir, exist_ok=True)
         html_path = os.path.join(output_dir, "structured_report.html")
         sections = [
@@ -38,10 +33,13 @@ class ReportBuilder:
         with open(html_path, "w", encoding="utf-8") as handle:
             handle.write("<!doctype html><html><head><meta charset='utf-8'><title>SpatialMind Report</title></head><body>%s</body></html>" % body)
         pdf_path = ""
-        if format in {"pdf", "both"}:
+        if report_format in {"pdf", "both"}:
             pdf_path = os.path.join(output_dir, "structured_report.pdf")
-            with open(pdf_path, "w", encoding="utf-8") as handle:
-                handle.write("PDF export requires WeasyPrint in the production environment. Source HTML: %s\n" % html_path)
+            write_pdf_report(
+                pdf_path,
+                "SpatialMind Report",
+                [PdfSection(title=title, paragraphs=[content]) for title, content in sections],
+            )
         return ReportPaths(html=html_path, pdf=pdf_path)
 
     def _summary(self, response: Any) -> str:

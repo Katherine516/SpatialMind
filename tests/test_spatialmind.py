@@ -1,3 +1,4 @@
+import math
 import os
 import tempfile
 import unittest
@@ -40,7 +41,16 @@ from spatialmind.memory import PriorType, UserPriorStore
 from spatialmind.agent import build_xenium_mvp_plan, validate_tool_plan
 from spatialmind.planner import LLMReasoningLayer
 from spatialmind.promotion.local import build_local_promotion_report
-from spatialmind.viz import QCReportBuilder, VisualizationLayer, VizRouter, XeniumExplorerLiteViewer
+from spatialmind.viz import (
+    PdfSection,
+    PdfTable,
+    QCReportBuilder,
+    VisualizationLayer,
+    VizRouter,
+    XeniumExplorerLiteViewer,
+    normalize_report_format,
+    write_pdf_report,
+)
 from spatialmind.storage import StorageLayer
 from spatialmind.storage import index_run_records, verify_run_record
 from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_mvp_registry
@@ -99,6 +109,10 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("Tumor cell", plan.request.cell_types)
         self.assertIn("cell_type_colocalization", [step.tool for step in plan.steps])
 
+    def test_plans_plain_language_neighborhood_comparison(self):
+        plan = LLMReasoningLayer().plan("Compare tumor and CD8+ T cells and assess spatial neighborhoods.")
+        self.assertIn("cell_type_colocalization", [step.tool for step in plan.steps])
+
     def test_accepts_valid_llm_plan(self):
         provider = StaticLLMProvider(
             {
@@ -130,6 +144,23 @@ class IngestionTests(unittest.TestCase):
         self.assertIn("Tumor cell", dataset.cell_types)
         self.assertEqual(dataset.qc_metrics["record_count"], 20)
         self.assertIn("Applied library-size normalization", " ".join(dataset.processing_steps))
+
+    def test_ingestion_sanitizes_nonfinite_features_before_normalization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "nonfinite.csv")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("sample_id,x,y,cell_type,gene_A,gene_B\n")
+                handle.write("S1,1,2,T cell,nan,4\n")
+                handle.write("S1,3,4,Tumor cell,2,inf\n")
+            dataset = DataIngestionLayer().load_csv(path, sample_id="S1")
+            self.assertEqual(dataset.qc_metrics["nonfinite_feature_value_count"], 2)
+            self.assertTrue(
+                all(
+                    math.isfinite(value)
+                    for record in dataset.records
+                    for value in record.genes.values()
+                )
+            )
 
     def test_loads_manifest_with_source_metadata(self):
         dataset = DataIngestionLayer().load(MANIFEST, sample_id="BRCA_04")
@@ -182,11 +213,14 @@ class IngestionTests(unittest.TestCase):
     def test_discovers_and_inspects_xenium_datasets(self):
         candidates = discover_dataset_candidates(os.path.join(ROOT, "data"))
         self.assertIn(XENIUM_LYMPH, candidates)
+        self.assertFalse(any("cell_ontology_terms" in path for path in candidates))
         inspection = inspect_dataset(XENIUM_LYMPH)
         self.assertTrue(inspection.usable)
         self.assertEqual(inspection.readiness, "partially_ready")
         self.assertIn("spatial_scatter", inspection.supported_workflows)
-        self.assertTrue(any("cell_feature_matrix.h5" in blocker for blocker in inspection.blockers))
+        self.assertFalse(any("gene matrix was not loaded" in blocker for blocker in inspection.blockers))
+        self.assertTrue(any("reviewed expert" in blocker for blocker in inspection.blockers))
+        self.assertTrue(inspection.metadata["dataset_metadata"]["sampling"]["fraction_loaded"] > 0)
 
     def test_pipeline_returns_report(self):
         dataset, report = DataIngestionPipeline().ingest(
@@ -661,6 +695,19 @@ class ValidatedPilotTests(unittest.TestCase):
         self.assertFalse(invalid.ok)
         self.assertIn("missing required outputs", invalid.errors[0])
 
+    def test_pilot_reports_structurally_valid_plan_regardless_of_inputs(self):
+        # The plan is structurally sound; input availability is the gate's job, so
+        # plan validation must not report "invalid" just because externals are pending.
+        from spatialmind.pilot.xenium import _pilot_structural_inputs
+
+        report = validate_tool_plan(
+            build_xenium_mvp_plan(),
+            available_inputs=_pilot_structural_inputs(),
+            registry_tool_names=MVP_TOOL_NAMES,
+        )
+        self.assertEqual(report.status, "valid")
+        self.assertEqual(report.errors, [])
+
     def test_pilot_gate_blocks_without_expert_labels_and_regions(self):
         dataset = SpatialDataset(
             sample_id="X1",
@@ -958,6 +1005,42 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(stored.run_id, run.run_id)
             self.assertTrue(stored.provenance_hash)
             self.assertTrue(any(path.endswith(".html") for path in StorageLayer(root=os.path.join(tmp, "outputs")).list_figures(run.run_id)))
+
+    def test_agent_creates_selectable_pdf_and_html_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = SpatialMindAgent(output_root=os.path.join(tmp, "outputs"), memory_root=os.path.join(tmp, "memory"))
+            run = agent.run(
+                "Show cell type abundance in sample BRCA_04.",
+                DEMO,
+                report_format="both",
+            )
+            self.assertEqual(set(run.report_paths), {"html", "pdf"})
+            self.assertTrue(run.report_path.endswith(".html"))
+            with open(run.report_paths["pdf"], "rb") as handle:
+                self.assertEqual(handle.read(5), b"%PDF-")
+
+
+class ReportExportTests(unittest.TestCase):
+    def test_report_format_validation_and_pdf_writer(self):
+        self.assertEqual(normalize_report_format("PDF"), "pdf")
+        with self.assertRaises(ValueError):
+            normalize_report_format("docx")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "report.pdf")
+            write_pdf_report(
+                path,
+                "SpatialMind Test Report",
+                [
+                    PdfSection(
+                        title="Results",
+                        paragraphs=["A verified PDF result."],
+                        tables=[PdfTable(headers=["Metric", "Value"], rows=[("score", "1.0")])],
+                    )
+                ],
+            )
+            self.assertGreater(os.path.getsize(path), 1024)
+            with open(path, "rb") as handle:
+                self.assertEqual(handle.read(5), b"%PDF-")
 
     def test_storage_writes_mvp_run_record_with_hashes(self):
         with tempfile.TemporaryDirectory() as tmp:

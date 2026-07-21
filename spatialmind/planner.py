@@ -186,7 +186,20 @@ class LLMReasoningLayer:
             cell_types=cell_types,
             genes=genes,
             wants_visualization=any(token in lowered for token in ["show", "plot", "map", "visual", "distribution"]),
-            wants_colocalization=any(token in lowered for token in ["co-local", "colocal", "near", "relative to", "enriched near"]),
+            wants_colocalization=any(
+                token in lowered
+                for token in [
+                    "co-local",
+                    "colocal",
+                    "near",
+                    "relative to",
+                    "enriched near",
+                    "neighborhood",
+                    "neighbourhood",
+                    "spatial relationship",
+                    "compare",
+                ]
+            ),
             wants_report=True,
         )
 

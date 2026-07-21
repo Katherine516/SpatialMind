@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument("record", help="Path to an MVP run record JSON.")
     parser.add_argument("--out", default="", help="Replay output directory.")
     parser.add_argument("--replay", action="store_true", help="Rerun supported workflows after hash verification.")
+    parser.add_argument("--report-format", default="html", choices=["html", "pdf", "both"])
     args = parser.parse_args()
 
     if args.replay:
@@ -30,10 +31,11 @@ def main() -> None:
                 min_label_coverage=params["min_label_coverage"],
                 min_region_coverage=params["min_region_coverage"],
                 allow_single_region=params["allow_single_region"],
+                report_format=args.report_format,
             )
             result["status"] = "replayed"
             result["replay_status"] = rerun.get("status")
-            result["replay_report"] = rerun.get("report_html")
+            result["replay_report"] = rerun.get("report_path")
     else:
         result = verify_run_record(args.record).to_dict()
     print(json.dumps(result, indent=2, sort_keys=True))

@@ -1,6 +1,6 @@
 # SpatialMind Training Status
 
-Last updated: 2026-07-08
+Last updated: 2026-07-11
 
 ## Summary
 
@@ -23,15 +23,16 @@ Current gates:
 
 | Gate | Result |
 | --- | --- |
-| Unit tests | 48/48 passing in the full environment |
+| Unit tests | 61/61 passing in the full environment |
 | Legacy eval | 15/15 passing, mean score 1.0000 |
 | MVP eval | 10/10 passing, mean score 1.0000 |
 | Full environment `pip check` | Passing |
+| Numerical runtime isolation | Passing; default `.venv` is PyTorch-free with one OpenMP runtime |
 | Import boundary check | Passing |
 | Real backend validation | Scanpy DE/clustering/HVG and Squidpy neighborhood enrichment passing |
 | Xenium breast MVP run | Completed with report and visualizations |
 | Xenium expert-label readiness inventory | Completed for 4 local Xenium datasets |
-| Local training record generation | 15 records, mean behavior score 1.0000 |
+| Local training record generation | 18 records, mean behavior score 1.0000 |
 | Region-label template generation | Completed for 4 local Xenium datasets |
 | Validated Xenium pilot scorecard | 4 datasets scanned, 0 validated-ready |
 | v11 real-agent pilot controls | Typed plan, claim ledger, limitations, and run record generated |
@@ -41,6 +42,12 @@ Current gates:
 | Claim-truth review packet | Generated for healthy brain and glioblastoma; awaiting expert review |
 
 Latest local training artifacts:
+
+- `outputs/full_workflow_20260711/FULL_WORKFLOW_REPORT.md`
+- `outputs/full_workflow_20260711/training/local_spatialmind/training_records.jsonl`
+- `outputs/full_workflow_20260711/training/local_spatialmind/training_summary.json`
+- `outputs/full_workflow_20260711/training/local_spatialmind/training_report.md`
+- `outputs/full_workflow_20260711/training/claim_reliability/claim_reliability_training_report.md`
 
 - `outputs/training/local_spatialmind_training/training_records.jsonl`
 - `outputs/training/local_spatialmind_training/training_summary.json`
@@ -59,10 +66,10 @@ Latest local training artifacts:
 - `outputs/claim_reliability_review_packet_v12/claim_truth_validation_report.md`
 - `outputs/training/human_brain_claim_reliability_review_gate_v12/claim_reliability_calibration_model.json`
 
-The 15 generated records are distributed as:
+The latest 18 generated records are distributed as:
 
 - 10 MVP query-plan-result records,
-- 1 weak-label breast Xenium pipeline record,
+- 4 real-wrapper exploratory Xenium pipeline records,
 - 4 Xenium expert-label readiness records.
 
 The v11 pilot run also creates structured readiness/refusal records:
@@ -192,7 +199,7 @@ Current local status:
 2. Add reviewed positive spatial claims and null-control claims for healthy brain and glioblastoma.
 3. Rerun `scripts/train_claim_reliability_local.py` and fit the calibrated logistic reliability combiner once enough truth labels exist.
 4. Rerun `scripts/train_spatialmind_local.py` to convert reviewed labels into stronger query-plan-result records.
-5. Expand the local corpus from 15 records to 50 v7 MVP records.
+5. Expand the local corpus from 18 records to at least 50 reviewed v7 MVP records.
 6. Add expert-reviewed interpretations and corrections for at least one Xenium tissue.
 7. Expand to 100 to 200 examples across scRNA, scATAC, Xenium, and reference-assist workflows.
 8. Train or tune the planner only after the labels and expected outputs are reviewed.
@@ -201,3 +208,19 @@ Current local status:
 ## Current Limitation
 
 The latest Xenium breast report is useful for system validation and visualization QA. It should not be used as supervised biological ground truth until the cell labels are reviewed or replaced by validated reference annotation.
+
+## 2026-07-17 Training Refresh
+
+The post-environment-fix training refresh is stored under `outputs/training/current_20260717/`.
+
+| Metric | Result |
+| --- | --- |
+| Behavioral records | 18 |
+| Mean behavior score | 1.0000 |
+| Xenium wrapper runs | 4/4 completed with Scanpy and Squidpy |
+| Runtime conflict warnings | 0 |
+| Claim/control records | 8 |
+| Local-control AUROC | 1.0000 |
+| Biological calibration | `not_fit`; awaiting expert review |
+
+The detailed run report is `outputs/training/current_20260717/TRAINING_AND_REVIEW_REPORT.md`. The exact process for obtaining and validating `expert_cell_labels.csv`, `cell_regions.csv`, and completed claim truth is documented in `docs/expert_review_workflow.md`.
