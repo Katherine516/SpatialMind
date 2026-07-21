@@ -46,6 +46,7 @@ def run_pilot(
     min_region_coverage: float = 0.7,
     allow_single_region: bool = False,
     report_format: str = "html",
+    readiness_only: bool = False,
 ) -> Dict[str, Any]:
     normalized_format = normalize_report_format(report_format)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -56,19 +57,6 @@ def run_pilot(
     contract = validate_cell_by_feature_contract(dataset)
     readiness = build_readiness_report(dataset)
     asset_readiness = summarize_xenium_expert_readiness(dataset_path)
-
-    label_template = write_expert_label_template(
-        dataset,
-        str(output_dir / "expert_label_template.csv"),
-        max_rows=max_records,
-        dataset_path=dataset_path,
-    )
-    region_template = write_region_label_template(
-        dataset,
-        str(output_dir / "region_label_template.csv"),
-        max_rows=max_records,
-        dataset_path=dataset_path,
-    )
 
     gate = pilot_gate(
         dataset=dataset,
@@ -81,8 +69,29 @@ def run_pilot(
     )
 
     results: List[ToolResult] = []
-    review_figures = _write_review_figures(dataset, output_dir)
-    figures: List[str] = list(review_figures)
+    if readiness_only:
+        # Fast path for multi-dataset readiness scans: skip templates, review
+        # figures, rendered reports, and the run record. Only the gate, readiness,
+        # plan-validation, and claim status are computed and written to JSON.
+        label_template = ""
+        region_template = ""
+        review_figures: List[str] = []
+        figures: List[str] = []
+    else:
+        label_template = write_expert_label_template(
+            dataset,
+            str(output_dir / "expert_label_template.csv"),
+            max_rows=max_records,
+            dataset_path=dataset_path,
+        )
+        region_template = write_region_label_template(
+            dataset,
+            str(output_dir / "region_label_template.csv"),
+            max_rows=max_records,
+            dataset_path=dataset_path,
+        )
+        review_figures = _write_review_figures(dataset, output_dir)
+        figures = list(review_figures)
     registry = build_mvp_registry()
     plan = build_xenium_mvp_plan()
     plan_validation = validate_tool_plan(
@@ -100,7 +109,7 @@ def run_pilot(
         "score": 0.0,
         "reason": "Neighborhood robustness sweep runs only for validated pilots.",
     }
-    if gate["status"] == "validated_ready":
+    if gate["status"] == "validated_ready" and not readiness_only:
         results = _run_validated_tools(dataset, plan)
         for result in results:
             _write_json(output_dir / ("%s.json" % result.tool_name), result)
@@ -137,22 +146,30 @@ def run_pilot(
             "validated_figures": "Generated only after expert labels and user regions pass the pilot gate.",
         },
         "spatial_robustness": spatial_robustness,
-        "report_md": str(output_dir / "validated_xenium_pilot_report.md"),
-        "report_html": str(output_dir / "validated_xenium_pilot_report.html"),
+        "report_md": "" if readiness_only else str(output_dir / "validated_xenium_pilot_report.md"),
+        "report_html": "" if readiness_only else str(output_dir / "validated_xenium_pilot_report.html"),
         "report_pdf": str(output_dir / "validated_xenium_pilot_report.pdf")
-        if normalized_format in {"pdf", "both"}
+        if (not readiness_only and normalized_format in {"pdf", "both"})
         else "",
         "report_format": normalized_format,
-        "report_path": str(output_dir / "validated_xenium_pilot_report.pdf")
-        if normalized_format == "pdf"
-        else str(output_dir / "validated_xenium_pilot_report.html"),
+        "report_path": ""
+        if readiness_only
+        else (
+            str(output_dir / "validated_xenium_pilot_report.pdf")
+            if normalized_format == "pdf"
+            else str(output_dir / "validated_xenium_pilot_report.html")
+        ),
+        "readiness_only": readiness_only,
         "run_record_path": "",
     }
-    planned_run_id = "mvp_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), uuid.uuid4().hex[:8])
-    payload["run_record_path"] = str(output_dir / "runs" / ("%s.json" % planned_run_id))
     payload["claim_ledger"] = build_pilot_claim_ledger(payload, results)
     payload["claim_reliability"] = build_pilot_claim_reliability(payload, results)
     payload["claim_summary"] = claim_ledger_summary(payload["claim_ledger"])
+    if readiness_only:
+        _write_json(output_dir / "pilot_validation.json", payload)
+        return payload
+    planned_run_id = "mvp_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), uuid.uuid4().hex[:8])
+    payload["run_record_path"] = str(output_dir / "runs" / ("%s.json" % planned_run_id))
     _write_markdown_report(output_dir / "validated_xenium_pilot_report.md", payload, results)
     _write_html_report(output_dir / "validated_xenium_pilot_report.html", payload, results)
     if payload["report_pdf"]:
@@ -203,6 +220,7 @@ def scan_pilot_readiness(
             max_records=max_records,
             min_label_coverage=min_label_coverage,
             min_region_coverage=min_region_coverage,
+            readiness_only=True,
         )
         datasets.append(
             {
@@ -213,8 +231,7 @@ def scan_pilot_readiness(
                 "label_status": result["label_report"]["status"],
                 "region_status": result["region_report"]["status"],
                 "blocking_reasons": result["blocking_reasons"],
-                "report_md": result["report_md"],
-                "report_html": result["report_html"],
+                "pilot_validation": str(output_dir / slug / "pilot_validation.json"),
             }
         )
     summary = {
@@ -822,13 +839,19 @@ def _write_scorecard_markdown(path: Path, summary: Dict[str, Any]) -> None:
         "- Datasets scanned: `%d`" % summary["dataset_count"],
         "- Validated-ready datasets: `%d`" % summary["validated_ready_count"],
         "",
-        "| Dataset | Status | Labels | Regions | Report |",
+        "| Dataset | Status | Labels | Regions | Readiness JSON |",
         "| --- | --- | --- | --- | --- |",
     ]
     for item in summary["datasets"]:
         lines.append(
             "| `%s` | `%s` | `%s` | `%s` | `%s` |"
-            % (item["dataset_path"], item["status"], item["label_status"], item["region_status"], item["report_md"])
+            % (
+                item["dataset_path"],
+                item["status"],
+                item["label_status"],
+                item["region_status"],
+                item.get("pilot_validation") or item.get("report_md") or "",
+            )
         )
     path.write_text("\n".join(lines), encoding="utf-8")
 

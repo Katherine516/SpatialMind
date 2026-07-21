@@ -708,6 +708,26 @@ class ValidatedPilotTests(unittest.TestCase):
         self.assertEqual(report.status, "valid")
         self.assertEqual(report.errors, [])
 
+    def test_readiness_only_skips_heavy_artifacts(self):
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium lymph dataset not available")
+        from spatialmind.pilot.xenium import run_pilot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "readiness"
+            result = run_pilot(XENIUM_LYMPH, out, max_records=40, readiness_only=True)
+            # Gate / plan / claim status is still computed.
+            self.assertTrue(result["status"].startswith("blocked"))
+            self.assertEqual(result["plan_validation"]["status"], "valid")
+            self.assertIn("claim_ledger", result)
+            self.assertTrue(result["readiness_only"])
+            # Heavy artifacts are skipped.
+            self.assertEqual(result["report_md"], "")
+            self.assertEqual(result["report_html"], "")
+            self.assertEqual(result["run_record_path"], "")
+            self.assertEqual(result["figures"], [])
+            self.assertEqual({p.name for p in out.iterdir()}, {"pilot_validation.json"})
+
     def test_pilot_gate_blocks_without_expert_labels_and_regions(self):
         dataset = SpatialDataset(
             sample_id="X1",
