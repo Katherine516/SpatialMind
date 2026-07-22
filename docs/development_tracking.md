@@ -1419,3 +1419,28 @@ Verification:
 - API OpenAPI schema exposes `html`, `pdf`, and `both` for both report-producing endpoints.
 - `pip check` reports no broken requirements.
 - Unit tests pass 63/63 and all three import contracts remain intact.
+
+### Step 38: Readiness-Only CLI and Visible Spatial Robustness
+
+Status: Complete.
+
+Work completed on 2026-07-22:
+
+- Evaluated Claude's internal `run_pilot(readiness_only=True)` fast path and retained it because it genuinely skips templates, figures, reports, validated tools, and run records.
+- Added `--readiness-only` to `scripts/run_validated_xenium_pilot.py` and `scripts/promote_local_agent.py`.
+- Added an in-memory `label_intake` block to pilot results so promotion no longer reloads every Xenium dataset solely to produce intake status.
+- Made readiness-only promotion write per-dataset `pilot_validation.json` plus the small aggregate Markdown/JSON reports, without heavy review artifacts.
+- Added execution metadata to the real neighborhood robustness sweep: requested graph sizes, permutation count, random seed, top-K, and engines.
+- Added a Spatial Robustness Sweep section immediately after claim reliability in Markdown, HTML, and PDF validated-run reports.
+- Kept robustness hidden on blocked reports because no real sweep is run before expert-label and ROI gates pass.
+- Added tests for robustness execution metadata and cross-format report rendering.
+
+Verification:
+
+- A single-dataset readiness-only Xenium run wrote only `pilot_validation.json`; it did not create templates, figures, reports, tool results, or a run record.
+- A readiness-only promotion scan inspected all four local Xenium datasets and wrote only per-dataset readiness JSON plus the aggregate Markdown/JSON summary.
+- A full blocked-run regression still produced HTML and PDF reports and correctly omitted the unmeasured robustness section.
+- A synthetic validated-report render verified that the measured robustness table appears in Markdown, HTML, and PDF; all three PDF pages were visually checked with no clipping or overlap.
+- Unit tests pass 67/67.
+- Legacy evaluation passes 15/15 with mean score 1.0000; MVP evaluation passes 10/10 with mean score 1.0000.
+- All three import contracts remain intact, `pip check` reports no broken requirements, bytecode compilation passes, and `git diff --check` reports no whitespace errors.

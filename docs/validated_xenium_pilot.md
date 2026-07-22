@@ -48,6 +48,20 @@ Single dataset with both user-facing report formats:
 MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/run_validated_xenium_pilot.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_validated_pilot --max-records 2500 --report-format both
 ```
 
+Fast readiness check for one dataset:
+
+```bash
+.venv/bin/python scripts/run_validated_xenium_pilot.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_readiness_only --max-records 200 --readiness-only
+```
+
+This mode writes only `pilot_validation.json`; it does not create templates, figures, rendered reports, tool outputs, or a run record.
+
+Fast promotion/readiness scan across all local Xenium datasets:
+
+```bash
+.venv/bin/python scripts/promote_local_agent.py --data-root data --out outputs/agent_promotion_readiness --max-records 200 --readiness-only
+```
+
 All local Xenium datasets:
 
 ```bash
@@ -85,6 +99,7 @@ The single-dataset pilot currently writes:
 - `claim_summary`: one refused biological claim and one supported non-biological readiness statement
 - `run_record_path`: hashed local provenance for the preparation run
 - `review_figures`: QA visualizations generated from current loader labels only
+- `spatial_robustness`: an actual Squidpy graph-size sweep on validated runs. Markdown, HTML, and PDF reports show the sweep settings and score immediately after claim reliability.
 
 ## Required Inputs To Become Validated-Ready
 

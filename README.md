@@ -116,6 +116,28 @@ Validated Xenium example:
 
 The REST API exposes the same `report_format` field on `POST /runs` and `POST /pilot/xenium/run` with accepted values `html`, `pdf`, and `both`.
 
+For a quick gate/status check without generating review packets or reports, use readiness-only mode:
+
+```bash
+.venv/bin/python scripts/run_validated_xenium_pilot.py \
+  --data "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Glioblastoma_With_Addon_outs" \
+  --out outputs/xenium_glioblastoma_readiness \
+  --max-records 200 \
+  --readiness-only
+```
+
+This writes only `pilot_validation.json`. It skips review templates, figures, HTML/PDF/Markdown reports, validated analysis tools, and the hashed run record. Use a fresh output directory when you need the directory contents themselves to demonstrate that only the readiness artifact was created.
+
+Scan every local dataset through the promotion workflow without the full artifact build:
+
+```bash
+.venv/bin/python scripts/promote_local_agent.py \
+  --data-root data \
+  --out outputs/agent_promotion_readiness \
+  --max-records 200 \
+  --readiness-only
+```
+
 ## Claim-Level Reliability
 
 The v12 agent adds a claim-level reliability layer. The scoring unit is one individual claim in the report, not the whole run. Each claim is decomposed into four interpretable components:
@@ -383,6 +405,7 @@ The v11 pilot promotion adds the real-agent control layer around this workflow:
 - automatic limitations generated from label, region, panel, and tool facts,
 - review-only visualization gallery for blocked runs,
 - local run record with hashes for inputs, reports, templates, and figures.
+- validated-run reports expose the spatial-robustness sweep next to claim reliability, including neighborhood sizes, permutations, seed, top-K, engine, sign agreement, top-K Jaccard, and the resulting R score.
 
 Before rerunning the validated pilot with new reviewer files, validate label intake:
 

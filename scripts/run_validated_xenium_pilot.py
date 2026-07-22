@@ -24,6 +24,11 @@ def main() -> None:
         choices=["html", "pdf", "both"],
         help="Report delivery format. PDF output retains HTML as an auditable source.",
     )
+    parser.add_argument(
+        "--readiness-only",
+        action="store_true",
+        help="Write only pilot_validation.json; skip templates, figures, reports, validated tools, and the run record.",
+    )
     args = parser.parse_args()
 
     result = run_pilot(
@@ -34,6 +39,7 @@ def main() -> None:
         min_region_coverage=args.min_region_coverage,
         allow_single_region=args.allow_single_region,
         report_format=args.report_format,
+        readiness_only=args.readiness_only,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
 

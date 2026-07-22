@@ -15,18 +15,25 @@ def main() -> None:
     parser.add_argument("--data-root", default="data")
     parser.add_argument("--out", default="outputs/agent_promotion")
     parser.add_argument("--max-records", type=int, default=800)
+    parser.add_argument(
+        "--readiness-only",
+        action="store_true",
+        help="Compute dataset/intake/pilot status only; skip templates, figures, rendered reports, tools, and run records.",
+    )
     args = parser.parse_args()
 
     report = build_local_promotion_report(
         data_root=args.data_root,
         output_root=args.out,
         max_records=args.max_records,
+        readiness_only=args.readiness_only,
     )
     summary = {
         "created_at": report["created_at"],
         "dataset_count": report["dataset_count"],
         "xenium_dataset_count": report["xenium_dataset_count"],
         "validated_ready_xenium_count": report["validated_ready_xenium_count"],
+        "readiness_only": report["readiness_only"],
         "report_json": str(Path(args.out) / "local_promotion_report.json"),
         "report_md": str(Path(args.out) / "local_promotion_report.md"),
         "next_actions": report["next_actions"][:8],

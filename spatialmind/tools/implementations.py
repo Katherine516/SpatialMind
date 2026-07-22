@@ -240,7 +240,17 @@ def run_neighborhood_robustness(dataset: SpatialDataset, params: Optional[Dict[s
         )
         pairs = result.metrics.get("all_pairs") or result.metrics.get("top_pairs") or []
         per_setting.append({"n_neighs": n_neighs, "engine": result.metrics.get("engine"), "pairs": pairs})
-    return summarize_neighborhood_robustness(per_setting, top_k=top_k)
+    summary = summarize_neighborhood_robustness(per_setting, top_k=top_k)
+    summary.update(
+        {
+            "requested_settings": grid,
+            "n_perms": n_perms,
+            "random_state": seed,
+            "top_k": top_k,
+            "engines": sorted({str(item.get("engine")) for item in per_setting if item.get("engine")}),
+        }
+    )
+    return summary
 
 
 def summarize_neighborhood_robustness(per_setting: List[Dict[str, object]], top_k: int = 10) -> Dict[str, object]:

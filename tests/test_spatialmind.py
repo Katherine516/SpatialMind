@@ -59,7 +59,7 @@ from spatialmind.tools.fusion import ModalityFuser
 from spatialmind.tools.implementations import feature_overlay, marker_detection, reference_label_transfer
 from spatialmind.workflows import INTEGRATION_MODE, SCATAC_STANDALONE, SCRNA_STANDALONE, XENIUM_STANDALONE
 from spatialmind.contracts import BiologicalClaim, CellByFeatureContract, CoreSpatialObject, ground_claim
-from spatialmind.schemas import SpatialDataset, SpotRecord
+from spatialmind.schemas import SpatialDataset, SpotRecord, ToolResult
 from spatialmind.pilot import build_pilot_claim_ledger, pilot_gate
 from spatialmind.methods.reliability import build_claim_reliability_table, fit_claim_reliability_calibration
 from spatialmind.review import CLAIM_TRUTH_FIELDS, validate_claim_truth_table
@@ -556,6 +556,100 @@ class ToolRegistryTests(unittest.TestCase):
         # Prototype settings carry no z-scores, so robustness cannot be established.
         proto = [{"n_neighs": 6, "engine": "prototype", "pairs": [{"pair": "A | B", "neighbor_count": 10}]}]
         self.assertEqual(summarize_neighborhood_robustness(proto, top_k=2)["status"], "insufficient_settings")
+
+    def test_neighborhood_robustness_records_execution_settings(self):
+        from spatialmind.tools.implementations import run_neighborhood_robustness
+
+        def result_for(_dataset, params):
+            n_neighs = int(params["n_neighs"])
+            return ToolResult(
+                tool_name="cell_neighborhood_enrichment",
+                summary="test",
+                metrics={
+                    "engine": "squidpy",
+                    "all_pairs": [
+                        {"pair": "A | B", "zscore": 4.0 + n_neighs / 100.0},
+                        {"pair": "A | C", "zscore": -3.0},
+                    ],
+                },
+            )
+
+        with patch("spatialmind.tools.implementations.cell_neighborhood_enrichment", side_effect=result_for):
+            summary = run_neighborhood_robustness(
+                _make_two_program_dataset(),
+                {
+                    "robustness_n_neighs": [5, 9],
+                    "n_perms": 250,
+                    "random_state": 17,
+                    "robustness_top_k": 2,
+                },
+            )
+        self.assertEqual(summary["status"], "computed")
+        self.assertEqual(summary["requested_settings"], [5, 9])
+        self.assertEqual(summary["n_perms"], 250)
+        self.assertEqual(summary["random_state"], 17)
+        self.assertEqual(summary["top_k"], 2)
+        self.assertEqual(summary["engines"], ["squidpy"])
+
+    def test_validated_reports_surface_spatial_robustness(self):
+        from spatialmind.pilot.xenium import (
+            _spatial_robustness_rows,
+            _write_html_report,
+            _write_markdown_report,
+            _write_pilot_pdf_report,
+        )
+
+        payload = {
+            "created_at": "2026-07-22T00:00:00+00:00",
+            "status": "validated_ready",
+            "dataset_path": "synthetic.xenium",
+            "records_loaded": 20,
+            "features_loaded": 10,
+            "blocking_reasons": [],
+            "required_next_inputs": [],
+            "tool_plan": [],
+            "plan_validation": {"status": "valid", "errors": []},
+            "expert_label_template": "labels.csv",
+            "region_label_template": "regions.csv",
+            "label_report": {"status": "expert_labels_applied"},
+            "region_report": {"status": "user_regions_applied"},
+            "review_figures": [],
+            "cell_type_counts": {"A": 10, "B": 10},
+            "region_counts": {"core": 10, "margin": 10},
+            "claim_ledger": [],
+            "claim_reliability": [],
+            "run_record_path": "run.json",
+            "report_html": "report.html",
+            "spatial_robustness": {
+                "status": "computed",
+                "score": 0.82,
+                "requested_settings": [6, 10, 15],
+                "n_perms": 250,
+                "random_state": 17,
+                "top_k": 10,
+                "engines": ["squidpy"],
+                "mean_sign_agreement": 1.0,
+                "mean_topk_jaccard": 0.55,
+                "n_reference_pairs": 10,
+            },
+        }
+        rows = dict(_spatial_robustness_rows(payload))
+        self.assertEqual(rows["Robustness score"], "0.8200")
+        self.assertEqual(rows["Permutations per setting"], "250")
+        self.assertEqual(rows["Random seed"], "17")
+        with tempfile.TemporaryDirectory() as tmp:
+            md_path = Path(tmp) / "report.md"
+            html_path = Path(tmp) / "report.html"
+            pdf_path = Path(tmp) / "report.pdf"
+            _write_markdown_report(md_path, payload, [])
+            _write_html_report(html_path, payload, [])
+            _write_pilot_pdf_report(pdf_path, payload, [])
+            self.assertIn("Spatial Robustness Sweep", md_path.read_text(encoding="utf-8"))
+            html_report = html_path.read_text(encoding="utf-8")
+            self.assertIn("Spatial Robustness Sweep", html_report)
+            self.assertIn("0.8200", html_report)
+            with pdf_path.open("rb") as handle:
+                self.assertEqual(handle.read(5), b"%PDF-")
 
     def test_spatial_robustness_component_prefers_real_sweep(self):
         from spatialmind.methods.reliability.scoring import _spatial_robustness_component

@@ -11,6 +11,7 @@ from spatialmind.agent.runtime import DEFAULT_XENIUM_INPUTS, build_xenium_mvp_pl
 from spatialmind.ingestion import (
     apply_best_available_labels,
     apply_best_available_regions,
+    build_xenium_label_intake_report,
     build_readiness_report,
     load_xenium,
     summarize_xenium_expert_readiness,
@@ -63,6 +64,16 @@ def run_pilot(
         asset_readiness=asset_readiness.to_dict(),
         label_report=label_report.to_dict(),
         region_report=region_report.to_dict(),
+        min_label_coverage=min_label_coverage,
+        min_region_coverage=min_region_coverage,
+        allow_single_region=allow_single_region,
+    )
+    intake_report = build_xenium_label_intake_report(
+        dataset=dataset,
+        dataset_path=dataset_path,
+        label_report=label_report,
+        region_report=region_report,
+        asset_readiness=asset_readiness,
         min_label_coverage=min_label_coverage,
         min_region_coverage=min_region_coverage,
         allow_single_region=allow_single_region,
@@ -131,6 +142,7 @@ def run_pilot(
         "region_counts": dict(Counter(record.region or "unassigned" for record in dataset.records)),
         "label_report": label_report.to_dict(),
         "region_report": region_report.to_dict(),
+        "label_intake": intake_report.to_dict(),
         "asset_readiness": asset_readiness.to_dict(),
         "workflow_readiness": _jsonable(readiness),
         "contract": _jsonable(contract),
@@ -559,6 +571,23 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
             )
     else:
         lines.append("No claim reliability records were generated.")
+    robustness_rows = _spatial_robustness_rows(payload)
+    if robustness_rows:
+        lines.extend(
+            [
+                "",
+                "## Spatial Robustness Sweep",
+                "",
+                "The R component is measured by rerunning neighborhood enrichment across graph-size settings and comparing sign agreement plus top-K pair overlap.",
+                "",
+                "| Setting / metric | Value |",
+                "| --- | --- |",
+            ]
+        )
+        lines.extend("| %s | `%s` |" % (label, value) for label, value in robustness_rows)
+        reason = payload.get("spatial_robustness", {}).get("reason")
+        if reason:
+            lines.extend(["", "Note: %s" % reason])
     lines.extend(["", "## Limitations", ""])
     lines.extend("- %s" % item for item in _limitations(payload))
     if payload.get("run_record_path"):
@@ -610,6 +639,21 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         )
         for item in payload.get("claim_reliability", [])
     )
+    robustness_rows = _spatial_robustness_rows(payload)
+    robustness_html = ""
+    if robustness_rows:
+        robustness_body = "".join(
+            "<tr><td>%s</td><td><code>%s</code></td></tr>" % (html.escape(label), html.escape(value))
+            for label, value in robustness_rows
+        )
+        reason = payload.get("spatial_robustness", {}).get("reason")
+        reason_html = "<p>%s</p>" % html.escape(str(reason)) if reason else ""
+        robustness_html = (
+            "<section><h2>Spatial Robustness Sweep</h2>"
+            "<p>The R component is measured by rerunning neighborhood enrichment across graph-size settings and comparing sign agreement plus top-K pair overlap.</p>"
+            "<table><tr><th>Setting / metric</th><th>Value</th></tr>%s</table>%s</section>"
+            % (robustness_body, reason_html)
+        )
     limitations = "".join("<li>%s</li>" % html.escape(item) for item in _limitations(payload))
     label_rows = "".join(
         "<tr><td>%s</td><td>%d</td></tr>" % (html.escape(label), count)
@@ -636,6 +680,7 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
 <section><h2>Tool Results</h2>%s</section>
 <section><h2>Claim Ledger</h2><ul>%s</ul></section>
 <section><h2>Claim Reliability</h2><table><tr><th>Claim</th><th>Reliability</th><th>S</th><th>A</th><th>P</th><th>R</th><th>Interpretation</th></tr>%s</table><p><small>S = statistical strength, A = annotation quality, P = panel adequacy, R = spatial robustness. The current default combiner is weakest-link.</small></p></section>
+%s
 <section><h2>Limitations</h2><ul>%s</ul></section>
 <section><h2>Run Record</h2><p><code>%s</code></p></section>
 <section><h2>Claim Policy</h2><p>Validated biological claims require expert labels and user-provided regions. Weak labels remain software QA only.</p></section>
@@ -656,6 +701,7 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         result_html or "<p>No analysis tools were run because validation inputs are incomplete.</p>",
         claims,
         reliability_rows or "<tr><td colspan=\"7\">No reliability records generated.</td></tr>",
+        robustness_html,
         limitations,
         html.escape(payload.get("run_record_path") or "not written"),
     )
@@ -751,21 +797,40 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
         ),
     ]
     sections.extend(result_sections)
-    sections.extend(
-        [
+    sections.append(
+        PdfSection(
+            title="Claim Ledger and Reliability",
+            paragraphs=[
+                "Reliability is the weakest of statistical support, annotation quality, panel adequacy, and spatial robustness."
+            ],
+            tables=[
+                PdfTable(
+                    headers=["Claim", "Status", "Reliability", "Text"],
+                    rows=claim_rows,
+                    column_widths=[1, 1.4, 1, 5],
+                )
+            ],
+        )
+    )
+    robustness_rows = _spatial_robustness_rows(payload)
+    if robustness_rows:
+        sections.append(
             PdfSection(
-                title="Claim Ledger and Reliability",
+                title="Spatial Robustness Sweep",
                 paragraphs=[
-                    "Reliability is the weakest of statistical support, annotation quality, panel adequacy, and spatial robustness."
+                    "The R component is measured by rerunning neighborhood enrichment across graph-size settings and comparing sign agreement plus top-K pair overlap."
                 ],
                 tables=[
                     PdfTable(
-                        headers=["Claim", "Status", "Reliability", "Text"],
-                        rows=claim_rows,
-                        column_widths=[1, 1.4, 1, 5],
+                        headers=["Setting / metric", "Value"],
+                        rows=robustness_rows,
+                        column_widths=[2, 3],
                     )
                 ],
-            ),
+            )
+        )
+    sections.extend(
+        [
             PdfSection(title="Limitations", bullets=_limitations(payload)),
             PdfSection(
                 title="Provenance and Artifacts",
@@ -888,6 +953,31 @@ def _pilot_structural_inputs() -> List[str]:
     # so a blocked run reports a structurally valid plan instead of a misleading
     # "invalid" caused only by pending expert labels / user regions.
     return list(DEFAULT_XENIUM_INPUTS) + ["expert_labels", "user_regions"]
+
+
+def _spatial_robustness_rows(payload: Dict[str, Any]) -> List[Tuple[str, str]]:
+    if payload.get("status") != "validated_ready":
+        return []
+    sweep = payload.get("spatial_robustness")
+    if not isinstance(sweep, dict):
+        return []
+    settings = sweep.get("requested_settings") or sweep.get("settings") or []
+    rows = [
+        ("Status", str(sweep.get("status") or "not_run")),
+        ("Robustness score", "%.4f" % float(sweep.get("score") or 0.0)),
+        ("Neighborhood graph sizes (n_neighs)", ", ".join(str(value) for value in settings) or "not recorded"),
+        ("Permutations per setting", str(sweep.get("n_perms") if sweep.get("n_perms") is not None else "not recorded")),
+        ("Random seed", str(sweep.get("random_state") if sweep.get("random_state") is not None else "not recorded")),
+        ("Top-K pairs", str(sweep.get("top_k") if sweep.get("top_k") is not None else "not recorded")),
+        ("Engines", ", ".join(str(value) for value in sweep.get("engines", [])) or "not recorded"),
+    ]
+    if sweep.get("mean_sign_agreement") is not None:
+        rows.append(("Mean sign agreement", "%.4f" % float(sweep["mean_sign_agreement"])))
+    if sweep.get("mean_topk_jaccard") is not None:
+        rows.append(("Mean top-K Jaccard", "%.4f" % float(sweep["mean_topk_jaccard"])))
+    if sweep.get("n_reference_pairs") is not None:
+        rows.append(("Reference pairs evaluated", str(sweep["n_reference_pairs"])))
+    return rows
 
 
 def _limitations(payload: Dict[str, Any]) -> List[str]:
