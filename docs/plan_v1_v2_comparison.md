@@ -71,7 +71,7 @@ The current implementation avoids these risks by registering v2 interfaces first
 | Batch engine | Scaffolded | Synchronous local `BatchEngine`; Celery app placeholder added |
 | Memory user priors | Scaffolded | `UserPriorStore`, `PriorType`, `PriorSource` added |
 | VizRouter and 15 viz specs | Implemented as routing specs | Concrete renderers still pending |
-| ReportBuilder | Scaffolded | Structured HTML interface added; PDF placeholder requires WeasyPrint |
+| ReportBuilder | Implemented | Structured HTML plus paginated ReportLab PDF; CLI/API format selection supports HTML, PDF, or both |
 | Storage replay fields | Partially implemented | `RunRecord` includes batch/fusion fields, CLI replay added |
 | Extended API | Partially implemented | Health, runs, figures, QC approval, batch jobs/status |
 
@@ -90,7 +90,7 @@ Several items from the earlier v2 comparison have since moved forward. Real Xeni
 - spatial ATAC peak/motif workflows,
 - real Celery asynchronous execution,
 - Plotly/Vitessce/PNG renderers for all 15 visualization types,
-- WeasyPrint PDF export,
+- selectable HTML/PDF export with ReportLab,
 - frontend v2 views.
 
 ## Recommended Implementation Order

@@ -1,0 +1,9 @@
+# Development and validation tools. Install after requirements.txt when needed.
+
+-r requirements.txt
+
+pytest
+ruff
+mypy
+pre-commit
+import-linter

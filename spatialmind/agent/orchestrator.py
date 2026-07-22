@@ -27,7 +27,7 @@ class SpatialMindAgent:
         self.storage = StorageLayer(output_root)
         self.memory = MemoryLayer(memory_root)
 
-    def run(self, prompt: str, data_path: str) -> AgentRun:
+    def run(self, prompt: str, data_path: str, report_format: str = "html") -> AgentRun:
         plan = self.reasoning.plan(prompt)
         sample_id = plan.request.sample_id or available_samples(data_path)[0]
         dataset = self.ingestion.load(data_path, sample_id=sample_id)
@@ -45,7 +45,16 @@ class SpatialMindAgent:
             self.storage.write_json(run_dir, "%s.json" % step.tool, result)
 
         svg_path = self.visualization.render_distribution_svg(dataset, run_dir, plan.request.cell_types)
-        report_path = self.visualization.render_report(dataset, prompt, results, run_dir, svg_path, similar_runs)
+        report_paths = self.visualization.render_report(
+            dataset,
+            prompt,
+            results,
+            run_dir,
+            svg_path,
+            similar_runs,
+            report_format=report_format,
+        )
+        report_path = report_paths.primary(report_format)
         interactive_path = os.path.join(run_dir, "spatial_distribution_interactive.html")
         provenance_path = self.storage.write_provenance(
             run_dir,
@@ -61,6 +70,7 @@ class SpatialMindAgent:
                 "tools": [step.tool for step in plan.steps],
                 "artifacts": {
                     "report": report_path,
+                    "reports": report_paths.to_dict(),
                     "spatial_distribution": svg_path,
                     "interactive_spatial_distribution": interactive_path,
                 },
@@ -75,4 +85,5 @@ class SpatialMindAgent:
             results=results,
             report_path=report_path,
             provenance_path=provenance_path,
+            report_paths=report_paths.to_dict(),
         )

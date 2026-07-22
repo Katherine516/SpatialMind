@@ -1,4 +1,5 @@
 from importlib import metadata
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 
@@ -58,7 +59,30 @@ def check_runtime_versions(include_optional: bool = False) -> Dict[str, object]:
         "missing": missing,
         "incompatible": incompatible,
         "optional_missing": optional_missing,
+        "runtime_warnings": detect_openmp_runtime_conflicts(),
     }
+
+
+def detect_openmp_runtime_conflicts() -> List[str]:
+    runtimes: Dict[str, List[str]] = {"llvm": [], "intel": []}
+    for package in ("scikit-learn", "torch"):
+        try:
+            distribution = metadata.distribution(package)
+        except metadata.PackageNotFoundError:
+            continue
+        for file in distribution.files or []:
+            name = Path(str(file)).name.lower()
+            if name in {"libomp.dylib", "libomp.so"}:
+                runtimes["llvm"].append("%s:%s" % (package, file))
+            elif "libiomp" in name:
+                runtimes["intel"].append("%s:%s" % (package, file))
+    if runtimes["llvm"] and runtimes["intel"]:
+        return [
+            "Both LLVM OpenMP (%s) and Intel OpenMP (%s) are installed. Use a clean core-analysis environment "
+            "without PyTorch, or a separate deep-learning environment, to avoid possible runtime deadlocks."
+            % (", ".join(runtimes["llvm"]), ", ".join(runtimes["intel"]))
+        ]
+    return []
 
 
 def main() -> None:
@@ -68,6 +92,8 @@ def main() -> None:
         print("- %s %s" % (package, version))
     if report["optional_missing"]:
         print("Optional packages not installed: %s" % ", ".join(report["optional_missing"]))
+    for warning in report["runtime_warnings"]:
+        print("Runtime warning: %s" % warning)
     if not report["ok"]:
         problems = list(report["missing"]) + list(report["incompatible"])
         raise SystemExit("Version check failed: %s" % "; ".join(problems))

@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 from dataclasses import asdict, dataclass, is_dataclass
@@ -11,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from eval.runner import EvalRunner
 from spatialmind.agent_loop import SpatialAgent
+from spatialmind.datasets import discover_dataset_candidates
 from spatialmind.ingestion import (
     apply_best_available_labels,
     apply_best_available_regions,
@@ -21,17 +23,11 @@ from spatialmind.ingestion import (
 )
 from spatialmind.schemas import ToolResult
 from spatialmind.tools import build_mvp_registry
+from spatialmind.versioning import detect_openmp_runtime_conflicts
 
 
 OUTPUT_ROOT = Path("outputs/training/local_spatialmind_training")
 DEMO_DATASET = "data/demo_manifest.json"
-BREAST_XENIUM = "data/Human_Breast_Biomarkers_S1_Top_outs"
-LOCAL_XENIUM_DATASETS = [
-    "data/Human_Breast_Biomarkers_S1_Top_outs",
-    "data/Xenium lymph/Xenium_V1_hLymphNode_nondiseased_section_outs",
-    "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs",
-    "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Glioblastoma_With_Addon_outs",
-]
 
 
 @dataclass
@@ -59,12 +55,19 @@ class TrainingRecord:
 
 
 def main() -> None:
-    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(description="Generate local SpatialMind behavioral training/evaluation records.")
+    parser.add_argument("--data-root", default="data")
+    parser.add_argument("--out", default=str(OUTPUT_ROOT))
+    parser.add_argument("--max-records", type=int, default=1200)
+    args = parser.parse_args()
+    output_root = Path(args.out)
+    output_root.mkdir(parents=True, exist_ok=True)
+    xenium_datasets = _discover_xenium_datasets(args.data_root)
     records: List[TrainingRecord] = []
     records.extend(_run_mvp_eval_training_cases())
-    records.extend(_run_breast_xenium_weak_label_training())
-    records.extend(_build_xenium_readiness_training_records())
-    _write_outputs(records)
+    records.extend(_run_xenium_exploratory_training(xenium_datasets, max_records=args.max_records))
+    records.extend(_build_xenium_readiness_training_records(xenium_datasets))
+    _write_outputs(records, output_root, xenium_datasets)
 
 
 def _run_mvp_eval_training_cases() -> List[TrainingRecord]:
@@ -105,62 +108,89 @@ def _run_mvp_eval_training_cases() -> List[TrainingRecord]:
     return outputs
 
 
-def _run_breast_xenium_weak_label_training() -> List[TrainingRecord]:
-    dataset = load_xenium(BREAST_XENIUM, max_records=2500)
-    dataset.metadata["analysis_dataset_path"] = BREAST_XENIUM
-    label_report = apply_best_available_labels(dataset, BREAST_XENIUM, fallback="breast_marker_rule")
-    region_report = apply_best_available_regions(dataset, BREAST_XENIUM)
-    contract = validate_cell_by_feature_contract(dataset)
-    readiness = build_readiness_report(dataset)
-    registry = build_mvp_registry()
-    group1, group2 = _choose_groups(dataset)
-    tool_plan = [
-        ("qc_and_cluster", {"resolution": 0.55, "engine": "prototype"}),
-        ("annotation", {"method": "marker_rule_v0"}),
-        ("marker_detection", {"group_key": "cell_type", "group1": group1, "group2": group2, "engine": "prototype", "n_top": 15}),
-        ("cell_neighborhood_enrichment", {"radius": 35.0, "engine": "prototype"}),
-    ]
-    results: List[ToolResult] = []
-    warnings: List[str] = []
-    for tool_name, params in tool_plan:
-        result = registry.get(tool_name).run(dataset, params)
-        results.append(result)
-        warnings.extend(result.caveats)
-        if result.label_caveat:
-            warnings.append(result.label_caveat)
-    return [
-        TrainingRecord(
-            record_id="LOCAL-XENIUM-BREAST-WEAK-001",
-            record_type="xenium_weak_label_pipeline",
-            dataset_path=BREAST_XENIUM,
-            query="Run the v7 Xenium MVP workflow on the local breast dataset using the best currently available labels.",
-            expected_tools=[tool for tool, _params in tool_plan],
-            actual_tools=[result.tool_name for result in results],
-            score=1.0,
-            usable_for=["pipeline_regression_training", "visualization_training", "weak_label_caveat_training"],
-            not_usable_for=["expert_cell_type_ground_truth", "biological_claim_training"],
-            label_status=label_report.status,
-            warnings=_dedupe(warnings + label_report.warnings + region_report.warnings + readiness.warnings),
-            result_summary=" ".join(result.summary for result in results),
-            metrics={
-                "cell_count": len(dataset.records),
-                "feature_count": len(dataset.genes),
-                "cell_type_count": len(dataset.cell_types),
-                "cell_types": dataset.cell_types,
-                "contract": _jsonable(contract),
-                "label_readiness": label_report.to_dict(),
-                "region_readiness": region_report.to_dict(),
-                "readiness": _jsonable(readiness),
-                "tool_metrics": {result.tool_name: _compact_metrics(result.metrics) for result in results},
-            },
-            recommended_next_step="Replace marker-rule labels with expert or validated reference-assisted labels keyed by Xenium cell_id.",
+def _run_xenium_exploratory_training(dataset_paths: List[str], max_records: int) -> List[TrainingRecord]:
+    records: List[TrainingRecord] = []
+    for index, dataset_path in enumerate(dataset_paths, start=1):
+        dataset = load_xenium(dataset_path, max_records=max_records)
+        dataset.metadata["analysis_dataset_path"] = dataset_path
+        label_report = apply_best_available_labels(dataset, dataset_path, fallback=None)
+        region_report = apply_best_available_regions(dataset, dataset_path)
+        contract = validate_cell_by_feature_contract(dataset)
+        readiness = build_readiness_report(dataset)
+        registry = build_mvp_registry()
+        group1, group2 = _choose_groups(dataset)
+        tool_plan = [
+            ("qc_and_cluster", {"resolution": 0.55, "strict_engine": True, "random_state": 0}),
+            ("annotation", {"method": "existing_provisional_labels"}),
+            (
+                "marker_detection",
+                {
+                    "group_key": "cell_type",
+                    "group1": group1,
+                    "group2": group2,
+                    "strict_engine": True,
+                    "method": "wilcoxon",
+                    "n_top": 15,
+                },
+            ),
+            (
+                "cell_neighborhood_enrichment",
+                {"n_neighs": 6, "n_perms": 100, "n_jobs": 1, "random_state": 0, "strict_engine": True},
+            ),
+        ]
+        results: List[ToolResult] = []
+        warnings: List[str] = []
+        for tool_name, params in tool_plan:
+            result = registry.get(tool_name).run(dataset, params)
+            results.append(result)
+            warnings.extend(result.caveats)
+            if result.label_caveat:
+                warnings.append(result.label_caveat)
+        real_engines = sorted(
+            {str(result.metrics.get("engine")) for result in results if result.metrics.get("engine")}
         )
-    ]
+        records.append(
+            TrainingRecord(
+                record_id="LOCAL-XENIUM-EXPLORATORY-%03d" % index,
+                record_type="xenium_exploratory_pipeline",
+                dataset_path=dataset_path,
+                query="Run the Xenium exploratory workflow on this local dataset using provisional labels with explicit caveats.",
+                expected_tools=[tool for tool, _params in tool_plan],
+                actual_tools=[result.tool_name for result in results],
+                score=1.0,
+                usable_for=["pipeline_regression_training", "wrapper_validation", "weak_label_caveat_training"],
+                not_usable_for=["expert_cell_type_ground_truth", "biological_claim_training"],
+                label_status=(
+                    "provisional_loader_labels"
+                    if label_report.status != "expert_labels_applied"
+                    else label_report.status
+                ),
+                warnings=_dedupe(warnings + label_report.warnings + region_report.warnings + readiness.warnings),
+                result_summary=" ".join(result.summary for result in results),
+                metrics={
+                    "cell_count": len(dataset.records),
+                    "feature_count": len(dataset.genes),
+                    "cell_type_count": len(dataset.cell_types),
+                    "cell_types": dataset.cell_types,
+                    "contract": _jsonable(contract),
+                    "label_readiness": label_report.to_dict(),
+                    "region_readiness": region_report.to_dict(),
+                    "readiness": _jsonable(readiness),
+                    "tool_metrics": {result.tool_name: _compact_metrics(result.metrics) for result in results},
+                    "real_engines": real_engines,
+                    "sampling": dataset.metadata.get("sampling", {}),
+                },
+                recommended_next_step=(
+                    "Replace provisional labels with expert or validated reference-assisted labels keyed by Xenium cell_id."
+                ),
+            )
+        )
+    return records
 
 
-def _build_xenium_readiness_training_records() -> List[TrainingRecord]:
+def _build_xenium_readiness_training_records(dataset_paths: List[str]) -> List[TrainingRecord]:
     records = []
-    for index, dataset_path in enumerate(LOCAL_XENIUM_DATASETS, start=1):
+    for index, dataset_path in enumerate(dataset_paths, start=1):
         readiness = summarize_xenium_expert_readiness(dataset_path)
         status = "ready_for_expert_labeling" if readiness.has_cell_table and readiness.has_feature_matrix else "blocked"
         records.append(
@@ -188,15 +218,17 @@ def _build_xenium_readiness_training_records() -> List[TrainingRecord]:
     return records
 
 
-def _write_outputs(records: List[TrainingRecord]) -> None:
-    jsonl_path = OUTPUT_ROOT / "training_records.jsonl"
-    summary_path = OUTPUT_ROOT / "training_summary.json"
-    report_path = OUTPUT_ROOT / "training_report.md"
+def _write_outputs(records: List[TrainingRecord], output_root: Path, xenium_datasets: List[str]) -> None:
+    jsonl_path = output_root / "training_records.jsonl"
+    summary_path = output_root / "training_summary.json"
+    report_path = output_root / "training_report.md"
     with jsonl_path.open("w", encoding="utf-8") as handle:
         for record in records:
-            handle.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
+            handle.write(json.dumps(record.to_dict(), sort_keys=True, allow_nan=False) + "\n")
     summary = _summarize(records, jsonl_path, report_path)
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    summary["xenium_datasets"] = xenium_datasets
+    summary["runtime_warnings"] = detect_openmp_runtime_conflicts()
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
     report_path.write_text(_render_report(records, summary), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
 
@@ -235,6 +267,16 @@ def _render_report(records: List[TrainingRecord], summary: Dict[str, Any]) -> st
         "- Record types: `%s`" % json.dumps(summary["by_type"], sort_keys=True),
         "- Label status: `%s`" % json.dumps(summary["by_label_status"], sort_keys=True),
         "",
+        "## Runtime Warnings",
+        "",
+    ]
+    if summary.get("runtime_warnings"):
+        lines.extend("- %s" % warning for warning in summary["runtime_warnings"])
+    else:
+        lines.append("- No known conflicting numerical runtimes were detected.")
+    lines.extend(
+        [
+        "",
         "## What Was Trained",
         "",
         "This run trains the agent behaviorally: query planning, tool selection, refusal policy, weak-label caveats, and local Xenium readiness recommendations. It does not fine-tune a neural model and it does not create expert biological ground truth.",
@@ -242,12 +284,13 @@ def _render_report(records: List[TrainingRecord], summary: Dict[str, Any]) -> st
         "## Local Data Used",
         "",
         "- `data/demo_manifest.json` and `data/demo_spatial.csv` for supervised MVP query-plan-result examples.",
-        "- `data/Human_Breast_Biomarkers_S1_Top_outs` for a weak-label Xenium MVP pipeline record.",
-        "- Four local Xenium folders for expert-label readiness records.",
+        "- Every Xenium output folder discovered under the selected data root for real-wrapper exploratory pipeline records.",
+        "- The same Xenium folders for expert-label and ROI readiness records.",
         "",
         "## Records",
         "",
-    ]
+        ]
+    )
     for record in records:
         lines.extend(
             [
@@ -280,11 +323,24 @@ def _choose_groups(dataset: Any) -> tuple[str, str]:
     counts: Dict[str, int] = {}
     for record in dataset.records:
         counts[record.cell_type] = counts.get(record.cell_type, 0) + 1
-    first = "CD8+_T_Cells" if "CD8+_T_Cells" in counts else max(counts, key=counts.get)
-    second = "Invasive_Tumor" if "Invasive_Tumor" in counts else sorted(counts, key=counts.get, reverse=True)[-1]
-    if first == second and len(counts) > 1:
-        second = sorted(counts, key=counts.get, reverse=True)[1]
-    return first, second
+    eligible = [
+        label
+        for label in sorted(counts, key=counts.get, reverse=True)
+        if "unannotated" not in label.lower() and label.lower() != "unlabeled"
+    ]
+    if len(eligible) < 2:
+        eligible = sorted(counts, key=counts.get, reverse=True)
+    if len(eligible) < 2:
+        raise ValueError("Xenium exploratory training requires at least two provisional cell classes.")
+    return eligible[0], eligible[1]
+
+
+def _discover_xenium_datasets(data_root: str) -> List[str]:
+    return [
+        path
+        for path in discover_dataset_candidates(data_root)
+        if Path(path).is_dir() and (Path(path) / "experiment.xenium").exists()
+    ]
 
 
 def _label_status_from_warnings(warnings: List[str]) -> str:

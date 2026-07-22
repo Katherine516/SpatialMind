@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Literal
 
 from dataclasses import asdict, is_dataclass
 
@@ -29,6 +29,7 @@ def create_app():
         llm_provider: str = "local"
         llm_model: str = ""
         qc_approved: bool = False
+        report_format: Literal["html", "pdf", "both"] = "html"
 
     class BatchRequest(BaseModel):
         query: str
@@ -41,6 +42,7 @@ def create_app():
         min_label_coverage: float = 0.7
         min_region_coverage: float = 0.7
         allow_single_region: bool = False
+        report_format: Literal["html", "pdf", "both"] = "html"
 
     class LocalPromotionRequest(BaseModel):
         data_root: str = "data"
@@ -59,10 +61,11 @@ def create_app():
     def create_run(request: RunRequest) -> Dict[str, object]:
         provider = build_llm_provider(request.llm_provider, model=request.llm_model)
         agent = SpatialMindAgent(output_root=request.output_root, llm_provider=provider)
-        run = agent.run(request.prompt, request.data_path)
+        run = agent.run(request.prompt, request.data_path, report_format=request.report_format)
         return {
             "run_id": run.run_id,
             "report_path": run.report_path,
+            "report_paths": run.report_paths,
             "provenance_path": run.provenance_path,
             "results": [result.summary for result in run.results],
         }
@@ -104,6 +107,7 @@ def create_app():
                 min_label_coverage=request.min_label_coverage,
                 min_region_coverage=request.min_region_coverage,
                 allow_single_region=request.allow_single_region,
+                report_format=request.report_format,
             )
         )
 

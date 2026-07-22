@@ -41,14 +41,24 @@ def build_readiness_report(dataset: SpatialDataset) -> DatasetReadinessReport:
         _workflow(
             "neighborhood_enrichment",
             has_cell_labels and has_coords,
-            "cell-type labels and coordinates available",
+            (
+                "provisional cell labels and coordinates are available; results are exploratory"
+                if has_weak_labels
+                else "reviewed cell-type labels and coordinates available"
+            ),
             "no usable cell-type labels; run annotation first",
+            partial=has_weak_labels,
         ),
         _workflow(
             "differential_expression",
             has_features and has_cell_labels and dataset.normalized,
-            "normalized features and group labels available",
+            (
+                "normalized features and provisional group labels are available; results are exploratory"
+                if has_weak_labels
+                else "normalized features and reviewed group labels available"
+            ),
             "requires normalized features and biological group labels",
+            partial=has_weak_labels,
         ),
         _workflow(
             "marker_detection",
@@ -149,6 +159,7 @@ def build_readiness_report(dataset: SpatialDataset) -> DatasetReadinessReport:
             has_multiple_samples and has_cell_labels,
             "multiple samples and labels available",
             "requires multiple samples plus cell-type labels",
+            partial=has_weak_labels,
         ),
     ]
 

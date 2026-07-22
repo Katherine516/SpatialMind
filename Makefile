@@ -1,10 +1,16 @@
-.PHONY: dev install test eval inspect-data lint check-versions import-lint
+.PHONY: dev install install-dev install-deep test eval inspect-data lint check-versions import-lint
 
 dev:
 	docker compose up -d redis postgres minio
 
 install:
 	python3 -m pip install -r requirements.txt
+
+install-dev:
+	python3 -m pip install -r requirements-dev.txt
+
+install-deep:
+	python3 -m pip install -r requirements-deep-learning.txt
 
 test:
 	python3 -m unittest discover -s tests -p 'test_*.py'

@@ -1,0 +1,11 @@
+# Optional deep-learning environment for scVI and cell2location workflows.
+#
+# Install this in a SEPARATE environment from the default core agent runtime.
+# On Intel macOS, pip wheels for scikit-learn and PyTorch use different OpenMP
+# runtimes. Prefer a conda-forge environment or Linux workstation for these
+# packages if the runtime preflight reports a conflict.
+
+-r requirements.txt
+
+scvi-tools
+cell2location

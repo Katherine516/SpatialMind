@@ -9,7 +9,7 @@ This repository implements SpatialMind, an agentic spatial omics analysis system
 5. Memory
 6. Storage and provenance
 
-The base path remains dependency-light for fast testing, while the full workstation environment in `requirements.txt` enables real H5AD/Xenium ingestion and Scanpy/Squidpy-backed wrappers.
+The base path remains dependency-light for fast testing, while the core workstation environment in `requirements.txt` enables real H5AD/Xenium ingestion and Scanpy/Squidpy-backed wrappers. PyTorch-based scVI/cell2location packages live in `requirements-deep-learning.txt` and must be installed in a separate environment to avoid mixed OpenMP runtimes on Intel macOS.
 
 ## Architecture
 
@@ -54,7 +54,7 @@ Layer responsibilities:
 - **Planning layer** turns user intent into a typed tool plan. Hosted LLMs can propose JSON plans, but local validators decide what can run.
 - **Tool layer** runs real wrappers where available: Scanpy for differential expression, clustering, and variable genes; Squidpy for neighborhood enrichment; local fallbacks only for development/debugging.
 - **Grounding layer** separates supported non-biological readiness statements from validated biological claims and refuses unsupported interpretations.
-- **Visualization/report layer** generates review figures, static/interactive spatial maps, machine-readable outputs, and markdown/HTML reports.
+- **Visualization/report layer** generates review figures, static/interactive spatial maps, machine-readable outputs, and selectable HTML/PDF reports.
 - **Storage/replay layer** writes run records, hashes, SQLite indexes, and replay metadata so analyses can be audited.
 
 ## Wet-Lab Raw Data To Report Capability
@@ -84,10 +84,135 @@ Current capability status:
 | Expert cell labels | Blocked until human review | Use `expert_cell_labels.csv`; review templates are generated. |
 | User ROI/tissue regions | Blocked until human review | Use `cell_regions.csv`; region templates are generated. |
 | Validated biological report | Conditionally ready | Runs only when label and region gates pass. Otherwise produces a comprehensive blocked/readiness/review report. |
+| Claim-level reliability scoring | Ready as conservative v12 baseline | Every report claim receives S/A/P/R component scores and a weakest-link reliability score. Calibrated reliability is blocked until expert-reviewed claim truth exists. |
 | LLM planning | Ready but optional | OpenAI/Anthropic adapters exist; LLM output remains locally validated before execution. |
 | Production multi-user deployment | Partial | API, batch scaffolding, and storage exist; auth, dataset allowlists, job queue hardening, and audit logs are still needed. |
 
 Bottom line: the agent is capable of ingesting supported wet-lab platform outputs and generating a comprehensive engineering/review report now. It becomes capable of generating a validated biological interpretation report after expert cell labels, ROI regions, and governance metadata are supplied.
+
+## Selectable Report Formats
+
+User-facing runs accept `--report-format html`, `--report-format pdf`, or `--report-format both`. HTML is the default. PDF mode keeps the HTML source beside the PDF for auditability and reproducibility, while making the PDF the primary returned report.
+
+General agent example:
+
+```bash
+.venv/bin/python -m spatialmind.cli \
+  "Show cell type abundance in sample BRCA_04" \
+  --data data/demo_spatial.csv \
+  --out outputs/example_report \
+  --report-format both
+```
+
+Validated Xenium example:
+
+```bash
+.venv/bin/python scripts/run_validated_xenium_pilot.py \
+  --data "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Glioblastoma_With_Addon_outs" \
+  --out outputs/xenium_brain_glioblastoma_report \
+  --max-records 2500 \
+  --report-format both
+```
+
+The REST API exposes the same `report_format` field on `POST /runs` and `POST /pilot/xenium/run` with accepted values `html`, `pdf`, and `both`.
+
+For a quick gate/status check without generating review packets or reports, use readiness-only mode:
+
+```bash
+.venv/bin/python scripts/run_validated_xenium_pilot.py \
+  --data "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Glioblastoma_With_Addon_outs" \
+  --out outputs/xenium_glioblastoma_readiness \
+  --max-records 200 \
+  --readiness-only
+```
+
+This writes only `pilot_validation.json`. It skips review templates, figures, HTML/PDF/Markdown reports, validated analysis tools, and the hashed run record. Use a fresh output directory when you need the directory contents themselves to demonstrate that only the readiness artifact was created.
+
+Scan every local dataset through the promotion workflow without the full artifact build:
+
+```bash
+.venv/bin/python scripts/promote_local_agent.py \
+  --data-root data \
+  --out outputs/agent_promotion_readiness \
+  --max-records 200 \
+  --readiness-only
+```
+
+## Claim-Level Reliability
+
+The v12 agent adds a claim-level reliability layer. The scoring unit is one individual claim in the report, not the whole run. Each claim is decomposed into four interpretable components:
+
+- `S_statistical`: strength of statistical evidence, such as adjusted p-values, z-scores, or effect sizes.
+- `A_annotation`: expert-label or validated reference-label support, including coverage and confidence.
+- `P_panel`: whether the targeted panel contains enough markers to support the claim.
+- `R_spatial_robustness`: whether spatial evidence survives radius/graph/permutation checks.
+
+The current production-safe baseline is a weakest-link score:
+
+```text
+claim_reliability = min(S_statistical, A_annotation, P_panel, R_spatial_robustness)
+```
+
+This deliberately keeps unsupported biological claims at `0.0` when any required evidence class is missing. A calibrated logistic combiner is scaffolded, but it stays marked `not_fit` until the project has expert-reviewed spatial claim truth labels.
+
+Run the local human-brain reliability pass:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/train_claim_reliability_local.py \
+  --out outputs/training/human_brain_claim_reliability_v12 \
+  --max-records 800
+```
+
+Latest result on the local healthy-brain and glioblastoma Xenium datasets:
+
+- `8` claim/control records were generated.
+- AUROC on local refusal/null controls was `1.0000`.
+- Calibrated model status is `not_fit`.
+- Biological claims remain blocked at reliability `0.0000` because reviewed expert labels and ROI regions are missing.
+- Non-biological dataset-readiness claims score `0.7500` because they are supported by asset checks but are not biological findings.
+
+Generated artifacts:
+
+- `outputs/training/human_brain_claim_reliability_v12/claim_reliability_training_report.md`
+- `outputs/training/human_brain_claim_reliability_v12/claim_reliability_training_records.json`
+- `outputs/training/human_brain_claim_reliability_v12/healthy_brain_pilot/validated_xenium_pilot_report.html`
+- `outputs/training/human_brain_claim_reliability_v12/glioblastoma_pilot/validated_xenium_pilot_report.html`
+
+To turn this into a real calibrated reliability model, add reviewed `expert_cell_labels.csv`, reviewed `cell_regions.csv`, literature-anchored positive spatial claims, coordinate-permutation nulls, label-shuffle nulls, and a held-out cross-dataset validation split.
+
+Prepare the expert claim-truth review packet:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/prepare_claim_reliability_review_packet.py \
+  --out outputs/claim_reliability_review_packet_v12 \
+  --max-records 800
+```
+
+This writes:
+
+- `outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv`
+- `outputs/claim_reliability_review_packet_v12/README.md`
+- `outputs/claim_reliability_review_packet_v12/claim_truth_review_summary.json`
+- per-dataset pilot reports under `outputs/claim_reliability_review_packet_v12/pilot_outputs/`
+
+After a reviewer completes `reviewed_truth_label`, `use_for_calibration`, `truth_basis`, `source_citation`, and `reviewer_id`, validate the table:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/prepare_claim_reliability_review_packet.py \
+  --out outputs/claim_reliability_review_packet_v12 \
+  --validate-truth outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv
+```
+
+Then train the calibrated reliability model:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/train_claim_reliability_local.py \
+  --out outputs/training/human_brain_claim_reliability_review_gate_v12 \
+  --max-records 800 \
+  --claim-truth outputs/claim_reliability_review_packet_v12/spatial_claim_truth_draft_for_review.csv
+```
+
+The current unreviewed draft correctly remains blocked: `0` reviewed calibration records, no positive reviewed claims, and no negative reviewed claims.
 
 ## Xenium Explorer-Style Entry Point
 
@@ -166,13 +291,18 @@ python3 -m spatialmind.cli "Show CD8+ T cells near tumor cells in sample BRCA_04
 python3 -m unittest discover -s tests -p "test_*.py"
 ```
 
-## Full Research Environment
+## Core Research Environment
 
-The full local environment has been validated with Scanpy, Squidpy, AnnData, h5py, NumPy, SciPy, Pandas, Matplotlib, Seaborn, and the supporting spatial omics stack. For real Xenium H5/H5AD workflows, use one of the full environment paths:
+The core local environment has been validated with Scanpy, Squidpy, AnnData, h5py, NumPy, SciPy, Pandas, Matplotlib, Seaborn, and the supporting spatial omics stack. This is the default environment for ingestion, Xenium workflows, visualization, reporting, and agent evaluation:
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m spatialmind.versioning
 ```
+
+Development-only lint and test tools are installed separately with `requirements-dev.txt`.
 
 or:
 
@@ -180,6 +310,16 @@ or:
 conda env create -f environment.yml
 conda activate spatialmind
 ```
+
+PyTorch models are optional and intentionally isolated. Create a separate environment when scVI or cell2location is required:
+
+```bash
+python3 -m venv .venv-deep
+.venv-deep/bin/python -m pip install --upgrade pip
+.venv-deep/bin/python -m pip install -r requirements-deep-learning.txt
+```
+
+Do not use `.venv-deep` for the default Scanpy/Squidpy agent workflow on Intel macOS if runtime preflight reports both LLVM and Intel OpenMP. Prefer conda-forge or Linux for combined Scanpy/PyTorch workflows.
 
 ## Run Eval
 
@@ -244,7 +384,7 @@ Current result: all four local Xenium folders have cell tables, HDF5 feature mat
 The validated pilot layer lives in `spatialmind.pilot` and is exposed through:
 
 ```bash
-MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/run_validated_xenium_pilot.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_validated_pilot --max-records 2500
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/run_validated_xenium_pilot.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_validated_pilot --max-records 2500 --report-format both
 ```
 
 It produces:
@@ -252,6 +392,7 @@ It produces:
 - `outputs/xenium_validated_pilot/pilot_validation.json`
 - `outputs/xenium_validated_pilot/validated_xenium_pilot_report.md`
 - `outputs/xenium_validated_pilot/validated_xenium_pilot_report.html`
+- `outputs/xenium_validated_pilot/validated_xenium_pilot_report.pdf` when `pdf` or `both` is selected
 - `outputs/xenium_validated_pilot/expert_label_template.csv`
 - `outputs/xenium_validated_pilot/region_label_template.csv`
 - `outputs/xenium_validated_pilot/runs/*.json`
@@ -264,6 +405,7 @@ The v11 pilot promotion adds the real-agent control layer around this workflow:
 - automatic limitations generated from label, region, panel, and tool facts,
 - review-only visualization gallery for blocked runs,
 - local run record with hashes for inputs, reports, templates, and figures.
+- validated-run reports expose the spatial-robustness sweep next to claim reliability, including neighborhood sizes, permutations, seed, top-K, engine, sign agreement, top-K Jaccard, and the resulting R score.
 
 Before rerunning the validated pilot with new reviewer files, validate label intake:
 
@@ -456,12 +598,17 @@ Current gates:
 
 - Legacy eval: 15/15 passing, mean score 1.0000.
 - MVP eval: 10/10 passing, mean score 1.0000.
-- Unit tests: 45/45 passing in the full environment.
-- Local training records: 15 records generated from demo MVP cases, a weak-label breast Xenium run, and four Xenium readiness records.
+- Unit tests: 61/61 passing in the full environment.
+- Local training records: 18 records generated from demo MVP cases, four real-wrapper Xenium runs, and four Xenium readiness records.
 - Region-label templates: generated for all four local Xenium datasets.
 - Validated pilot scorecard: 4 local Xenium datasets scanned, 0 validated-ready because expert labels and user regions are still missing.
 
 Latest local training artifacts:
+
+- `outputs/full_workflow_20260711/FULL_WORKFLOW_REPORT.md`
+- `outputs/full_workflow_20260711/training/local_spatialmind/training_records.jsonl`
+- `outputs/full_workflow_20260711/training/local_spatialmind/training_summary.json`
+- `outputs/full_workflow_20260711/training/local_spatialmind/training_report.md`
 
 - `outputs/training/local_spatialmind_training/training_records.jsonl`
 - `outputs/training/local_spatialmind_training/training_summary.json`
@@ -471,6 +618,19 @@ Latest local training artifacts:
 - `outputs/xenium_pilot_scorecard/pilot_readiness_scorecard.md`
 
 See `docs/training_status.md` for the exact training-data requirements and next model-development steps.
+
+Run behavioral training over every Xenium dataset discovered under `data/`:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache \
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
+  .venv/bin/python scripts/train_spatialmind_local.py \
+  --data-root data \
+  --out outputs/training/local_spatialmind_training \
+  --max-records 1200
+```
+
+This runs strict real Scanpy/Squidpy wrappers and records sampling/QC provenance, but provisional Xenium labels remain unsuitable for biological ground truth. Runtime preflight reports an error if PyTorch is accidentally introduced into the Intel macOS core environment and recreates mixed OpenMP runtimes.
 
 ## Architecture Notes
 

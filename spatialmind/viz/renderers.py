@@ -4,6 +4,7 @@ import os
 from typing import Dict, Iterable, List
 
 from ..schemas import SpatialDataset, ToolResult
+from .export import PdfSection, PdfTable, ReportPaths, normalize_report_format, write_pdf_report
 
 
 PALETTE = [
@@ -230,7 +231,9 @@ class VisualizationLayer:
         run_dir: str,
         svg_path: str,
         similar_runs: List[Dict[str, object]],
-    ) -> str:
+        report_format: str = "html",
+    ) -> ReportPaths:
+        normalized_format = normalize_report_format(report_format)
         result_blocks = []
         for result in results:
             metrics = html.escape(_format_metrics(result.metrics))
@@ -296,7 +299,51 @@ class VisualizationLayer:
         path = os.path.join(run_dir, "report.html")
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(content)
-        return path
+        pdf_path = ""
+        if normalized_format in {"pdf", "both"}:
+            pdf_path = os.path.join(run_dir, "report.pdf")
+            pdf_sections = [
+                PdfSection(title="Analysis Request", paragraphs=[prompt]),
+                PdfSection(
+                    title="Spatial Visualization",
+                    paragraphs=[
+                        "The spatial distribution is available as %s and as an interactive HTML artifact."
+                        % os.path.basename(svg_path)
+                    ],
+                ),
+            ]
+            for result in results:
+                metric_rows = [(str(key), str(value)) for key, value in result.metrics.items()]
+                pdf_sections.append(
+                    PdfSection(
+                        title=result.tool_name,
+                        paragraphs=[result.summary],
+                        bullets=list(result.caveats),
+                        tables=[PdfTable(headers=["Metric", "Value"], rows=metric_rows, column_widths=[1, 3])]
+                        if metric_rows
+                        else [],
+                    )
+                )
+            if similar_runs:
+                pdf_sections.append(
+                    PdfSection(
+                        title="Related Prior Runs",
+                        bullets=["%s: %s" % (run.get("run_id"), run.get("summary")) for run in similar_runs],
+                    )
+                )
+            write_pdf_report(
+                pdf_path,
+                "SpatialMind Report",
+                pdf_sections,
+                metadata=[
+                    ("Sample", dataset.sample_id),
+                    ("Modality", dataset.modality),
+                    ("Observations", len(dataset.records)),
+                    ("Features", len(dataset.genes)),
+                    ("Requested format", normalized_format),
+                ],
+            )
+        return ReportPaths(html=path, pdf=pdf_path)
 
 
 def _format_metrics(metrics: Dict[str, object]) -> str:

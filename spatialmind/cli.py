@@ -23,6 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Planner backend. local uses deterministic rules; openai/gpt and anthropic/claude call hosted APIs.",
     )
     parser.add_argument("--llm-model", default="", help="Hosted model name, for example gpt-4.1 or claude-sonnet-4-20250514.")
+    parser.add_argument(
+        "--report-format",
+        default="html",
+        choices=["html", "pdf", "both"],
+        help="Report delivery format. PDF output retains an HTML source for auditability.",
+    )
     return parser
 
 
@@ -55,20 +61,26 @@ def main() -> None:
             parser.error("stored run has no source_path in provenance")
         provider = build_llm_provider(args.llm_provider, model=args.llm_model)
         agent = SpatialMindAgent(output_root=args.out, memory_root=args.memory, llm_provider=provider)
-        run = agent.run(stored.query, data_path)
+        run = agent.run(stored.query, data_path, report_format=args.report_format)
         print("Replayed run: %s" % run.run_id)
-        print("Report: %s" % os.path.abspath(run.report_path))
+        _print_reports(run)
         return
     if not args.prompt:
         parser.error("prompt is required unless --inspect-data is used")
     provider = build_llm_provider(args.llm_provider, model=args.llm_model)
     agent = SpatialMindAgent(output_root=args.out, memory_root=args.memory, llm_provider=provider)
-    run = agent.run(args.prompt, args.data)
+    run = agent.run(args.prompt, args.data, report_format=args.report_format)
     print("Run ID: %s" % run.run_id)
-    print("Report: %s" % os.path.abspath(run.report_path))
+    _print_reports(run)
     print("Provenance: %s" % os.path.abspath(run.provenance_path))
     for result in run.results:
         print("- %s: %s" % (result.tool_name, result.summary))
+
+
+def _print_reports(run) -> None:
+    paths = run.report_paths or {"primary": run.report_path}
+    for report_type, path in paths.items():
+        print("Report (%s): %s" % (report_type, os.path.abspath(path)))
 
 
 if __name__ == "__main__":

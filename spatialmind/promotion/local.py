@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from spatialmind.datasets import discover_dataset_candidates, inspect_dataset
-from spatialmind.ingestion import validate_xenium_label_intake
 from spatialmind.pilot import run_pilot
 
 
@@ -20,7 +19,12 @@ class LocalGapStatus:
         return asdict(self)
 
 
-def build_local_promotion_report(data_root: str, output_root: str, max_records: int = 800) -> Dict[str, Any]:
+def build_local_promotion_report(
+    data_root: str,
+    output_root: str,
+    max_records: int = 800,
+    readiness_only: bool = False,
+) -> Dict[str, Any]:
     output_dir = Path(output_root)
     output_dir.mkdir(parents=True, exist_ok=True)
     xenium_dirs = _find_xenium_dirs(Path(data_root))
@@ -32,13 +36,13 @@ def build_local_promotion_report(data_root: str, output_root: str, max_records: 
     for dataset_path in xenium_dirs:
         slug = _slug(Path(dataset_path))
         review_dir = output_dir / "review_packets" / slug
-        intake = validate_xenium_label_intake(dataset_path, max_records=max_records)
-        pilot = run_pilot(dataset_path, review_dir, max_records=max_records)
+        pilot = run_pilot(dataset_path, review_dir, max_records=max_records, readiness_only=readiness_only)
+        intake = pilot["label_intake"]
         xenium_reports.append(
             {
                 "dataset_path": dataset_path,
                 "slug": slug,
-                "intake": intake.to_dict(),
+                "intake": intake,
                 "pilot_status": pilot["status"],
                 "pilot_report_html": pilot["report_html"],
                 "pilot_report_md": pilot["report_md"],
@@ -46,6 +50,8 @@ def build_local_promotion_report(data_root: str, output_root: str, max_records: 
                 "expert_label_template": pilot["expert_label_template"],
                 "region_label_template": pilot["region_label_template"],
                 "run_record_path": pilot.get("run_record_path", ""),
+                "pilot_validation": str(review_dir / "pilot_validation.json"),
+                "readiness_only": readiness_only,
             }
         )
 
@@ -53,6 +59,7 @@ def build_local_promotion_report(data_root: str, output_root: str, max_records: 
         "created_at": datetime.now(timezone.utc).isoformat(),
         "data_root": data_root,
         "output_root": str(output_dir),
+        "readiness_only": readiness_only,
         "dataset_count": len(inspections),
         "xenium_dataset_count": len(xenium_reports),
         "validated_ready_xenium_count": sum(1 for item in xenium_reports if item["intake"]["ready_for_validated_pilot"]),
@@ -180,6 +187,16 @@ def _next_actions(xenium_reports: List[Dict[str, Any]]) -> List[str]:
         if intake["ready_for_validated_pilot"]:
             actions.append("Run validated pilot on `%s`." % item["dataset_path"])
             continue
+        if item.get("readiness_only"):
+            actions.append(
+                "Run the full promotion workflow for `%s` to generate review templates and figures."
+                % item["dataset_path"]
+            )
+            actions.append(
+                "Provide reviewed `expert_cell_labels.csv` and `cell_regions.csv` in `%s`."
+                % item["dataset_path"]
+            )
+            continue
         actions.append(
             "Complete `%s` and place it as `expert_cell_labels.csv` in `%s`."
             % (item["expert_label_template"], item["dataset_path"])
@@ -201,6 +218,7 @@ def _write_markdown(path: Path, summary: Dict[str, Any]) -> None:
         "- Dataset candidates: `%d`" % summary["dataset_count"],
         "- Xenium datasets: `%d`" % summary["xenium_dataset_count"],
         "- Validated-ready Xenium datasets: `%d`" % summary["validated_ready_xenium_count"],
+        "- Readiness-only mode: `%s`" % summary.get("readiness_only", False),
         "",
         "## Gap Status",
         "",
@@ -222,7 +240,7 @@ def _write_markdown(path: Path, summary: Dict[str, Any]) -> None:
             "",
             "## Xenium Review Packets",
             "",
-            "| Dataset | Intake | Pilot | Report | Figures | Label Template | Region Template |",
+            "| Dataset | Intake | Pilot | Artifact | Figures | Label Template | Region Template |",
             "| --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
@@ -233,7 +251,7 @@ def _write_markdown(path: Path, summary: Dict[str, Any]) -> None:
                 item["dataset_path"],
                 item["intake"]["status"],
                 item["pilot_status"],
-                item["pilot_report_md"],
+                item["pilot_report_md"] or item.get("pilot_validation", ""),
                 len(item["review_figures"]),
                 item["expert_label_template"],
                 item["region_label_template"],
