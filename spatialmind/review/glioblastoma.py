@@ -4,11 +4,12 @@ import shutil
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from spatialmind.ingestion import (
     apply_best_available_labels,
     apply_best_available_regions,
+    load_scrna,
     load_xenium,
     validate_xenium_label_intake,
 )
@@ -125,30 +126,39 @@ def build_reference_assist_report(
         },
     }
     if reference_path:
-        reference = load_xenium(reference_path, max_records=max_records)
-        reference_intake = validate_xenium_label_intake(reference_path, max_records=max_records)
-        shared = sorted({gene.upper() for gene in target.genes} & {gene.upper() for gene in reference.genes})
-        payload.update(
-            {
-                "reference_status": reference_intake.status,
-                "reference_ready_for_label_transfer": reference_intake.ready_for_validated_pilot,
-                "shared_feature_count": len(shared),
-                "shared_features_preview": shared[:50],
-            }
+        reference, reference_ready, reference_status, reference_blockers, reference_format = _load_reference_dataset(
+            reference_path,
+            max_records=max_records,
         )
-        if reference_intake.ready_for_validated_pilot and len(shared) >= min_shared_features:
-            result = reference_label_transfer(
-                target,
-                {"reference_features": reference.genes, "min_shared_features": min_shared_features},
-            )
-            payload["status"] = "reference_assist_ready"
-            payload["reference_assist_result"] = result.__dict__
+        payload["reference_format"] = reference_format
+        if reference is None:
+            payload["reference_status"] = reference_status
+            payload["reference_ready_for_label_transfer"] = False
+            payload["blockers"] = list(reference_blockers)
         else:
-            payload["blockers"] = list(reference_intake.blockers)
-            if len(shared) < min_shared_features:
-                payload.setdefault("blockers", []).append(
-                    "Only %d shared features; at least %d are required." % (len(shared), min_shared_features)
+            shared = sorted({gene.upper() for gene in target.genes} & {gene.upper() for gene in reference.genes})
+            payload.update(
+                {
+                    "reference_status": reference_status,
+                    "reference_ready_for_label_transfer": reference_ready,
+                    "reference_label_classes": len(reference.cell_types),
+                    "shared_feature_count": len(shared),
+                    "shared_features_preview": shared[:50],
+                }
+            )
+            if reference_ready and len(shared) >= min_shared_features:
+                result = reference_label_transfer(
+                    target,
+                    {"reference_features": reference.genes, "min_shared_features": min_shared_features},
                 )
+                payload["status"] = "reference_assist_ready"
+                payload["reference_assist_result"] = result.__dict__
+            else:
+                payload["blockers"] = list(reference_blockers)
+                if len(shared) < min_shared_features:
+                    payload.setdefault("blockers", []).append(
+                        "Only %d shared features; at least %d are required." % (len(shared), min_shared_features)
+                    )
     _write_json(out / "reference_assist_report.json", payload)
     _write_reference_markdown(out / "reference_assist_report.md", payload)
     return payload
@@ -178,6 +188,49 @@ def build_brain_comparison_report(
     _write_json(out / "brain_comparison_report.json", payload)
     _write_comparison_markdown(out / "brain_comparison_report.md", payload)
     return payload
+
+
+def _load_reference_dataset(
+    reference_path: str,
+    max_records: int,
+    min_label_classes: int = 2,
+) -> Tuple[Optional[SpatialDataset], bool, str, List[str], str]:
+    """Load a label-transfer reference from a Xenium folder, .h5ad, or tabular file.
+
+    Public brain/glioblastoma references are distributed as AnnData, so restricting
+    this to Xenium output folders would block every curated reference. Returns
+    ``(dataset, ready, status, blockers, format)``.
+    """
+    suffix = Path(reference_path).suffix.lower()
+    if suffix in {".h5ad", ".csv", ".tsv", ".txt"}:
+        reference_format = "anndata" if suffix == ".h5ad" else "table"
+        try:
+            reference = load_scrna(reference_path)
+        except Exception as exc:
+            return (
+                None,
+                False,
+                "blocked_unreadable_reference",
+                ["Reference %s could not be loaded: %s" % (reference_path, exc)],
+                reference_format,
+            )
+        labels = [label for label in reference.cell_types if label and label.lower() not in {"unannotated cell", "unknown"}]
+        if len(labels) < min_label_classes:
+            return (
+                reference,
+                False,
+                "blocked_missing_reference_labels",
+                [
+                    "Reference has %d usable cell-type classes; at least %d are required."
+                    % (len(labels), min_label_classes)
+                ],
+                reference_format,
+            )
+        return reference, True, "reference_labels_available", [], reference_format
+
+    reference = load_xenium(reference_path, max_records=max_records)
+    intake = validate_xenium_label_intake(reference_path, max_records=max_records)
+    return reference, intake.ready_for_validated_pilot, intake.status, list(intake.blockers), "xenium_directory"
 
 
 def _write_label_review_draft(

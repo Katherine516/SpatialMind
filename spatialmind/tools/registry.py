@@ -171,7 +171,14 @@ def build_full_registry() -> ToolRegistry:
                 description="Run cell-level neighborhood enrichment for Xenium spatial RNA.",
                 when_to_use="Use for Xenium co-location and adjacency questions after labels exist.",
                 when_not_to_use="Do not use on non-spatial scRNA/scATAC references.",
-                input_schema=_object_schema({"n_neighs": {"type": "integer", "default": 6}, "n_perms": {"type": "integer", "default": 100}}),
+                input_schema=_object_schema(
+                    {
+                        "n_neighs": {"type": "integer", "default": 6},
+                        "n_perms": {"type": "integer", "default": 250},
+                        "random_state": {"type": "integer", "default": 0},
+                        "include_all_pairs": {"type": "boolean", "default": True},
+                    }
+                ),
                 output_schema=_tool_result_schema(),
                 preconditions=["requires cell-type labels", "requires spatial coords"],
                 estimated_runtime="medium 1-10min",

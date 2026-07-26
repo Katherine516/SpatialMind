@@ -41,7 +41,7 @@ class ClaimGroundingChecker:
                 evidence.append("p_adj")
             if "effect_size" in serialized or "zscore" in serialized or "logfc" in serialized:
                 evidence.append("effect_size")
-            if "zscore" in serialized or result.tool_name in {"neighborhood_enrichment", "cell_neighborhood_enrichment"}:
+            if "zscore" in serialized and metrics.get("engine") == "squidpy":
                 evidence.extend(["neighborhood_test", "zscore", "cell_labels"])
             if result.tool_name in {"differential_expression", "marker_detection"}:
                 evidence.extend(["logfc", "group_labels"])

@@ -20,6 +20,7 @@ from spatialmind.ingestion import (
     write_region_label_template,
 )
 from spatialmind.pilot.claims import build_pilot_claim_ledger, build_pilot_claim_reliability, claim_ledger_summary
+from spatialmind.pilot.spatial_relationships import build_spatial_relationship_summary
 from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
@@ -125,7 +126,33 @@ def run_pilot(
         for result in results:
             _write_json(output_dir / ("%s.json" % result.tool_name), result)
         figures.extend(_write_figures(dataset, output_dir))
-        spatial_robustness = run_neighborhood_robustness(dataset)
+        neighborhood_result = next(
+            (result for result in results if result.tool_name == "cell_neighborhood_enrichment"),
+            None,
+        )
+        spatial_robustness = run_neighborhood_robustness(dataset, baseline_result=neighborhood_result)
+
+    if readiness_only:
+        spatial_relationships = {
+            "status": "not_run",
+            "reason": "Readiness-only mode skips spatial analysis.",
+            "relationships": [],
+            "warnings": [],
+        }
+    else:
+        spatial_relationships = build_spatial_relationship_summary(
+            dataset=dataset,
+            results=results,
+            robustness=spatial_robustness,
+            validated=gate["status"] == "validated_ready",
+        )
+        relationship_figure = _render_spatial_relationship_heatmap(
+            spatial_relationships,
+            output_dir / "spatial_relationships_heatmap.png",
+        )
+        if relationship_figure:
+            spatial_relationships["figure"] = relationship_figure
+            figures.append(relationship_figure)
 
     payload = {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -158,6 +185,7 @@ def run_pilot(
             "validated_figures": "Generated only after expert labels and user regions pass the pilot gate.",
         },
         "spatial_robustness": spatial_robustness,
+        "spatial_relationships": spatial_relationships,
         "report_md": "" if readiness_only else str(output_dir / "validated_xenium_pilot_report.md"),
         "report_html": "" if readiness_only else str(output_dir / "validated_xenium_pilot_report.html"),
         "report_pdf": str(output_dir / "validated_xenium_pilot_report.pdf")
@@ -331,6 +359,80 @@ def _write_figures(dataset: SpatialDataset, output_dir: Path) -> List[str]:
         viz.render_distribution_svg(dataset, str(output_dir), []),
         viz.render_distribution_interactive_html(dataset, str(output_dir), []),
     ]
+
+
+def _render_spatial_relationship_heatmap(summary: Dict[str, Any], path: Path) -> str:
+    relationships = summary.get("relationships") or []
+    if summary.get("status") != "computed" or not relationships:
+        return ""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:
+        return ""
+
+    labels = sorted(
+        {
+            str(value)
+            for row in relationships
+            for value in (row.get("left_cell_type"), row.get("right_cell_type"))
+            if value
+        }
+    )
+    if not labels:
+        return ""
+    index = {label: position for position, label in enumerate(labels)}
+    matrix = np.full((len(labels), len(labels)), np.nan, dtype=float)
+    for row in relationships:
+        left = str(row.get("left_cell_type") or "")
+        right = str(row.get("right_cell_type") or "")
+        if left not in index or right not in index:
+            continue
+        value = float(row.get("zscore") or 0.0)
+        matrix[index[left], index[right]] = value
+        matrix[index[right], index[left]] = value
+
+    finite = np.abs(matrix[np.isfinite(matrix)])
+    limit = max(2.0, float(np.max(finite)) if finite.size else 2.0)
+    side = min(12.0, max(6.5, 0.52 * len(labels) + 3.5))
+    fig, ax = plt.subplots(figsize=(side, side * 0.86), dpi=180)
+    image_artist = ax.imshow(matrix, cmap="coolwarm", vmin=-limit, vmax=limit, interpolation="nearest")
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=8)
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_title("Cell-Type Spatial Adjacency", fontsize=14, pad=14)
+    ax.set_xlabel("Permutation z-score: red = enriched adjacency, blue = depleted adjacency", fontsize=9)
+    if len(labels) <= 12:
+        for row_index in range(len(labels)):
+            for column_index in range(len(labels)):
+                value = matrix[row_index, column_index]
+                if np.isfinite(value):
+                    ax.text(
+                        column_index,
+                        row_index,
+                        "%.1f" % value,
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="white" if abs(value) > limit * 0.55 else "#17202a",
+                    )
+    colorbar = fig.colorbar(image_artist, ax=ax, fraction=0.045, pad=0.04)
+    colorbar.set_label("Neighborhood enrichment z-score", fontsize=9)
+    fig.text(
+        0.01,
+        0.01,
+        "Adjacency reflects the tested spatial graph and does not establish signaling, mechanism, or causation.",
+        fontsize=8,
+        color="#4b5563",
+    )
+    fig.tight_layout(rect=[0.02, 0.045, 1, 1])
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(path)
 
 
 def _write_review_figures(dataset: SpatialDataset, output_dir: Path) -> List[str]:
@@ -540,6 +642,39 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         for result in results:
             lines.extend(["### `%s`" % result.tool_name, "", result.summary, ""])
             lines.extend(_marker_group_markdown(result))
+    relationship_summary = payload.get("spatial_relationships") or {}
+    relationship_rows = _spatial_relationship_report_rows(payload)
+    lines.extend(["## Spatial Relationships", "", "- Status: `%s`" % relationship_summary.get("status", "not_run")])
+    if relationship_summary.get("method"):
+        graph = relationship_summary.get("graph") or {}
+        lines.extend(
+            [
+                "- Method: `%s`" % relationship_summary["method"],
+                "- Primary graph: `n_neighs=%s`, `n_perms=%s`, `seed=%s`"
+                % (graph.get("n_neighs"), graph.get("n_perms"), graph.get("random_state")),
+            ]
+        )
+    if relationship_summary.get("figure"):
+        lines.extend(["", "![Spatial relationship heatmap](%s)" % Path(relationship_summary["figure"]).name])
+    if relationship_rows:
+        lines.extend(
+            [
+                "",
+                "| Cell-type pair | Direction | z-score | Pair stability | Nearest distance | Region overlap | Evidence status |",
+                "| --- | --- | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for row in relationship_rows:
+            lines.append("| %s | %s | %s | %s | %s | %s | `%s` |" % row)
+        interpretations = _spatial_relationship_interpretations(payload)
+        if interpretations:
+            lines.extend(["", "### Allowed Spatial Interpretation", ""])
+            lines.extend("- %s" % value for value in interpretations)
+    elif relationship_summary.get("reason"):
+        lines.extend(["", relationship_summary["reason"]])
+    for warning in relationship_summary.get("warnings") or []:
+        lines.append("- Limitation: %s" % warning)
+    lines.append("")
     lines.extend(["## Claim Ledger", ""])
     for item in payload["claim_ledger"]:
         lines.extend(
@@ -654,6 +789,58 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
             "<table><tr><th>Setting / metric</th><th>Value</th></tr>%s</table>%s</section>"
             % (robustness_body, reason_html)
         )
+    relationship_summary = payload.get("spatial_relationships") or {}
+    relationship_rows = _spatial_relationship_report_rows(payload)
+    relationship_body = "".join(
+        "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>"
+        % tuple(html.escape(str(value)) for value in row)
+        for row in relationship_rows
+    )
+    graph = relationship_summary.get("graph") or {}
+    relationship_method = ""
+    if relationship_summary.get("method"):
+        relationship_method = (
+            "<p>Method: <code>%s</code>. Primary graph: <code>n_neighs=%s</code>, "
+            "<code>n_perms=%s</code>, <code>seed=%s</code>.</p>"
+            % (
+                html.escape(str(relationship_summary.get("method"))),
+                html.escape(str(graph.get("n_neighs"))),
+                html.escape(str(graph.get("n_perms"))),
+                html.escape(str(graph.get("random_state"))),
+            )
+        )
+    relationship_figure = ""
+    if relationship_summary.get("figure"):
+        figure_name = Path(str(relationship_summary["figure"])).name
+        relationship_figure = '<div class="figure"><img src="%s" alt="Spatial relationship heatmap"></div>' % html.escape(figure_name)
+    relationship_table = (
+        "<table><tr><th>Cell-type pair</th><th>Direction</th><th>z-score</th><th>Pair stability</th>"
+        "<th>Nearest distance</th><th>Region overlap</th><th>Evidence status</th></tr>%s</table>" % relationship_body
+        if relationship_body
+        else "<p>%s</p>" % html.escape(str(relationship_summary.get("reason") or "No relationship rows were produced."))
+    )
+    relationship_warnings = "".join(
+        "<li>%s</li>" % html.escape(str(value)) for value in relationship_summary.get("warnings") or []
+    )
+    relationship_interpretations = "".join(
+        "<li>%s</li>" % html.escape(value) for value in _spatial_relationship_interpretations(payload)
+    )
+    interpretation_html = (
+        "<h3>Allowed Spatial Interpretation</h3><ul>%s</ul>" % relationship_interpretations
+        if relationship_interpretations
+        else ""
+    )
+    relationship_html = (
+        "<section><h2>Spatial Relationships</h2><p>Status: <code>%s</code></p>%s%s%s%s<ul>%s</ul></section>"
+        % (
+            html.escape(str(relationship_summary.get("status") or "not_run")),
+            relationship_method,
+            relationship_figure,
+            relationship_table,
+            interpretation_html,
+            relationship_warnings,
+        )
+    )
     limitations = "".join("<li>%s</li>" % html.escape(item) for item in _limitations(payload))
     label_rows = "".join(
         "<tr><td>%s</td><td>%d</td></tr>" % (html.escape(label), count)
@@ -678,6 +865,7 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
 <section><h2>Typed Tool Plan</h2><p>Plan validation: <code>%s</code></p><ul>%s</ul></section>
 <section><h2>Generated Templates</h2><ul><li><code>%s</code></li><li><code>%s</code></li></ul></section>
 <section><h2>Tool Results</h2>%s</section>
+%s
 <section><h2>Claim Ledger</h2><ul>%s</ul></section>
 <section><h2>Claim Reliability</h2><table><tr><th>Claim</th><th>Reliability</th><th>S</th><th>A</th><th>P</th><th>R</th><th>Interpretation</th></tr>%s</table><p><small>S = statistical strength, A = annotation quality, P = panel adequacy, R = spatial robustness. The current default combiner is weakest-link.</small></p></section>
 %s
@@ -699,6 +887,7 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         html.escape(payload["expert_label_template"]),
         html.escape(payload["region_label_template"]),
         result_html or "<p>No analysis tools were run because validation inputs are incomplete.</p>",
+        relationship_html,
         claims,
         reliability_rows or "<tr><td colspan=\"7\">No reliability records generated.</td></tr>",
         robustness_html,
@@ -797,6 +986,45 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
         ),
     ]
     sections.extend(result_sections)
+    relationship_summary = payload.get("spatial_relationships") or {}
+    relationship_rows = _spatial_relationship_report_rows(payload)
+    relationship_paragraphs = ["Status: %s" % relationship_summary.get("status", "not_run")]
+    graph = relationship_summary.get("graph") or {}
+    if relationship_summary.get("method"):
+        relationship_paragraphs.append(
+            "Method: %s. Primary graph: n_neighs=%s, n_perms=%s, seed=%s."
+            % (
+                relationship_summary.get("method"),
+                graph.get("n_neighs"),
+                graph.get("n_perms"),
+                graph.get("random_state"),
+            )
+        )
+    elif relationship_summary.get("reason"):
+        relationship_paragraphs.append(str(relationship_summary["reason"]))
+    relationship_figures = []
+    if relationship_summary.get("figure") and Path(str(relationship_summary["figure"])).exists():
+        relationship_figures.append(
+            PdfFigure(path=str(relationship_summary["figure"]), caption="Neighborhood enrichment z-score matrix")
+        )
+    relationship_tables = []
+    if relationship_rows:
+        relationship_tables.append(
+            PdfTable(
+                headers=["Pair", "Direction", "z", "Stability", "NN distance", "Region overlap", "Evidence"],
+                rows=relationship_rows,
+                column_widths=[2.0, 0.8, 0.6, 0.8, 1.0, 0.9, 1.5],
+            )
+        )
+    sections.append(
+        PdfSection(
+            title="Spatial Relationships",
+            paragraphs=relationship_paragraphs,
+            bullets=_spatial_relationship_interpretations(payload) + list(relationship_summary.get("warnings") or []),
+            tables=relationship_tables,
+            figures=relationship_figures,
+        )
+    )
     sections.append(
         PdfSection(
             title="Claim Ledger and Reliability",
@@ -953,6 +1181,66 @@ def _pilot_structural_inputs() -> List[str]:
     # so a blocked run reports a structurally valid plan instead of a misleading
     # "invalid" caused only by pending expert labels / user regions.
     return list(DEFAULT_XENIUM_INPUTS) + ["expert_labels", "user_regions"]
+
+
+def _spatial_relationship_report_rows(
+    payload: Dict[str, Any],
+) -> List[Tuple[str, str, str, str, str, str, str]]:
+    summary = payload.get("spatial_relationships")
+    if not isinstance(summary, dict) or summary.get("status") != "computed":
+        return []
+    rows = []
+    for item in summary.get("relationships") or []:
+        if not isinstance(item, dict):
+            continue
+        sign_agreement = item.get("sign_agreement")
+        top_k_presence = item.get("top_k_presence")
+        settings_present = int(item.get("settings_present") or 0)
+        stability = (
+            "sign %.2f; top-K %.2f (%d settings)"
+            % (float(sign_agreement), float(top_k_presence), settings_present)
+            if sign_agreement is not None and top_k_presence is not None
+            else "sign %.2f (%d settings)" % (float(sign_agreement), settings_present)
+            if sign_agreement is not None
+            else "not established"
+        )
+        distance = item.get("median_bidirectional_nearest_distance")
+        distance_text = (
+            "%.3f %s" % (float(distance), item.get("coordinate_units") or "units")
+            if distance is not None
+            else "not available"
+        )
+        region_overlap = item.get("region_overlap")
+        shared_regions = ", ".join(str(value) for value in item.get("shared_regions") or [])
+        region_text = (
+            "%.3f%s" % (float(region_overlap), " (%s)" % shared_regions if shared_regions else "")
+            if region_overlap is not None
+            else "not available"
+        )
+        rows.append(
+            (
+                str(item.get("pair") or "").replace("|", "/"),
+                str(item.get("direction") or "indeterminate"),
+                "%.4f" % float(item.get("zscore") or 0.0),
+                stability,
+                distance_text,
+                region_text,
+                str(item.get("evidence_status") or "weak_or_indeterminate"),
+            )
+        )
+    return rows
+
+
+def _spatial_relationship_interpretations(payload: Dict[str, Any]) -> List[str]:
+    summary = payload.get("spatial_relationships")
+    if not isinstance(summary, dict) or summary.get("status") != "computed":
+        return []
+    interpretations = []
+    for item in summary.get("relationships") or []:
+        if not isinstance(item, dict) or not item.get("allowed_interpretation"):
+            continue
+        interpretations.append("%s: %s" % (item.get("pair") or "Pair", item["allowed_interpretation"]))
+    return interpretations
 
 
 def _spatial_robustness_rows(payload: Dict[str, Any]) -> List[Tuple[str, str]]:

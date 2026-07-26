@@ -544,6 +544,8 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(stable_summary["status"], "computed")
         self.assertEqual(stable_summary["mean_sign_agreement"], 1.0)
         self.assertEqual(stable_summary["score"], 1.0)
+        self.assertEqual(stable_summary["pair_stability"][0]["settings_present"], 2)
+        self.assertEqual(stable_summary["pair_stability"][0]["sign_agreement"], 1.0)
 
         flipped = [
             setting(6, [{"pair": "A | B", "zscore": 5.0}, {"pair": "A | C", "zscore": -3.0}]),
@@ -591,6 +593,66 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(summary["top_k"], 2)
         self.assertEqual(summary["engines"], ["squidpy"])
 
+    def test_spatial_relationship_summary_combines_orthogonal_evidence(self):
+        from spatialmind.pilot.spatial_relationships import build_spatial_relationship_summary
+
+        records = []
+        for index in range(20):
+            records.append(SpotRecord("S1", float(index), 0.0, "A", {"G": 1.0}, region="core", cell_id="a%d" % index))
+            records.append(SpotRecord("S1", float(index) + 0.5, 1.0, "B", {"G": 1.0}, region="core", cell_id="b%d" % index))
+            records.append(SpotRecord("S1", float(index) + 100.0, 0.0, "C", {"G": 1.0}, region="margin", cell_id="c%d" % index))
+        dataset = SpatialDataset(
+            sample_id="S1",
+            source_path="synthetic",
+            modality="xenium_spatial_rna",
+            coordinate_system="micron",
+            records=records,
+        )
+        neighborhood = ToolResult(
+            tool_name="cell_neighborhood_enrichment",
+            summary="test",
+            metrics={
+                "engine": "squidpy",
+                "n_neighs": 6,
+                "n_perms": 250,
+                "random_state": 0,
+                "tested_pair_count": 2,
+                "all_pairs": [
+                    {"pair": "A | B", "zscore": 4.2},
+                    {"pair": "A | C", "zscore": -3.1},
+                ],
+            },
+        )
+        robustness = {
+            "status": "computed",
+            "score": 0.84,
+            "pair_stability": [
+                {"pair": "A | B", "settings_present": 3, "sign_agreement": 1.0, "top_k_presence": 1.0},
+                {"pair": "A | C", "settings_present": 3, "sign_agreement": 1.0, "top_k_presence": 1.0},
+            ],
+        }
+        summary = build_spatial_relationship_summary(dataset, [neighborhood], robustness, validated=True)
+        self.assertEqual(summary["status"], "computed")
+        by_pair = {item["pair"]: item for item in summary["relationships"]}
+        self.assertEqual(by_pair["A | B"]["evidence_status"], "stable_enriched")
+        self.assertEqual(by_pair["A | C"]["evidence_status"], "stable_depleted")
+        self.assertEqual(by_pair["A | B"]["region_overlap"], 1.0)
+        self.assertGreater(by_pair["A | C"]["median_bidirectional_nearest_distance"], 50.0)
+        self.assertIn("not evidence", summary["warnings"][0])
+
+    def test_spatial_relationship_summary_rejects_prototype_neighbor_counts(self):
+        from spatialmind.pilot.spatial_relationships import build_spatial_relationship_summary
+
+        dataset = _make_two_program_dataset()
+        result = ToolResult(
+            tool_name="cell_neighborhood_enrichment",
+            summary="prototype",
+            metrics={"engine": "prototype", "top_pairs": [{"pair": "A | B", "neighbor_count": 20}]},
+        )
+        summary = build_spatial_relationship_summary(dataset, [result], {}, validated=True)
+        self.assertEqual(summary["status"], "not_computed")
+        self.assertIn("permutation z-scores", summary["reason"])
+
     def test_validated_reports_surface_spatial_robustness(self):
         from spatialmind.pilot.xenium import (
             _spatial_robustness_rows,
@@ -632,6 +694,26 @@ class ToolRegistryTests(unittest.TestCase):
                 "mean_topk_jaccard": 0.55,
                 "n_reference_pairs": 10,
             },
+            "spatial_relationships": {
+                "status": "computed",
+                "method": "Squidpy permutation neighborhood enrichment",
+                "graph": {"n_neighs": 6, "n_perms": 250, "random_state": 17},
+                "relationships": [
+                    {
+                        "pair": "A | B",
+                        "direction": "enriched",
+                        "zscore": 4.2,
+                        "settings_present": 3,
+                        "sign_agreement": 1.0,
+                        "median_bidirectional_nearest_distance": 8.5,
+                        "coordinate_units": "micron",
+                        "region_overlap": 0.8,
+                        "shared_regions": ["core"],
+                        "evidence_status": "stable_enriched",
+                    }
+                ],
+                "warnings": ["Spatial adjacency is not evidence of signaling or causation."],
+            },
         }
         rows = dict(_spatial_robustness_rows(payload))
         self.assertEqual(rows["Robustness score"], "0.8200")
@@ -645,8 +727,12 @@ class ToolRegistryTests(unittest.TestCase):
             _write_html_report(html_path, payload, [])
             _write_pilot_pdf_report(pdf_path, payload, [])
             self.assertIn("Spatial Robustness Sweep", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Spatial Relationships", md_path.read_text(encoding="utf-8"))
+            self.assertIn("stable_enriched", md_path.read_text(encoding="utf-8"))
             html_report = html_path.read_text(encoding="utf-8")
             self.assertIn("Spatial Robustness Sweep", html_report)
+            self.assertIn("Spatial Relationships", html_report)
+            self.assertIn("stable_enriched", html_report)
             self.assertIn("0.8200", html_report)
             with pdf_path.open("rb") as handle:
                 self.assertEqual(handle.read(5), b"%PDF-")
@@ -1091,6 +1177,120 @@ class V2ScaffoldTests(unittest.TestCase):
             self.assertIn("cell_regions.csv", content)
             self.assertIn("cell-a", content)
             self.assertIn("analysis_summary_filepath", content)
+
+
+class MorphologyLayerTests(unittest.TestCase):
+    def test_loaders_degrade_when_assets_are_missing(self):
+        from spatialmind.viz.morphology import (
+            find_morphology_image,
+            load_cell_boundaries,
+            load_morphology_thumbnail,
+            read_pixel_size,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(find_morphology_image(tmp))
+            self.assertIsNone(read_pixel_size(tmp))
+            image = load_morphology_thumbnail(tmp)
+            self.assertEqual(image["status"], "unavailable")
+            self.assertIn("reason", image)
+            boundaries = load_cell_boundaries(tmp)
+            self.assertEqual(boundaries["status"], "unavailable")
+            self.assertEqual(boundaries["polygons"], {})
+
+    def test_choose_level_picks_smallest_level_above_target(self):
+        from spatialmind.viz.morphology import _choose_level
+
+        class Level:
+            def __init__(self, shape):
+                self.shape = shape
+
+        levels = [Level((27282, 36955)), Level((13641, 18477)), Level((6820, 9238)), Level((1705, 2309)), Level((213, 288))]
+        # Level 3 (2309 wide) is the smallest still >= 1600.
+        self.assertEqual(_choose_level(levels, 1600), 3)
+        # Nothing satisfies a huge target, so the largest level is used.
+        self.assertEqual(_choose_level(levels, 99999), 0)
+
+    def test_real_xenium_morphology_and_boundaries_align(self):
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
+        from spatialmind.viz.morphology import load_cell_boundaries, load_morphology_thumbnail
+
+        image = load_morphology_thumbnail(XENIUM_LYMPH, max_dimension=400)
+        if image["status"] != "loaded":
+            self.skipTest("morphology image unavailable: %s" % image.get("reason"))
+        self.assertTrue(image["data_uri"].startswith("data:image/png;base64,"))
+        self.assertGreater(image["width_um"], 0)
+        self.assertGreater(image["height_um"], 0)
+        self.assertLessEqual(max(image["thumbnail_width"], image["thumbnail_height"]), 400)
+
+        from spatialmind.ingestion import load_xenium
+
+        dataset = load_xenium(XENIUM_LYMPH, max_records=40)
+        cell_ids = [record.cell_id for record in dataset.records]
+        boundaries = load_cell_boundaries(XENIUM_LYMPH, cell_ids=cell_ids)
+        if boundaries["status"] != "loaded":
+            self.skipTest("boundaries unavailable: %s" % boundaries.get("reason"))
+        self.assertLessEqual(boundaries["cell_count"], len(cell_ids))
+        # Each polygon must enclose its own centroid, which is what keeps the
+        # segmentation overlay registered with the plotted cells.
+        for record in dataset.records:
+            vertices = boundaries["polygons"].get(record.cell_id)
+            if not vertices:
+                continue
+            xs = [vertex[0] for vertex in vertices]
+            ys = [vertex[1] for vertex in vertices]
+            self.assertGreaterEqual(record.x, min(xs) - 1.0)
+            self.assertLessEqual(record.x, max(xs) + 1.0)
+            self.assertGreaterEqual(record.y, min(ys) - 1.0)
+            self.assertLessEqual(record.y, max(ys) + 1.0)
+
+
+class ReferenceAssistTests(unittest.TestCase):
+    def test_tabular_reference_is_accepted_without_a_xenium_folder(self):
+        from spatialmind.review.glioblastoma import _load_reference_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reference = Path(tmp) / "brain_reference.csv"
+            reference.write_text(
+                "sample_id,x,y,cell_type,CD8A,EPCAM,PTPRC\n"
+                "R1,0,0,T cell,5,0,4\n"
+                "R1,1,0,Tumor cell,0,6,0\n"
+                "R1,2,0,T cell,4,0,3\n",
+                encoding="utf-8",
+            )
+            dataset, ready, status, blockers, fmt = _load_reference_dataset(str(reference), max_records=10)
+            self.assertIsNotNone(dataset)
+            self.assertEqual(fmt, "table")
+            self.assertTrue(ready, blockers)
+            self.assertEqual(status, "reference_labels_available")
+
+    def test_single_class_reference_is_blocked(self):
+        from spatialmind.review.glioblastoma import _load_reference_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reference = Path(tmp) / "thin_reference.csv"
+            reference.write_text(
+                "sample_id,x,y,cell_type,CD8A\nR1,0,0,T cell,5\nR1,1,0,T cell,4\n",
+                encoding="utf-8",
+            )
+            dataset, ready, status, blockers, _fmt = _load_reference_dataset(str(reference), max_records=10)
+            self.assertIsNotNone(dataset)
+            self.assertFalse(ready)
+            self.assertEqual(status, "blocked_missing_reference_labels")
+            self.assertTrue(any("cell-type classes" in item for item in blockers))
+
+    def test_unreadable_reference_reports_blocker_instead_of_raising(self):
+        from spatialmind.review.glioblastoma import _load_reference_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent_reference.h5ad"
+            dataset, ready, status, blockers, fmt = _load_reference_dataset(str(missing), max_records=10)
+            self.assertIsNone(dataset)
+            self.assertFalse(ready)
+            self.assertEqual(fmt, "anndata")
+            self.assertEqual(status, "blocked_unreadable_reference")
+            self.assertTrue(blockers)
 
 
 class EvalHarnessTests(unittest.TestCase):

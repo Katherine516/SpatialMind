@@ -220,7 +220,11 @@ def cell_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, obje
     return result
 
 
-def run_neighborhood_robustness(dataset: SpatialDataset, params: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+def run_neighborhood_robustness(
+    dataset: SpatialDataset,
+    params: Optional[Dict[str, object]] = None,
+    baseline_result: Optional[ToolResult] = None,
+) -> Dict[str, object]:
     """Re-run neighborhood enrichment across a graph-size grid and measure how stable
     the top enriched/depleted cell-type pairs are (sign agreement + top-K overlap).
 
@@ -229,11 +233,27 @@ def run_neighborhood_robustness(dataset: SpatialDataset, params: Optional[Dict[s
     """
     params = dict(params or {})
     grid = [int(value) for value in (params.get("robustness_n_neighs") or [6, 10, 15])]
-    n_perms = int(params.get("n_perms", 100) or 100)
+    n_perms = int(params.get("n_perms", 250) or 250)
     seed = int(params.get("random_state", 0) or 0)
     top_k = int(params.get("robustness_top_k", 10) or 10)
     per_setting: List[Dict[str, object]] = []
+    if baseline_result is not None:
+        baseline_metrics = baseline_result.metrics or {}
+        baseline_n_neighs = int(baseline_metrics.get("n_neighs") or 0)
+        baseline_pairs = baseline_metrics.get("all_pairs") or baseline_metrics.get("top_pairs") or []
+        if (
+            baseline_metrics.get("engine") == "squidpy"
+            and baseline_n_neighs in grid
+            and baseline_pairs
+            and int(baseline_metrics.get("n_perms") or 0) == n_perms
+            and int(baseline_metrics.get("random_state") or 0) == seed
+        ):
+            per_setting.append(
+                {"n_neighs": baseline_n_neighs, "engine": "squidpy", "pairs": baseline_pairs}
+            )
     for n_neighs in grid:
+        if any(item.get("n_neighs") == n_neighs for item in per_setting):
+            continue
         result = cell_neighborhood_enrichment(
             dataset,
             {"n_neighs": n_neighs, "n_perms": n_perms, "random_state": seed, "include_all_pairs": True},
@@ -275,6 +295,10 @@ def summarize_neighborhood_robustness(per_setting: List[Dict[str, object]], top_
     reference_top_set = {pair for pair, _ in reference_top}
     sign_agreements: List[float] = []
     jaccards: List[float] = []
+    top_sets = [
+        {pair for pair, _value in sorted(mapping.items(), key=lambda kv: abs(kv[1]), reverse=True)[:top_k]}
+        for mapping in maps
+    ]
     for other in maps[1:]:
         agree = total = 0
         for pair, zscore in reference_top:
@@ -290,6 +314,24 @@ def summarize_neighborhood_robustness(per_setting: List[Dict[str, object]], top_
     mean_sign = sum(sign_agreements) / len(sign_agreements)
     mean_jaccard = sum(jaccards) / len(jaccards)
     score = round(0.6 * mean_sign + 0.4 * mean_jaccard, 4)
+    pair_stability = []
+    for pair, reference_zscore in reference_top:
+        present = [mapping[pair] for mapping in maps if pair in mapping]
+        sign_agreement = (
+            sum(1 for value in present if (reference_zscore > 0) == (value > 0)) / float(len(present))
+            if present
+            else 0.0
+        )
+        top_presence = sum(1 for top_set in top_sets if pair in top_set) / float(len(top_sets))
+        pair_stability.append(
+            {
+                "pair": pair,
+                "reference_zscore": round(reference_zscore, 5),
+                "settings_present": len(present),
+                "sign_agreement": round(sign_agreement, 4),
+                "top_k_presence": round(top_presence, 4),
+            }
+        )
     return {
         "status": "computed",
         "score": score,
@@ -298,6 +340,7 @@ def summarize_neighborhood_robustness(per_setting: List[Dict[str, object]], top_
         "settings": [item["n_neighs"] for item in usable],
         "n_reference_pairs": len(reference_top),
         "top_k": top_k,
+        "pair_stability": pair_stability,
     }
 
 

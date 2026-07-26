@@ -1444,3 +1444,28 @@ Verification:
 - Unit tests pass 67/67.
 - Legacy evaluation passes 15/15 with mean score 1.0000; MVP evaluation passes 10/10 with mean score 1.0000.
 - All three import contracts remain intact, `pip check` reports no broken requirements, bytecode compilation passes, and `git diff --check` reports no whitespace errors.
+
+### Step 39: Reliable Spatial Relationship Evidence
+
+Status: Complete.
+
+Work completed on 2026-07-22:
+
+- Added a validated-only spatial relationship synthesis that combines Squidpy permutation adjacency, pair-level graph-size stability, bidirectional nearest-cell distance, and reviewed-region overlap.
+- Added transparent evidence statuses: `stable_enriched`, `stable_depleted`, sensitivity-limited, and weak/indeterminate.
+- Added minimum effect, cell-count, global robustness, sign-agreement, and top-K-presence criteria before a pair can be called stable.
+- Added a diverging neighborhood z-score heatmap and relationship tables to Markdown, HTML, and PDF reports.
+- Added explicit language separating spatial adjacency from physical contact, signaling, mechanism, and causation.
+- Reused the primary `n_neighs=6` neighborhood result as the first robustness setting when parameters match, avoiding one repeated Squidpy run.
+- Increased the validated default to 250 seeded permutations and retained all finite pair results for report synthesis.
+- Tightened claim grounding so prototype neighbor counts cannot satisfy permutation-z-score evidence requirements.
+- Added unit coverage for stable relationships, region context, distance context, prototype rejection, pair-level sensitivity metadata, and cross-format report rendering.
+
+Verification:
+
+- Unit tests pass 69/69.
+- Legacy evaluation passes 15/15 with mean score 1.0000; MVP evaluation passes 10/10 with mean score 1.0000.
+- A blocked local Xenium run produced no pair findings or heatmap and clearly reported that reviewed labels and regions are required.
+- A synthetic validated rendering fixture produced the expected enriched/depleted evidence table, nearest-distance and region-overlap context, spatial adjacency heatmap, and robustness table in Markdown, HTML, and PDF.
+- Visually checked all four PDF pages and the standalone heatmap; tables, labels, color scale, captions, and page transitions are legible with no clipping or overlap.
+- All three import contracts remain intact, `pip check` reports no broken requirements, bytecode compilation passes, and `git diff --check` reports no whitespace errors.
