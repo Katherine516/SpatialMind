@@ -1417,6 +1417,62 @@ class LabelTransferTests(unittest.TestCase):
         # Coverage limits must be stated, since vote confidence cannot express them.
         self.assertTrue(any("no matching class" in caveat for caveat in result.caveats))
 
+    def test_marker_lineage_resolution_is_conservative(self):
+        from spatialmind.tools.implementations import lineage_for_label, lineages_conflict, marker_lineage
+
+        # Unambiguous myeloid evidence resolves.
+        lineage, score = marker_lineage({"CD68": 5.0, "AIF1": 4.0, "C1QA": 3.0})
+        self.assertEqual(lineage, "myeloid")
+        self.assertGreater(score, 0)
+        # Tied evidence across lineages must NOT resolve, rather than guess.
+        self.assertEqual(marker_lineage({"AQP4": 2.0, "CD4": 2.0})[0], "")
+        # Trace evidence below the floor must not resolve.
+        self.assertEqual(marker_lineage({"CD68": 0.2})[0], "")
+
+        self.assertEqual(lineage_for_label("intratelencephalic-projecting glutamatergic cortical neuron"), "neuronal")
+        self.assertEqual(lineage_for_label("microglial cell"), "myeloid")
+        # Most specific keyword wins.
+        self.assertEqual(lineage_for_label("oligodendrocyte precursor cell"), "opc")
+        self.assertEqual(lineage_for_label("oligodendrocyte"), "oligodendrocyte")
+
+        self.assertTrue(lineages_conflict("neuronal", "myeloid"))
+        self.assertFalse(lineages_conflict("neuronal", "neuronal"))
+        self.assertFalse(lineages_conflict("oligodendrocyte", "opc"))  # compatible
+        self.assertFalse(lineages_conflict("neuronal", ""))  # unknown never conflicts
+
+    def test_marker_disagreement_flags_cells_confidence_would_miss(self):
+        target = SpatialDataset(
+            sample_id="X",
+            source_path="x",
+            modality="xenium_spatial_rna",
+            records=[
+                # Unambiguously myeloid, but the reference has no myeloid class.
+                SpotRecord("X", 0.0, 0.0, "Unannotated cell",
+                           {"CD68": 6.0, "AIF1": 5.0, "C1QA": 4.0, "CD8A": 0.0, "EPCAM": 0.0}, cell_id="myeloid1"),
+                SpotRecord("X", 1.0, 0.0, "Unannotated cell",
+                           {"CD8A": 7.0, "CD3D": 6.0, "EPCAM": 0.0}, cell_id="lymphoid1"),
+            ],
+        )
+        def reference_cell(label, profile, index):
+            genes = {"CD68": 0.0, "AIF1": 0.0, "C1QA": 0.0, "CD8A": 0.0, "EPCAM": 0.0, "MBP": 0.0, "MOG": 0.0}
+            genes.update(profile)
+            return SpotRecord("R", 0.0, 0.0, label, genes, cell_id="%s%d" % (label[:3], index))
+
+        reference = SpatialDataset(
+            sample_id="R", source_path="r", modality="scrna",
+            records=[reference_cell("oligodendrocyte", {"MBP": 9.0, "MOG": 8.0}, i) for i in range(10)]
+                    + [reference_cell("neuron", {"CD8A": 1.0}, i) for i in range(10)],
+        )
+        result = reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2})
+        by_id = {item["cell_id"]: item for item in result.metrics["predictions"]}
+        # The myeloid cell has no correct label available in this reference.
+        self.assertEqual(by_id["myeloid1"]["marker_lineage"], "myeloid")
+        self.assertTrue(by_id["myeloid1"]["lineage_absent_from_reference"])
+        self.assertEqual(by_id["myeloid1"]["review_priority"], "high")
+        self.assertGreaterEqual(result.metrics["lineage_absent_from_reference_count"], 1)
+        self.assertIn("myeloid", result.metrics["reference_lineages"] + ["myeloid"])  # sanity on key presence
+        self.assertIn("reference_lineages", result.metrics)
+
     def test_without_reference_dataset_no_transfer_is_claimed(self):
         result = reference_label_transfer(
             self._target(),

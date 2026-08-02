@@ -3,7 +3,7 @@ import random
 import warnings
 from collections import Counter, defaultdict
 from dataclasses import asdict, is_dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from spatialmind.contracts.metrics import (
     AnnotationMetrics,
@@ -764,6 +764,109 @@ def reference_label_transfer(dataset: SpatialDataset, params: Dict[str, object])
     return _knn_reference_label_transfer(dataset, reference_dataset, shared, params)
 
 
+# Broad lineages with canonical markers, used to sanity-check transferred labels
+# against the target's own measured expression. Deliberately coarse: the point is
+# to catch a myeloid cell labelled as a neuron, not to arbitrate subtypes.
+LINEAGE_MARKERS = {
+    "lymphoid": ("PTPRC", "CD3D", "CD3E", "CD8A", "CD4", "NKG7", "GNLY", "MS4A1", "CD79A", "MZB1"),
+    "myeloid": ("CD68", "LYZ", "C1QA", "AIF1", "CTSS", "ITGAX", "P2RY12", "CX3CR1", "MS4A6A", "FCGR3A"),
+    "endothelial": ("PECAM1", "VWF", "KDR", "FLT1", "CLDN5", "RAMP2"),
+    "stromal": ("COL1A1", "COL1A2", "DCN", "LUM", "ACTA2", "PDGFRB"),
+    "epithelial": ("EPCAM", "KRT8", "KRT18", "KRT19", "KRT15"),
+    "neuronal": ("SNAP25", "RBFOX3", "SYT1", "NRGN", "SLC17A7", "GAD1", "GAD2", "ENC1"),
+    "oligodendrocyte": ("MBP", "MOG", "MOBP", "PLP1", "CLDN11", "OPALIN", "ERMN", "CNDP1"),
+    "astrocyte": ("GFAP", "AQP4", "SLC1A3", "GJA1", "SOX9"),
+}
+
+# Keyword -> lineage, matched against a reference label. Ordered most specific
+# first so "oligodendrocyte precursor" does not match plain "oligodendrocyte".
+LABEL_LINEAGE_KEYWORDS = (
+    ("oligodendrocyte precursor", "opc"),
+    ("opc", "opc"),
+    ("oligodendrocyte", "oligodendrocyte"),
+    ("astrocyte", "astrocyte"),
+    ("microglia", "myeloid"),
+    ("microglial", "myeloid"),
+    ("macrophage", "myeloid"),
+    ("monocyte", "myeloid"),
+    ("dendritic", "myeloid"),
+    ("neutrophil", "myeloid"),
+    ("myeloid", "myeloid"),
+    ("t cell", "lymphoid"),
+    ("nk cell", "lymphoid"),
+    ("natural killer", "lymphoid"),
+    ("b cell", "lymphoid"),
+    ("plasma cell", "lymphoid"),
+    ("lymphocyte", "lymphoid"),
+    ("endothelial", "endothelial"),
+    ("pericyte", "stromal"),
+    ("smooth muscle", "stromal"),
+    ("fibroblast", "stromal"),
+    ("stromal", "stromal"),
+    ("epithelial", "epithelial"),
+    ("neoplastic", "epithelial"),
+    ("tumor", "epithelial"),
+    ("neuron", "neuronal"),
+    ("neuronal", "neuronal"),
+    ("glutamatergic", "neuronal"),
+    ("gabaergic", "neuronal"),
+)
+
+# Lineages that are close enough that a mismatch is not evidence of an error.
+COMPATIBLE_LINEAGES = (
+    {"oligodendrocyte", "opc"},
+    {"astrocyte", "neuronal"},  # both neuroectodermal; panels share glial/neuronal genes
+)
+
+
+def lineage_for_label(label: str) -> str:
+    text = str(label or "").strip().lower()
+    for keyword, lineage in LABEL_LINEAGE_KEYWORDS:
+        if keyword in text:
+            return lineage
+    return ""
+
+
+def marker_lineage(
+    genes: Dict[str, float],
+    min_score: float = 2.0,
+    dominance: float = 1.5,
+) -> Tuple[str, float]:
+    """Dominant lineage supported by a cell's own markers, or ("", 0.0).
+
+    Requires a clear winner (``dominance`` times the runner-up and above
+    ``min_score``) so ambiguous cells are left unflagged rather than generating
+    noise for reviewers.
+    """
+    scores = []
+    for lineage, markers in LINEAGE_MARKERS.items():
+        total = 0.0
+        for marker in markers:
+            try:
+                total += max(float(genes.get(marker, 0.0)), 0.0)
+            except (TypeError, ValueError):
+                continue
+        if total > 0:
+            scores.append((total, lineage))
+    if not scores:
+        return "", 0.0
+    scores.sort(reverse=True)
+    best_score, best_lineage = scores[0]
+    if best_score < min_score:
+        return "", 0.0
+    runner_up = scores[1][0] if len(scores) > 1 else 0.0
+    if runner_up > 0 and best_score < runner_up * dominance:
+        return "", 0.0
+    return best_lineage, best_score
+
+
+def lineages_conflict(predicted: str, observed: str) -> bool:
+    if not predicted or not observed or predicted == observed:
+        return False
+    pair = {predicted, observed}
+    return not any(pair <= compatible for compatible in COMPATIBLE_LINEAGES)
+
+
 SPECIES_ALIASES = {
     "human": "human",
     "homo sapiens": "human",
@@ -863,28 +966,54 @@ def _knn_reference_label_transfer(
     median_target_distance = float(np.median(target_distances))
     median_reference_distance = float(np.median(reference_baseline))
 
+    # Lineage each reference class belongs to, resolved once.
+    label_lineages = {label: lineage_for_label(label) for label in classes}
+    reference_lineages = {lineage for lineage in label_lineages.values() if lineage}
+
     predictions = []
     low_confidence = 0
     out_of_reference = 0
+    disagreements = 0
+    uncovered = 0
     for index, record in enumerate(dataset.records):
         row = probabilities[index]
         best = int(np.argmax(row))
         confidence = float(row[best])
         distance = float(target_distances[index])
         distant_for_dataset = bool(distance > distance_threshold)
+        predicted_label = classes[best]
+        predicted_lineage = label_lineages.get(predicted_label, "")
+        observed_lineage, marker_score = marker_lineage(record.genes)
+        # The cell's own markers disagree with the transferred label.
+        disagreement = lineages_conflict(predicted_lineage, observed_lineage)
+        # Stronger still: the markers point at a lineage the reference has no
+        # class for, so no correct label was ever available for this cell.
+        not_covered = bool(observed_lineage) and observed_lineage not in reference_lineages
         if confidence < confidence_threshold:
             low_confidence += 1
         if distant_for_dataset:
             out_of_reference += 1
+        if disagreement:
+            disagreements += 1
+        if not_covered:
+            uncovered += 1
         predictions.append(
             {
                 "cell_id": record.cell_id or str(index),
-                "predicted_label": classes[best],
+                "predicted_label": predicted_label,
                 "confidence": round(confidence, 4),
                 "distance_to_reference": round(distance, 4),
                 "distant_from_reference": distant_for_dataset,
-                # Rank for review: unusual-for-this-dataset or low vote agreement.
-                "review_priority": "high" if (distant_for_dataset or confidence < confidence_threshold) else "normal",
+                "marker_lineage": observed_lineage,
+                "marker_score": round(marker_score, 4),
+                "marker_disagreement": disagreement,
+                "lineage_absent_from_reference": not_covered,
+                # Marker conflict outranks vote agreement: a unanimous vote for a
+                # lineage the cell's own markers contradict is the failure mode
+                # that confidence alone cannot surface.
+                "review_priority": "high"
+                if (disagreement or not_covered or distant_for_dataset or confidence < confidence_threshold)
+                else "normal",
             }
         )
     mean_confidence = float(np.mean([item["confidence"] for item in predictions])) if predictions else 0.0
@@ -905,7 +1034,11 @@ def _knn_reference_label_transfer(
             "mean_transfer_confidence": round(mean_confidence, 4),
             "low_confidence_cell_count": low_confidence,
             "confidence_threshold": confidence_threshold,
-            "high_review_priority_count": out_of_reference,
+            "high_review_priority_count": sum(1 for item in predictions if item["review_priority"] == "high"),
+            "marker_disagreement_count": disagreements,
+            "lineage_absent_from_reference_count": uncovered,
+            "reference_lineages": sorted(reference_lineages),
+            "distant_from_reference_count": out_of_reference,
             "review_priority_percentile": review_percentile,
             "reference_distance_threshold": round(distance_threshold, 4),
             "median_target_distance": round(median_target_distance, 4),
@@ -922,6 +1055,9 @@ def _knn_reference_label_transfer(
             "'no matching class'; any cell type absent from the reference is still assigned its nearest "
             "available label, often at high confidence. Judge coverage from the class list, not the score."
             % (len(labels), ", ".join(labels[:6]) + (" ..." if len(labels) > 6 else "")),
+            "%d cells carry marker evidence for a lineage the reference has no class for, and %d have "
+            "markers that contradict their transferred label; both are flagged review_priority=high."
+            % (uncovered, disagreements),
             "Target cells sit a median %.1fx further from the reference than reference cells sit from each "
             "other, reflecting the assay difference between scRNA and a targeted panel. Distances are used "
             "only to rank review priority within this dataset."
