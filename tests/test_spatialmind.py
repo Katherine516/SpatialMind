@@ -1547,6 +1547,47 @@ class H5adReferenceLoadingTests(unittest.TestCase):
                 load_scrna_reference_set(paths, max_records_per_file=10)
             self.assertIn("organism", str(ctx.exception).lower())
 
+    def test_backed_and_memory_reads_agree(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+            from scipy import sparse  # type: ignore
+        except ImportError:
+            self.skipTest("anndata/scipy required")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "backed.h5ad"
+            rng = np.random.default_rng(0)
+            matrix = sparse.csr_matrix(rng.integers(0, 5, size=(40, 6)).astype(float))
+            adata = ad.AnnData(
+                X=matrix,
+                obs=pd.DataFrame({"cell_type": ["A" if i % 2 else "B" for i in range(40)]}),
+                var=pd.DataFrame({"feature_name": ["G%d" % i for i in range(6)]}, index=["E%d" % i for i in range(6)]),
+            )
+            adata.uns["organism"] = "Homo sapiens"
+            adata.write_h5ad(path)
+
+            layer = DataIngestionLayer()
+            backed = layer.load_h5ad(str(path), max_records=12, require_spatial=False, backed=True)
+            memory = layer.load_h5ad(str(path), max_records=12, require_spatial=False, backed=False)
+
+            self.assertEqual(memory.metadata["h5ad_read_mode"], "memory")
+            self.assertIn(backed.metadata["h5ad_read_mode"], {"backed", "memory"})
+            # Whichever path is taken, the ingested content must be identical.
+            self.assertEqual(len(backed.records), len(memory.records))
+            self.assertEqual(backed.genes, memory.genes)
+            self.assertEqual(
+                [record.cell_id for record in backed.records],
+                [record.cell_id for record in memory.records],
+            )
+            self.assertEqual(
+                [record.cell_type for record in backed.records],
+                [record.cell_type for record in memory.records],
+            )
+            for left, right in zip(backed.records, memory.records):
+                self.assertEqual(left.genes, right.genes)
+
     def test_spatial_h5ad_still_requires_coordinates(self):
         try:
             import anndata as ad  # type: ignore

@@ -252,13 +252,46 @@ class DataIngestionLayer:
         max_records: int = 5000,
         max_features_per_record: int = 200,
         require_spatial: bool = True,
+        backed: bool = True,
     ) -> SpatialDataset:
         try:
             import anndata as ad  # type: ignore
         except ImportError as exc:
             raise unsupported_format_error("h5ad_anndata", path) from exc
 
-        adata = ad.read_h5ad(path)
+        # Backed mode keeps the expression matrix on disk and reads only the
+        # sampled rows. Reference atlases run to several GB, and loading the whole
+        # matrix just to sample a few thousand cells dominates ingestion time.
+        adata, read_mode = _open_h5ad(ad, path, backed=backed)
+        try:
+            return self._build_h5ad_dataset(
+                adata=adata,
+                path=path,
+                read_mode=read_mode,
+                sample_id=sample_id,
+                annotation_key=annotation_key,
+                max_records=max_records,
+                max_features_per_record=max_features_per_record,
+                require_spatial=require_spatial,
+            )
+        finally:
+            if read_mode == "backed":
+                try:
+                    adata.file.close()
+                except Exception:
+                    pass
+
+    def _build_h5ad_dataset(
+        self,
+        adata: Any,
+        path: str,
+        read_mode: str,
+        sample_id: Optional[str],
+        annotation_key: Optional[str],
+        max_records: int,
+        max_features_per_record: int,
+        require_spatial: bool,
+    ) -> SpatialDataset:
         if adata.n_obs == 0:
             raise IngestionValidationError("H5AD contains no observations: %s" % path)
 
@@ -280,9 +313,11 @@ class DataIngestionLayer:
         selected_indices = _sample_indices(int(adata.n_obs), max_records)
         records: List[SpotRecord] = []
         inferred_sample = sample_id or _infer_sample_id_from_obs(adata.obs, selected_indices) or Path(path).stem
-        for index in selected_indices:
+        # One batched read beats thousands of single-row reads, especially backed.
+        batch = _fetch_h5ad_rows(adata, selected_indices)
+        for position, index in enumerate(selected_indices):
             coord = coords[index]
-            row = adata.X[index]
+            row = adata.X[index] if batch is None else batch[position]
             features = _matrix_row_to_features(row, var_names, max_features_per_record=max_features_per_record)
             cell_type = "Unannotated"
             if annotation:
@@ -328,6 +363,7 @@ class DataIngestionLayer:
                 "annotation_key": annotation,
                 "annotation_strategy": "obs_column" if annotation else "marker_rule_v0",
                 "organism": _h5ad_organism(adata),
+                "h5ad_read_mode": read_mode,
                 "max_records": max_records,
                 "max_features_per_record": max_features_per_record,
             },
@@ -925,6 +961,47 @@ def _obs_value(obs: Any, index: int, key: str) -> Optional[str]:
         return None
     value = str(obs.iloc[index][key])
     return None if value.lower() == "nan" else value
+
+
+def _open_h5ad(ad: Any, path: str, backed: bool = True) -> Tuple[Any, str]:
+    """Open an h5ad, preferring backed mode. Returns (adata, "backed"|"memory").
+
+    Backed mode is not universally supported (dense X, older anndata, some
+    encodings), so any failure falls back to a normal in-memory read rather than
+    breaking ingestion.
+    """
+    if backed:
+        try:
+            adata = ad.read_h5ad(path, backed="r")
+            if adata.X is not None:
+                return adata, "backed"
+            try:
+                adata.file.close()
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return ad.read_h5ad(path), "memory"
+
+
+def _fetch_h5ad_rows(adata: Any, indices: List[int]) -> Optional[Any]:
+    """Read the selected rows in one pass, or None if batching is unsupported.
+
+    Indices are already sorted ascending by _sample_indices, which is the access
+    pattern backed CSR storage handles best.
+    """
+    if not indices:
+        return None
+    try:
+        batch = adata.X[list(indices)]
+    except Exception:
+        return None
+    try:
+        if batch.shape[0] != len(indices):
+            return None
+    except Exception:
+        return None
+    return batch
 
 
 def _h5ad_feature_names(adata: Any) -> List[str]:
