@@ -840,19 +840,51 @@ def _knn_reference_label_transfer(
     probabilities = classifier.predict_proba(target_matrix)
     classes = [str(value) for value in classifier.classes_]
 
+    # Vote-fraction confidence is computed over the classes the reference happens
+    # to contain, so it cannot express "none of these": a cell type absent from the
+    # reference is still assigned its nearest available label, often at high
+    # confidence. Distance to the reference is the independent signal.
+    #
+    # It must be calibrated on the target, not on the reference. scRNA references
+    # and targeted-panel Xenium are different assays, so every target cell sits far
+    # from the reference on absolute distance -- thresholding against the
+    # reference's own neighbour distances flags ~100% of cells and is useless.
+    # Ranking within the target isolates the cells that are unusual *for this
+    # dataset*, which is what should be reviewed first.
+    review_percentile = float(params.get("review_priority_percentile", 90.0) or 90.0)
+    target_distances = classifier.kneighbors(target_matrix)[0].mean(axis=1)
+    reference_neighbor_distances = classifier.kneighbors(reference_matrix)[0]
+    # Column 0 is the self-match at distance 0.
+    reference_baseline = (
+        reference_neighbor_distances[:, 1:].mean(axis=1) if neighbors > 1 else reference_neighbor_distances.mean(axis=1)
+    )
+    distance_threshold = float(np.percentile(target_distances, review_percentile))
+    # Reported so the platform gap between reference and target stays visible.
+    median_target_distance = float(np.median(target_distances))
+    median_reference_distance = float(np.median(reference_baseline))
+
     predictions = []
     low_confidence = 0
+    out_of_reference = 0
     for index, record in enumerate(dataset.records):
         row = probabilities[index]
         best = int(np.argmax(row))
         confidence = float(row[best])
+        distance = float(target_distances[index])
+        distant_for_dataset = bool(distance > distance_threshold)
         if confidence < confidence_threshold:
             low_confidence += 1
+        if distant_for_dataset:
+            out_of_reference += 1
         predictions.append(
             {
                 "cell_id": record.cell_id or str(index),
                 "predicted_label": classes[best],
                 "confidence": round(confidence, 4),
+                "distance_to_reference": round(distance, 4),
+                "distant_from_reference": distant_for_dataset,
+                # Rank for review: unusual-for-this-dataset or low vote agreement.
+                "review_priority": "high" if (distant_for_dataset or confidence < confidence_threshold) else "normal",
             }
         )
     mean_confidence = float(np.mean([item["confidence"] for item in predictions])) if predictions else 0.0
@@ -873,6 +905,12 @@ def _knn_reference_label_transfer(
             "mean_transfer_confidence": round(mean_confidence, 4),
             "low_confidence_cell_count": low_confidence,
             "confidence_threshold": confidence_threshold,
+            "high_review_priority_count": out_of_reference,
+            "review_priority_percentile": review_percentile,
+            "reference_distance_threshold": round(distance_threshold, 4),
+            "median_target_distance": round(median_target_distance, 4),
+            "median_reference_internal_distance": round(median_reference_distance, 4),
+            "platform_shift_ratio": round(median_target_distance / max(median_reference_distance, 1e-9), 2),
             "predicted_label_counts": dict(Counter(item["predicted_label"] for item in predictions)),
             "predictions": predictions,
         },
@@ -880,6 +918,14 @@ def _knn_reference_label_transfer(
             "Transferred cell-type labels are predictions from a reference, not direct measurements.",
             "Reference and target were aligned over shared features only.",
             "Predicted labels require expert review before they can support biological claims.",
+            "Confidence is a neighbour-vote fraction over the %d reference classes (%s) and cannot express "
+            "'no matching class'; any cell type absent from the reference is still assigned its nearest "
+            "available label, often at high confidence. Judge coverage from the class list, not the score."
+            % (len(labels), ", ".join(labels[:6]) + (" ..." if len(labels) > 6 else "")),
+            "Target cells sit a median %.1fx further from the reference than reference cells sit from each "
+            "other, reflecting the assay difference between scRNA and a targeted panel. Distances are used "
+            "only to rank review priority within this dataset."
+            % (median_target_distance / max(median_reference_distance, 1e-9)),
         ]
         + _type_honesty_caveats(dataset),
         label_caveat="Cell-type labels were transferred from a reference and must be expert-reviewed before use.",

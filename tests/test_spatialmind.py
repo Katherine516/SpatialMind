@@ -1393,6 +1393,30 @@ class LabelTransferTests(unittest.TestCase):
             self.assertLessEqual(item["confidence"], 1.0)
         self.assertIn("expert review", " ".join(result.caveats).lower())
 
+    def test_review_priority_is_calibrated_on_the_target_not_the_reference(self):
+        target = self._target()
+        # Extra cells so a 90th-percentile cut is meaningful.
+        for index in range(18):
+            target.records.append(
+                SpotRecord("X", float(index), 1.0, "Unannotated cell",
+                           {"CD8A": 6.0, "CD3D": 5.0, "EPCAM": 0.0}, cell_id="e%d" % index)
+            )
+        result = reference_label_transfer(
+            target, {"reference_dataset": self._reference(), "min_shared_features": 2},
+        )
+        metrics = result.metrics
+        flagged = metrics["high_review_priority_count"]
+        # Must flag a reviewable minority, not everything (the failure mode of
+        # calibrating against reference-internal distances across assays).
+        self.assertLess(flagged, len(target.records))
+        self.assertIn("platform_shift_ratio", metrics)
+        priorities = {item["review_priority"] for item in metrics["predictions"]}
+        self.assertTrue(priorities <= {"high", "normal"})
+        for item in metrics["predictions"]:
+            self.assertIn("distant_from_reference", item)
+        # Coverage limits must be stated, since vote confidence cannot express them.
+        self.assertTrue(any("no matching class" in caveat for caveat in result.caveats))
+
     def test_without_reference_dataset_no_transfer_is_claimed(self):
         result = reference_label_transfer(
             self._target(),
