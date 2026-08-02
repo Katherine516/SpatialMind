@@ -27,6 +27,9 @@ def load_xenium(
     dataset.metadata["resolution"] = "subcellular"
     dataset.metadata["is_targeted_panel"] = True
     dataset.metadata.setdefault("panel_name", _panel_name(dataset))
+    # experiment.xenium reports panel_organism; carried so cross-species label
+    # transfer can be refused rather than silently performed.
+    dataset.metadata.setdefault("organism", str(dataset.metadata.get("panel_organism") or ""))
     dataset.notes.append("Xenium uses a targeted panel; a missing gene means not measured, not unexpressed.")
     dataset.processing_steps.append("Loaded as MVP Xenium spatial RNA dataset with micron coordinates.")
     return dataset

@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 
 from spatialmind.ingestion import load_scrna, load_xenium
 from spatialmind.ingestion.labels import MARKER_EVIDENCE_FEATURES, NON_BIOLOGICAL_FEATURES
+from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.implementations import reference_label_transfer
 
 CANDIDATE_FIELDS = [
@@ -83,6 +84,8 @@ def main() -> None:
     parser.add_argument("--n-neighbors", type=int, default=15)
     parser.add_argument("--min-shared-features", type=int, default=20)
     parser.add_argument("--confidence-threshold", type=float, default=0.6)
+    parser.add_argument("--reference-max-records", type=int, default=5000, help="Reference cells sampled for KNN.")
+    parser.add_argument("--allow-cross-species", action="store_true", help="Only for pre-mapped orthologs.")
     args = parser.parse_args()
 
     out = Path(args.out)
@@ -98,17 +101,38 @@ def main() -> None:
     }
 
     if args.reference:
-        reference = load_scrna(args.reference)
+        reference = load_scrna(args.reference, max_records=args.reference_max_records)
         reference_labels = sorted({record.cell_type for record in reference.records if record.cell_type})
-        result = reference_label_transfer(
-            dataset,
-            {
-                "reference_dataset": reference,
-                "min_shared_features": args.min_shared_features,
-                "n_neighbors": args.n_neighbors,
-                "confidence_threshold": args.confidence_threshold,
-            },
-        )
+        try:
+            result = reference_label_transfer(
+                dataset,
+                {
+                    "reference_dataset": reference,
+                    "min_shared_features": args.min_shared_features,
+                    "n_neighbors": args.n_neighbors,
+                    "confidence_threshold": args.confidence_threshold,
+                    "allow_cross_species": args.allow_cross_species,
+                },
+            )
+        except MissingPreconditionError as exc:
+            # A refusal is a valid outcome, not a crash. Report it cleanly so the
+            # user sees what to fix instead of a stack trace.
+            blocked = {
+                "status": "blocked_unusable_reference",
+                "dataset_path": args.data,
+                "reference_path": args.reference,
+                "reference_organism": reference.metadata.get("organism", ""),
+                "target_organism": dataset.metadata.get("organism", ""),
+                "reference_label_classes": reference_labels,
+                "reason": str(exc),
+                "no_candidate_file_written": True,
+            }
+            (out / "candidate_label_summary.json").write_text(
+                json.dumps(blocked, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            print("BLOCKED: %s" % exc)
+            print("\nNo candidate label file was written. Summary: %s" % (out / "candidate_label_summary.json"))
+            return
         predictions = {item["cell_id"]: item for item in result.metrics.get("predictions", [])}
         summary.update(
             {

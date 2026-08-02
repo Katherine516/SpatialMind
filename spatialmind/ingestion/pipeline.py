@@ -251,6 +251,7 @@ class DataIngestionLayer:
         annotation_key: Optional[str] = None,
         max_records: int = 5000,
         max_features_per_record: int = 200,
+        require_spatial: bool = True,
     ) -> SpatialDataset:
         try:
             import anndata as ad  # type: ignore
@@ -263,12 +264,19 @@ class DataIngestionLayer:
 
         coords = _extract_obsm_coordinates(adata)
         if coords is None:
-            raise IngestionValidationError(
-                "H5AD must contain spatial coordinates in one of obsm keys: %s" % ", ".join(COMMON_SPATIAL_KEYS)
-            )
+            if require_spatial:
+                raise IngestionValidationError(
+                    "H5AD must contain spatial coordinates in one of obsm keys: %s" % ", ".join(COMMON_SPATIAL_KEYS)
+                )
+            # Dissociated scRNA references have no spatial coordinates. They are
+            # still valid label-transfer references, so fall back to index
+            # placeholders rather than rejecting the file.
+            coords = [(float(index), 0.0) for index in range(int(adata.n_obs))]
 
         annotation = annotation_key or _choose_annotation_key(adata.obs.keys())
-        var_names = [str(name).upper() for name in list(adata.var_names)]
+        # Prefer readable gene symbols over Ensembl IDs so references align with
+        # symbol-based panels such as Xenium.
+        var_names = _h5ad_feature_names(adata)
         selected_indices = _sample_indices(int(adata.n_obs), max_records)
         records: List[SpotRecord] = []
         inferred_sample = sample_id or _infer_sample_id_from_obs(adata.obs, selected_indices) or Path(path).stem
@@ -319,6 +327,7 @@ class DataIngestionLayer:
                 "n_vars_total": int(adata.n_vars),
                 "annotation_key": annotation,
                 "annotation_strategy": "obs_column" if annotation else "marker_rule_v0",
+                "organism": _h5ad_organism(adata),
                 "max_records": max_records,
                 "max_features_per_record": max_features_per_record,
             },
@@ -916,6 +925,36 @@ def _obs_value(obs: Any, index: int, key: str) -> Optional[str]:
         return None
     value = str(obs.iloc[index][key])
     return None if value.lower() == "nan" else value
+
+
+def _h5ad_feature_names(adata: Any) -> List[str]:
+    """Gene symbols where available, else var_names.
+
+    CELLxGENE h5ad files index var by Ensembl ID and keep symbols in
+    ``var['feature_name']``. Symbol-based panels such as Xenium cannot align to
+    Ensembl IDs, so prefer the symbol column when it is present and complete.
+    """
+    for column in ("feature_name", "gene_symbols", "gene_symbol", "symbol"):
+        if column in getattr(adata, "var", {}):
+            try:
+                values = [str(value) for value in adata.var[column]]
+            except Exception:
+                continue
+            if len(values) == int(adata.n_vars) and any(value and value.lower() != "nan" for value in values):
+                return [value.upper() for value in values]
+    return [str(name).upper() for name in list(adata.var_names)]
+
+
+def _h5ad_organism(adata: Any) -> str:
+    """Organism string from uns, used to block cross-species label transfer."""
+    uns = getattr(adata, "uns", {}) or {}
+    for key in ("organism", "organism_ontology_term_id"):
+        value = uns.get(key)
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "ignore")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _matrix_row_to_features(row: Any, gene_names: List[str], max_features_per_record: int) -> Dict[str, float]:

@@ -764,6 +764,42 @@ def reference_label_transfer(dataset: SpatialDataset, params: Dict[str, object])
     return _knn_reference_label_transfer(dataset, reference_dataset, shared, params)
 
 
+SPECIES_ALIASES = {
+    "human": "human",
+    "homo sapiens": "human",
+    "ncbitaxon:9606": "human",
+    "mouse": "mouse",
+    "mus musculus": "mouse",
+    "ncbitaxon:10090": "mouse",
+}
+
+
+def normalize_species(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return SPECIES_ALIASES.get(text, text)
+
+
+def _require_same_species(dataset: SpatialDataset, reference: SpatialDataset, params: Dict[str, object]) -> None:
+    """Block cross-species transfer.
+
+    Gene symbols are uppercased before matching, so mouse ``Aqp4`` and human
+    ``AQP4`` collide and a mouse reference would otherwise appear to align with a
+    human panel and produce confident, meaningless labels. Orthology is not a
+    case change, so refuse unless the caller explicitly opts in.
+    """
+    if params.get("allow_cross_species"):
+        return
+    target = normalize_species((dataset.metadata or {}).get("organism"))
+    source = normalize_species((reference.metadata or {}).get("organism"))
+    if target and source and target != source:
+        raise MissingPreconditionError(
+            "reference_label_transfer refuses a cross-species reference: target organism is '%s' but the "
+            "reference is '%s'. Uppercased gene symbols collide across species, so this would produce "
+            "confident but meaningless labels. Supply a same-species reference, or map orthologs first and "
+            "pass allow_cross_species=True." % (target, source)
+        )
+
+
 def _knn_reference_label_transfer(
     dataset: SpatialDataset,
     reference: SpatialDataset,
@@ -771,6 +807,7 @@ def _knn_reference_label_transfer(
     params: Dict[str, object],
 ) -> ToolResult:
     """Distance-weighted KNN transfer over shared features, one label per cell."""
+    _require_same_species(dataset, reference, params)
     reference_records = [record for record in reference.records if record.cell_type]
     labels = sorted({record.cell_type for record in reference_records})
     if len(labels) < 2:

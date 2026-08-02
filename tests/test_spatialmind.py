@@ -1417,6 +1417,39 @@ class LabelTransferTests(unittest.TestCase):
         )
         self.assertEqual(result.metrics["shared_feature_count"], 3)
 
+    def test_cross_species_reference_is_refused(self):
+        target = self._target()
+        target.metadata["organism"] = "Human"
+        reference = self._reference()
+        reference.metadata["organism"] = "Mus musculus"
+        with self.assertRaises(MissingPreconditionError) as ctx:
+            reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2})
+        self.assertIn("cross-species", str(ctx.exception))
+        # Explicit opt-in (for pre-mapped orthologs) still works.
+        result = reference_label_transfer(
+            target,
+            {"reference_dataset": reference, "min_shared_features": 2, "allow_cross_species": True},
+        )
+        self.assertEqual(result.metrics["status"], "transferred")
+
+    def test_same_species_and_unknown_species_are_allowed(self):
+        from spatialmind.tools.implementations import normalize_species
+
+        self.assertEqual(normalize_species("Homo sapiens"), "human")
+        self.assertEqual(normalize_species("NCBITaxon:10090"), "mouse")
+        target = self._target()
+        target.metadata["organism"] = "Homo sapiens"
+        reference = self._reference()
+        reference.metadata["organism"] = "Human"
+        result = reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2})
+        self.assertEqual(result.metrics["status"], "transferred")
+        # Unknown organism on either side must not hard-block a legitimate run.
+        reference.metadata["organism"] = ""
+        self.assertEqual(
+            reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2}).metrics["status"],
+            "transferred",
+        )
+
     def test_single_class_reference_is_rejected(self):
         reference = SpatialDataset(
             sample_id="R",
@@ -1426,6 +1459,56 @@ class LabelTransferTests(unittest.TestCase):
         )
         with self.assertRaises(MissingPreconditionError):
             reference_label_transfer(self._target(), {"reference_dataset": reference, "min_shared_features": 2})
+
+
+class H5adReferenceLoadingTests(unittest.TestCase):
+    def test_scrna_h5ad_without_spatial_coordinates_loads(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            self.skipTest("anndata required")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "reference.h5ad"
+            adata = ad.AnnData(
+                X=np.array([[5.0, 0.0, 1.0], [0.0, 6.0, 1.0], [4.0, 0.0, 2.0], [0.0, 7.0, 1.0]]),
+                obs=pd.DataFrame({"cell_type": ["T cell", "Tumor cell", "T cell", "Tumor cell"]}),
+                var=pd.DataFrame(
+                    {"feature_name": ["CD8A", "EPCAM", "ACTB"]},
+                    index=["ENSG00000153563", "ENSG00000119888", "ENSG00000075624"],
+                ),
+            )
+            adata.uns["organism"] = "Homo sapiens"
+            adata.write_h5ad(path)
+
+            dataset = load_scrna(str(path), max_records=10)
+            self.assertEqual(len(dataset.records), 4)
+            # Symbols must win over Ensembl IDs so symbol panels can align.
+            self.assertIn("CD8A", dataset.genes)
+            self.assertNotIn("ENSG00000153563", dataset.genes)
+            self.assertEqual(dataset.metadata.get("organism"), "Homo sapiens")
+            self.assertEqual(sorted(dataset.cell_types), ["T cell", "Tumor cell"])
+
+    def test_spatial_h5ad_still_requires_coordinates(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            self.skipTest("anndata required")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nospatial.h5ad"
+            adata = ad.AnnData(
+                X=np.array([[1.0, 2.0], [3.0, 4.0]]),
+                obs=pd.DataFrame({"cell_type": ["A", "B"]}),
+                var=pd.DataFrame(index=["G1", "G2"]),
+            )
+            adata.write_h5ad(path)
+            with self.assertRaises(Exception):
+                DataIngestionLayer().load_h5ad(str(path), require_spatial=True)
 
 
 class ReferenceAssistTests(unittest.TestCase):

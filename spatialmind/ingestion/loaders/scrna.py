@@ -5,8 +5,8 @@ from spatialmind.ingestion.pipeline import DataIngestionLayer
 from spatialmind.schemas import SpatialDataset
 
 
-def load_scrna(path: str, sample_id: Optional[str] = None) -> SpatialDataset:
-    dataset = _load_matrix_like(path, sample_id=sample_id)
+def load_scrna(path: str, sample_id: Optional[str] = None, max_records: int = 5000) -> SpatialDataset:
+    dataset = _load_matrix_like(path, sample_id=sample_id, max_records=max_records)
     dataset.modality = "scrna"
     dataset.coordinate_system = "embedding_or_index"
     dataset.metadata["assay_subtype"] = "scrna"
@@ -17,9 +17,10 @@ def load_scrna(path: str, sample_id: Optional[str] = None) -> SpatialDataset:
     return dataset
 
 
-def _load_matrix_like(path: str, sample_id: Optional[str]) -> SpatialDataset:
+def _load_matrix_like(path: str, sample_id: Optional[str], max_records: int = 5000) -> SpatialDataset:
     layer = DataIngestionLayer()
     suffix = Path(path).suffix.lower()
     if suffix == ".h5ad":
-        return layer.load_h5ad(path, sample_id=sample_id)
+        # Dissociated scRNA has no spatial coordinates; that must not block loading.
+        return layer.load_h5ad(path, sample_id=sample_id, max_records=max_records, require_spatial=False)
     return layer.load(path, sample_id=sample_id)
