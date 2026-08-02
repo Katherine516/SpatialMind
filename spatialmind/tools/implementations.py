@@ -382,9 +382,356 @@ def region_summary(dataset: SpatialDataset, params: Dict[str, object]) -> ToolRe
     )
 
 
+def run_region_stratified_neighborhoods(
+    dataset: SpatialDataset,
+    params: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    """Run independent neighborhood-enrichment tests inside reviewed regions."""
+    require_cell_types(dataset)
+    params = dict(params or {})
+    min_region_cells = int(params.get("min_region_cells", 50) or 50)
+    min_cells_per_type = int(params.get("min_cells_per_type", 20) or 20)
+    max_regions = int(params.get("max_regions", 12) or 12)
+    requested_n_neighs = int(params.get("n_neighs", 6) or 6)
+    n_perms = int(params.get("n_perms", 250) or 250)
+    random_state = int(params.get("random_state", 0) or 0)
+    min_abs_zscore = float(params.get("min_abs_zscore", 2.0) or 2.0)
+    by_region: Dict[str, List[Any]] = defaultdict(list)
+    for record in dataset.records:
+        if record.region:
+            by_region[str(record.region)].append(record)
+    if not by_region:
+        return {
+            "status": "not_run",
+            "reason": "Region-stratified testing requires user-reviewed region labels.",
+            "regions": [],
+            "pair_consistency": [],
+        }
+
+    region_items = sorted(by_region.items(), key=lambda item: len(item[1]), reverse=True)
+    region_results: List[Dict[str, object]] = []
+    skipped_regions: List[Dict[str, object]] = []
+    for region, records in region_items[:max_regions]:
+        type_counts = Counter(record.cell_type for record in records)
+        eligible_types = {label for label, count in type_counts.items() if count >= min_cells_per_type}
+        eligible_records = [record for record in records if record.cell_type in eligible_types]
+        if len(records) < min_region_cells or len(eligible_types) < 2 or len(eligible_records) < 3:
+            skipped_regions.append(
+                {
+                    "region": region,
+                    "cell_count": len(records),
+                    "eligible_cell_count": len(eligible_records),
+                    "eligible_cell_types": sorted(eligible_types),
+                    "reason": "Requires at least %d region cells and two cell types with at least %d cells each."
+                    % (min_region_cells, min_cells_per_type),
+                }
+            )
+            continue
+        subset = SpatialDataset(
+            sample_id=dataset.sample_id,
+            records=eligible_records,
+            source_path=dataset.source_path,
+            modality=dataset.modality,
+            coordinate_system=dataset.coordinate_system,
+            normalized=dataset.normalized,
+            notes=list(dataset.notes),
+            sources=list(dataset.sources),
+            qc_metrics=dict(dataset.qc_metrics),
+            processing_steps=list(dataset.processing_steps),
+            metadata=dict(dataset.metadata),
+        )
+        n_neighs = min(requested_n_neighs, max(2, len(eligible_records) - 1))
+        result = cell_neighborhood_enrichment(
+            subset,
+            {
+                "n_neighs": n_neighs,
+                "n_perms": n_perms,
+                "random_state": random_state,
+                "include_all_pairs": True,
+            },
+        )
+        metrics = result.metrics or {}
+        pairs = metrics.get("all_pairs") or metrics.get("top_pairs") or []
+        if metrics.get("engine") != "squidpy" or not pairs:
+            skipped_regions.append(
+                {
+                    "region": region,
+                    "cell_count": len(records),
+                    "eligible_cell_count": len(eligible_records),
+                    "eligible_cell_types": sorted(eligible_types),
+                    "reason": "Squidpy permutation z-scores were not available for this region.",
+                }
+            )
+            continue
+        region_results.append(
+            {
+                "region": region,
+                "cell_count": len(records),
+                "tested_cell_count": len(eligible_records),
+                "cell_type_counts": {label: int(type_counts[label]) for label in sorted(eligible_types)},
+                "n_neighs": n_neighs,
+                "n_perms": n_perms,
+                "random_state": random_state,
+                "tested_pair_count": len(pairs),
+                "pairs": pairs,
+            }
+        )
+
+    if len(region_items) > max_regions:
+        skipped_regions.extend(
+            {
+                "region": region,
+                "cell_count": len(records),
+                "eligible_cell_count": 0,
+                "eligible_cell_types": [],
+                "reason": "Skipped because max_regions=%d; larger regions were prioritized." % max_regions,
+            }
+            for region, records in region_items[max_regions:]
+        )
+    pair_consistency = _summarize_region_pair_consistency(region_results, min_abs_zscore=min_abs_zscore)
+    return {
+        "status": "computed" if region_results else "insufficient_data",
+        "reason": "" if region_results else "No reviewed region met the minimum cell and cell-type support thresholds.",
+        "method": "Independent Squidpy permutation neighborhood enrichment within each reviewed region",
+        "parameters": {
+            "min_region_cells": min_region_cells,
+            "min_cells_per_type": min_cells_per_type,
+            "max_regions": max_regions,
+            "n_neighs": requested_n_neighs,
+            "n_perms": n_perms,
+            "random_state": random_state,
+            "min_abs_zscore": min_abs_zscore,
+        },
+        "tested_region_count": len(region_results),
+        "skipped_region_count": len(skipped_regions),
+        "regions": region_results,
+        "skipped_regions": skipped_regions,
+        "pair_consistency": pair_consistency,
+        "warnings": [
+            "Region-specific z-scores are not directly comparable when region cell counts, densities, or label compositions differ.",
+            "Cross-region consistency requires at least two region effects with absolute z-score >= %.2f; no multiplicity-adjusted p-values are inferred from z-scores."
+            % min_abs_zscore,
+            "A region-specific adjacency pattern does not establish physical contact, signaling, mechanism, or causation.",
+        ],
+    }
+
+
+def _summarize_region_pair_consistency(
+    region_results: List[Dict[str, object]],
+    min_abs_zscore: float = 2.0,
+) -> List[Dict[str, object]]:
+    by_pair: Dict[str, List[Dict[str, object]]] = defaultdict(list)
+    for region_result in region_results:
+        region = str(region_result.get("region") or "")
+        for pair in region_result.get("pairs") or []:
+            if not isinstance(pair, dict) or pair.get("pair") is None or pair.get("zscore") is None:
+                continue
+            try:
+                zscore = float(pair["zscore"])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(zscore):
+                by_pair[str(pair["pair"])].append({"region": region, "zscore": zscore})
+    rows = []
+    for pair, values in by_pair.items():
+        supported = [item for item in values if abs(float(item["zscore"])) >= min_abs_zscore]
+        positive = sum(1 for item in supported if float(item["zscore"]) > 0)
+        negative = sum(1 for item in supported if float(item["zscore"]) < 0)
+        agreement = max(positive, negative) / float(len(supported)) if supported else 0.0
+        strongest = max(values, key=lambda item: abs(float(item["zscore"])))
+        if len(supported) >= 2 and agreement >= 0.8:
+            status = "region_consistent"
+        elif len(supported) >= 2:
+            status = "region_heterogeneous"
+        elif len(supported) == 1:
+            status = "region_specific_only"
+        else:
+            status = "weak_or_indeterminate"
+        pair_parts = pair.split(" | ", 1)
+        is_self_pair = len(pair_parts) == 2 and pair_parts[0] == pair_parts[1]
+        rows.append(
+            {
+                "pair": pair,
+                "is_self_pair": is_self_pair,
+                "regions_tested": len(values),
+                "supported_region_count": len(supported),
+                "min_abs_zscore": min_abs_zscore,
+                "direction_agreement": round(agreement, 4),
+                "strongest_region": strongest["region"],
+                "strongest_abs_zscore": round(abs(float(strongest["zscore"])), 4),
+                "status": status,
+                "by_region": [
+                    {"region": item["region"], "zscore": round(float(item["zscore"]), 4)}
+                    for item in sorted(values, key=lambda item: abs(float(item["zscore"])), reverse=True)
+                ],
+            }
+        )
+    rows.sort(key=lambda item: (bool(item["is_self_pair"]), -float(item["strongest_abs_zscore"])))
+    return rows
+
+
+def run_distance_dependent_cooccurrence(
+    dataset: SpatialDataset,
+    pairs: Optional[List[str]] = None,
+    params: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    """Compute descriptive cell-type co-occurrence ratios over distance thresholds."""
+    require_cell_types(dataset)
+    params = dict(params or {})
+    n_intervals = max(6, int(params.get("n_intervals", 20) or 20))
+    max_pairs = max(1, int(params.get("max_pairs", 8) or 8))
+    min_cells_per_type = max(2, int(params.get("min_cells_per_type", 20) or 20))
+    try:
+        import numpy as np  # type: ignore
+        import squidpy as sq  # type: ignore
+        from scipy.spatial import cKDTree  # type: ignore
+    except ImportError as exc:
+        return {
+            "status": "not_computed",
+            "reason": "Distance-dependent co-occurrence requires NumPy, SciPy, and Squidpy: %s" % exc,
+            "curves": [],
+        }
+
+    cell_counts = Counter(record.cell_type for record in dataset.records)
+    labels = sorted(cell_counts)
+    if len(labels) < 2 or len(dataset.records) < 3:
+        return {
+            "status": "insufficient_data",
+            "reason": "Co-occurrence curves require at least two cell types and three cells.",
+            "curves": [],
+        }
+    coordinates = np.asarray([[record.x, record.y] for record in dataset.records], dtype=float)
+    nearest, _indices = cKDTree(coordinates).query(coordinates, k=2)
+    median_nearest = float(np.median(nearest[:, 1]))
+    spans = np.ptp(coordinates, axis=0)
+    positive_spans = [float(value) for value in spans if float(value) > 0]
+    tissue_scale = min(positive_spans) if positive_spans else max(median_nearest * 12.0, 1.0)
+    requested_max = params.get("max_distance")
+    max_distance = float(requested_max) if requested_max is not None else max(
+        median_nearest * 3.0,
+        min(median_nearest * 12.0, tissue_scale * 0.25),
+    )
+    if not math.isfinite(max_distance) or max_distance <= 0:
+        return {
+            "status": "insufficient_data",
+            "reason": "A positive distance range could not be derived from the coordinates.",
+            "curves": [],
+        }
+    intervals = np.linspace(0.0, max_distance, n_intervals + 1)
+    try:
+        adata = _dataset_to_anndata(dataset)
+        category_labels = [str(value) for value in adata.obs["cell_type"].cat.categories]
+        cooccurrence_params: Dict[str, object] = {
+            "cluster_key": "cell_type",
+            "interval": intervals,
+            "copy": True,
+        }
+        try:
+            import inspect
+
+            supported = inspect.signature(sq.gr.co_occurrence).parameters
+            if "n_jobs" in supported:
+                cooccurrence_params["n_jobs"] = 1
+            if "backend" in supported:
+                cooccurrence_params["backend"] = "threading"
+            if "show_progress_bar" in supported:
+                cooccurrence_params["show_progress_bar"] = False
+        except (TypeError, ValueError):
+            pass
+        occurrence, thresholds = sq.gr.co_occurrence(adata, **cooccurrence_params)
+    except Exception as exc:
+        if params.get("strict_engine"):
+            raise
+        return {
+            "status": "not_computed",
+            "reason": "Squidpy co-occurrence failed: %s" % exc,
+            "curves": [],
+        }
+
+    label_index = {label: index for index, label in enumerate(category_labels)}
+    thresholds = np.asarray(thresholds, dtype=float)
+    curve_length = int(occurrence.shape[2])
+    distance_values = thresholds[1:] if len(thresholds) == curve_length + 1 else thresholds[:curve_length]
+    requested_pairs = list(dict.fromkeys(pairs or []))
+    if not requested_pairs:
+        requested_pairs = ["%s | %s" % (left, right) for i, left in enumerate(labels) for right in labels[i + 1 :]]
+    curves = []
+    skipped_pairs = []
+    for pair in requested_pairs[:max_pairs]:
+        parsed = pair.split(" | ", 1)
+        if len(parsed) != 2 or parsed[0] not in label_index or parsed[1] not in label_index:
+            skipped_pairs.append({"pair": pair, "reason": "Cell-type pair was not present in the dataset."})
+            continue
+        left, right = parsed
+        if cell_counts[left] < min_cells_per_type or cell_counts[right] < min_cells_per_type:
+            skipped_pairs.append(
+                {
+                    "pair": pair,
+                    "reason": "Requires at least %d cells for each cell type." % min_cells_per_type,
+                    "left_cell_count": int(cell_counts[left]),
+                    "right_cell_count": int(cell_counts[right]),
+                }
+            )
+            continue
+        left_values = np.asarray(occurrence[label_index[left], label_index[right], :], dtype=float)
+        right_values = np.asarray(occurrence[label_index[right], label_index[left], :], dtype=float)
+        values = np.nanmean(np.vstack([left_values, right_values]), axis=0)
+        finite = np.isfinite(values)
+        points = [
+            {"distance": round(float(distance), 4), "cooccurrence_ratio": round(float(value), 5)}
+            for distance, value, keep in zip(distance_values, values, finite)
+            if bool(keep)
+        ]
+        if not points:
+            continue
+        ratios = [float(point["cooccurrence_ratio"]) for point in points]
+        peak_index = max(range(len(ratios)), key=lambda index: ratios[index])
+        third = max(1, len(ratios) // 3)
+        curves.append(
+            {
+                "pair": pair,
+                "left_cell_type": left,
+                "right_cell_type": right,
+                "left_cell_count": int(cell_counts[left]),
+                "right_cell_count": int(cell_counts[right]),
+                "points": points,
+                "peak_ratio": round(ratios[peak_index], 4),
+                "peak_distance": points[peak_index]["distance"],
+                "short_range_mean_ratio": round(sum(ratios[:third]) / float(len(ratios[:third])), 4),
+                "long_range_mean_ratio": round(sum(ratios[-third:]) / float(len(ratios[-third:])), 4),
+            }
+        )
+    return {
+        "status": "computed" if curves else "insufficient_data",
+        "reason": "" if curves else "No requested cell-type pair produced a finite co-occurrence curve.",
+        "method": "Squidpy distance-dependent co-occurrence probability ratio",
+        "coordinate_units": dataset.coordinate_system or "dataset_coordinate_units",
+        "n_intervals": n_intervals,
+        "max_distance": round(max_distance, 4),
+        "median_nearest_cell_distance": round(median_nearest, 4),
+        "min_cells_per_type": min_cells_per_type,
+        "curve_count": len(curves),
+        "curves": curves,
+        "skipped_pairs": skipped_pairs,
+        "warnings": [
+            "Co-occurrence ratios are descriptive scale profiles; they do not provide permutation p-values.",
+            "Curves depend on coordinate units, cell density, field of view, segmentation, and the selected maximum distance.",
+            "A ratio above one indicates greater conditional co-occurrence than expected from marginal label frequency, not signaling or causation.",
+        ],
+    }
+
+
 def reference_label_transfer(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
     require_records(dataset)
-    reference_features = {str(feature).upper() for feature in params.get("reference_features", [])} if params.get("reference_features") else set(dataset.genes)
+    reference_dataset = params.get("reference_dataset")
+    if params.get("reference_features"):
+        reference_features = {str(feature).upper() for feature in params["reference_features"]}
+    elif reference_dataset is not None:
+        # Must come from the reference, not the target; otherwise every target gene
+        # counts as "shared" and the overlap is reported far larger than it is.
+        reference_features = {gene.upper() for gene in reference_dataset.genes}
+    else:
+        reference_features = {gene.upper() for gene in dataset.genes}
     target_features = {gene.upper() for gene in dataset.genes}
     shared = sorted(reference_features & target_features)
     min_shared = int(params.get("min_shared_features", 5) or 5)
@@ -392,22 +739,113 @@ def reference_label_transfer(dataset: SpatialDataset, params: Dict[str, object])
         raise MissingPreconditionError(
             "reference_label_transfer requires at least %d shared features; got %d." % (min_shared, len(shared))
         )
-    confidence = min(0.95, max(0.35, len(shared) / float(max(len(target_features), 1))))
-    flagged = sum(1 for _record in dataset.records if confidence < float(params.get("confidence_threshold", 0.6) or 0.6))
+    if reference_dataset is None:
+        # No reference expression matrix, so no label can be predicted. Reporting a
+        # "transfer" here would assert labels that were never produced.
+        return ToolResult(
+            tool_name="reference_label_transfer",
+            summary=(
+                "Checked reference compatibility over %d shared features. No labels were transferred "
+                "because no labelled reference dataset was supplied." % len(shared)
+            ),
+            metrics={
+                "status": "compatibility_only",
+                "labels_transferred": False,
+                "shared_feature_count": len(shared),
+                "shared_feature_fraction": round(len(shared) / float(max(len(target_features), 1)), 4),
+            },
+            caveats=[
+                "Feature overlap indicates reference compatibility only; it is not evidence that any cell label is correct.",
+                "Pass reference_dataset to run an actual k-nearest-neighbour label transfer.",
+            ]
+            + _type_honesty_caveats(dataset),
+            label_caveat="No cell-type labels were transferred; this result reports feature compatibility only.",
+        )
+    return _knn_reference_label_transfer(dataset, reference_dataset, shared, params)
+
+
+def _knn_reference_label_transfer(
+    dataset: SpatialDataset,
+    reference: SpatialDataset,
+    shared: List[str],
+    params: Dict[str, object],
+) -> ToolResult:
+    """Distance-weighted KNN transfer over shared features, one label per cell."""
+    reference_records = [record for record in reference.records if record.cell_type]
+    labels = sorted({record.cell_type for record in reference_records})
+    if len(labels) < 2:
+        raise MissingPreconditionError(
+            "reference_label_transfer requires a reference with at least two labelled classes; got %d." % len(labels)
+        )
+    try:
+        import numpy as np  # type: ignore
+        from sklearn.neighbors import KNeighborsClassifier  # type: ignore
+    except ImportError as exc:
+        raise MissingPreconditionError("reference_label_transfer needs numpy and scikit-learn (%s)." % exc)
+
+    neighbors = max(1, min(int(params.get("n_neighbors", 15) or 15), len(reference_records)))
+    confidence_threshold = float(params.get("confidence_threshold", 0.6) or 0.6)
+
+    def matrix(records: List[Any], lookup: Dict[str, str]) -> Any:
+        rows = []
+        for record in records:
+            values = [max(float(record.genes.get(lookup.get(name, name), 0.0)), 0.0) for name in shared]
+            total = sum(values)
+            if total > 0:
+                values = [float(np.log1p(value / total * 1e4)) for value in values]
+            rows.append(values)
+        return np.asarray(rows, dtype=float)
+
+    reference_matrix = matrix(reference_records, {gene.upper(): gene for gene in reference.genes})
+    target_matrix = matrix(list(dataset.records), {gene.upper(): gene for gene in dataset.genes})
+    classifier = KNeighborsClassifier(n_neighbors=neighbors, weights="distance")
+    classifier.fit(reference_matrix, [record.cell_type for record in reference_records])
+    probabilities = classifier.predict_proba(target_matrix)
+    classes = [str(value) for value in classifier.classes_]
+
+    predictions = []
+    low_confidence = 0
+    for index, record in enumerate(dataset.records):
+        row = probabilities[index]
+        best = int(np.argmax(row))
+        confidence = float(row[best])
+        if confidence < confidence_threshold:
+            low_confidence += 1
+        predictions.append(
+            {
+                "cell_id": record.cell_id or str(index),
+                "predicted_label": classes[best],
+                "confidence": round(confidence, 4),
+            }
+        )
+    mean_confidence = float(np.mean([item["confidence"] for item in predictions])) if predictions else 0.0
     return ToolResult(
         tool_name="reference_label_transfer",
-        summary="Transferred reference labels over %d shared features with mean confidence %.2f." % (len(shared), confidence),
+        summary=(
+            "Transferred labels from %d reference classes to %d cells over %d shared features "
+            "(k=%d, mean confidence %.2f)." % (len(labels), len(predictions), len(shared), neighbors, mean_confidence)
+        ),
         metrics={
+            "status": "transferred",
+            "labels_transferred": True,
+            "method": "knn_distance_weighted",
+            "n_neighbors": neighbors,
             "shared_feature_count": len(shared),
-            "mean_transfer_confidence": round(confidence, 4),
-            "low_confidence_cell_count": flagged,
+            "reference_label_classes": labels,
+            "reference_cell_count": len(reference_records),
+            "mean_transfer_confidence": round(mean_confidence, 4),
+            "low_confidence_cell_count": low_confidence,
+            "confidence_threshold": confidence_threshold,
+            "predicted_label_counts": dict(Counter(item["predicted_label"] for item in predictions)),
+            "predictions": predictions,
         },
         caveats=[
             "Transferred cell-type labels are predictions from a reference, not direct measurements.",
             "Reference and target were aligned over shared features only.",
+            "Predicted labels require expert review before they can support biological claims.",
         ]
         + _type_honesty_caveats(dataset),
-        label_caveat="Cell-type labels were transferred from a reference and should be treated as predictions.",
+        label_caveat="Cell-type labels were transferred from a reference and must be expert-reviewed before use.",
     )
 
 

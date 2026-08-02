@@ -653,6 +653,83 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(summary["status"], "not_computed")
         self.assertIn("permutation z-scores", summary["reason"])
 
+    def test_region_stratified_neighborhoods_track_consistency_and_skips(self):
+        from spatialmind.tools.implementations import run_region_stratified_neighborhoods
+
+        records = []
+        for region, offset in (("core", 0.0), ("margin", 100.0)):
+            for index in range(20):
+                records.append(SpotRecord("S1", offset + index, 0.0, "A", {"G": 1.0}, region=region, cell_id="%sa%d" % (region, index)))
+                records.append(SpotRecord("S1", offset + index, 1.0, "B", {"G": 1.0}, region=region, cell_id="%sb%d" % (region, index)))
+        records.append(SpotRecord("S1", 300.0, 0.0, "A", {"G": 1.0}, region="tiny", cell_id="tiny"))
+        dataset = SpatialDataset("S1", records, "synthetic", modality="xenium_spatial_rna")
+        calls = []
+
+        def region_result(subset, params):
+            calls.append((subset.records[0].region, params))
+            zscore = 4.0 if subset.records[0].region == "core" else 3.0
+            return ToolResult(
+                tool_name="cell_neighborhood_enrichment",
+                summary="test",
+                metrics={
+                    "engine": "squidpy",
+                    "all_pairs": [
+                        {"pair": "A | B", "zscore": zscore},
+                        {"pair": "A | A", "zscore": -2.0},
+                        {"pair": "B | B", "zscore": 0.2},
+                    ],
+                },
+            )
+
+        with patch("spatialmind.tools.implementations.cell_neighborhood_enrichment", side_effect=region_result):
+            summary = run_region_stratified_neighborhoods(
+                dataset,
+                {"min_region_cells": 40, "min_cells_per_type": 20, "n_perms": 50},
+            )
+        self.assertEqual(summary["status"], "computed")
+        self.assertEqual(summary["tested_region_count"], 2)
+        self.assertEqual(summary["skipped_region_count"], 1)
+        self.assertEqual(summary["pair_consistency"][0]["pair"], "A | B")
+        self.assertEqual(summary["pair_consistency"][0]["status"], "region_consistent")
+        self.assertEqual(summary["pair_consistency"][0]["supported_region_count"], 2)
+        weak_pair = next(item for item in summary["pair_consistency"] if item["pair"] == "B | B")
+        self.assertEqual(weak_pair["status"], "weak_or_indeterminate")
+        self.assertEqual(weak_pair["supported_region_count"], 0)
+        self.assertTrue(all(call[1]["include_all_pairs"] for call in calls))
+
+    def test_distance_cooccurrence_curves_use_symmetric_pair_average(self):
+        import numpy as np
+        from spatialmind.tools.implementations import run_distance_dependent_cooccurrence
+
+        dataset = SpatialDataset(
+            "S1",
+            [
+                SpotRecord("S1", float(index), 0.0, "A" if index < 20 else "B", {"G": 1.0}, cell_id="c%d" % index)
+                for index in range(40)
+            ],
+            "synthetic",
+            modality="xenium_spatial_rna",
+            coordinate_system="micron",
+        )
+        occurrence = np.zeros((2, 2, 6), dtype=float)
+        occurrence[0, 1, :] = np.array([1.2, 1.4, 1.6, 1.3, 1.1, 1.0])
+        occurrence[1, 0, :] = np.array([1.0, 1.2, 1.4, 1.1, 0.9, 0.8])
+        thresholds = np.arange(7, dtype=float)
+        with patch("squidpy.gr.co_occurrence", autospec=True, return_value=(occurrence, thresholds)) as mocked:
+            summary = run_distance_dependent_cooccurrence(
+                dataset,
+                pairs=["A | B"],
+                params={"n_intervals": 6, "max_distance": 6.0},
+            )
+        self.assertEqual(summary["status"], "computed")
+        self.assertEqual(summary["curve_count"], 1)
+        self.assertEqual(summary["curves"][0]["peak_ratio"], 1.5)
+        self.assertEqual(summary["curves"][0]["peak_distance"], 3.0)
+        self.assertEqual(summary["curves"][0]["left_cell_count"], 20)
+        self.assertEqual(summary["min_cells_per_type"], 20)
+        self.assertEqual(mocked.call_args.kwargs.get("n_jobs"), 1)
+        self.assertEqual(mocked.call_args.kwargs.get("backend"), "threading")
+
     def test_validated_reports_surface_spatial_robustness(self):
         from spatialmind.pilot.xenium import (
             _spatial_robustness_rows,
@@ -714,6 +791,38 @@ class ToolRegistryTests(unittest.TestCase):
                 ],
                 "warnings": ["Spatial adjacency is not evidence of signaling or causation."],
             },
+            "region_stratified_neighborhoods": {
+                "status": "computed",
+                "tested_region_count": 2,
+                "skipped_region_count": 0,
+                "pair_consistency": [
+                    {
+                        "pair": "A | B",
+                        "regions_tested": 2,
+                        "direction_agreement": 1.0,
+                        "strongest_region": "core",
+                        "strongest_abs_zscore": 3.8,
+                        "status": "region_consistent",
+                    }
+                ],
+                "warnings": ["Within-region synthetic fixture."],
+            },
+            "distance_cooccurrence": {
+                "status": "computed",
+                "coordinate_units": "micron",
+                "max_distance": 50.0,
+                "n_intervals": 20,
+                "curves": [
+                    {
+                        "pair": "A | B",
+                        "peak_ratio": 1.4,
+                        "peak_distance": 10.0,
+                        "short_range_mean_ratio": 1.3,
+                        "long_range_mean_ratio": 1.0,
+                    }
+                ],
+                "warnings": ["Descriptive synthetic fixture."],
+            },
         }
         rows = dict(_spatial_robustness_rows(payload))
         self.assertEqual(rows["Robustness score"], "0.8200")
@@ -729,10 +838,14 @@ class ToolRegistryTests(unittest.TestCase):
             self.assertIn("Spatial Robustness Sweep", md_path.read_text(encoding="utf-8"))
             self.assertIn("Spatial Relationships", md_path.read_text(encoding="utf-8"))
             self.assertIn("stable_enriched", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Region-Stratified Neighborhood Testing", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Distance-Dependent Co-Occurrence", md_path.read_text(encoding="utf-8"))
             html_report = html_path.read_text(encoding="utf-8")
             self.assertIn("Spatial Robustness Sweep", html_report)
             self.assertIn("Spatial Relationships", html_report)
             self.assertIn("stable_enriched", html_report)
+            self.assertIn("region_consistent", html_report)
+            self.assertIn("Peak distance", html_report)
             self.assertIn("0.8200", html_report)
             with pdf_path.open("rb") as handle:
                 self.assertEqual(handle.read(5), b"%PDF-")
@@ -1244,6 +1357,75 @@ class MorphologyLayerTests(unittest.TestCase):
             self.assertLessEqual(record.x, max(xs) + 1.0)
             self.assertGreaterEqual(record.y, min(ys) - 1.0)
             self.assertLessEqual(record.y, max(ys) + 1.0)
+
+
+class LabelTransferTests(unittest.TestCase):
+    def _reference(self):
+        records = []
+        for index in range(12):
+            records.append(SpotRecord("R", 0.0, 0.0, "T cell", {"CD8A": 9.0, "CD3D": 8.0, "EPCAM": 0.0}, cell_id="r%d" % index))
+            records.append(SpotRecord("R", 0.0, 0.0, "Tumor cell", {"CD8A": 0.0, "CD3D": 0.0, "EPCAM": 9.0}, cell_id="t%d" % index))
+        return SpatialDataset(sample_id="R", source_path="ref", modality="scrna", records=records)
+
+    def _target(self):
+        return SpatialDataset(
+            sample_id="X",
+            source_path="x",
+            modality="xenium_spatial_rna",
+            records=[
+                SpotRecord("X", 0.0, 0.0, "Unannotated cell", {"CD8A": 7.0, "CD3D": 6.0, "EPCAM": 0.0}, cell_id="a1"),
+                SpotRecord("X", 1.0, 0.0, "Unannotated cell", {"CD8A": 0.0, "CD3D": 0.0, "EPCAM": 7.0}, cell_id="a2"),
+            ],
+        )
+
+    def test_transfer_assigns_a_label_and_confidence_per_cell(self):
+        result = reference_label_transfer(
+            self._target(),
+            {"reference_dataset": self._reference(), "min_shared_features": 2},
+        )
+        self.assertEqual(result.metrics["status"], "transferred")
+        self.assertTrue(result.metrics["labels_transferred"])
+        predictions = {item["cell_id"]: item for item in result.metrics["predictions"]}
+        self.assertEqual(predictions["a1"]["predicted_label"], "T cell")
+        self.assertEqual(predictions["a2"]["predicted_label"], "Tumor cell")
+        for item in predictions.values():
+            self.assertGreaterEqual(item["confidence"], 0.0)
+            self.assertLessEqual(item["confidence"], 1.0)
+        self.assertIn("expert review", " ".join(result.caveats).lower())
+
+    def test_without_reference_dataset_no_transfer_is_claimed(self):
+        result = reference_label_transfer(
+            self._target(),
+            {"reference_features": ["CD8A", "CD3D", "EPCAM"], "min_shared_features": 2},
+        )
+        self.assertEqual(result.metrics["status"], "compatibility_only")
+        self.assertFalse(result.metrics["labels_transferred"])
+        self.assertNotIn("predictions", result.metrics)
+        # The summary must not assert that a transfer happened.
+        self.assertIn("No labels were transferred", result.summary)
+
+    def test_shared_feature_count_comes_from_the_reference_not_the_target(self):
+        # The target carries extra genes the reference never measured; only the
+        # genuinely shared ones may be counted.
+        target = self._target()
+        for record in target.records:
+            record.genes["EXTRA_GENE_A"] = 1.0
+            record.genes["EXTRA_GENE_B"] = 1.0
+        result = reference_label_transfer(
+            target,
+            {"reference_dataset": self._reference(), "min_shared_features": 2},
+        )
+        self.assertEqual(result.metrics["shared_feature_count"], 3)
+
+    def test_single_class_reference_is_rejected(self):
+        reference = SpatialDataset(
+            sample_id="R",
+            source_path="ref",
+            modality="scrna",
+            records=[SpotRecord("R", 0.0, 0.0, "T cell", {"CD8A": 9.0, "CD3D": 8.0, "EPCAM": 0.0}, cell_id="r%d" % i) for i in range(6)],
+        )
+        with self.assertRaises(MissingPreconditionError):
+            reference_label_transfer(self._target(), {"reference_dataset": reference, "min_shared_features": 2})
 
 
 class ReferenceAssistTests(unittest.TestCase):

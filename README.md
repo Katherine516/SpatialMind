@@ -13,6 +13,11 @@ The base path remains dependency-light for fast testing, while the core workstat
 
 ## Architecture
 
+**New here? Read [docs/agent_architecture.md](docs/agent_architecture.md)** — the single end-to-end
+explanation of how the agent works: every stage from the `.xenium` bundle through the gate, the six
+MVP tools, robustness, claim reliability, and the Explorer-lite viewer. The rest of this README is a
+command reference.
+
 ```mermaid
 flowchart TB
     WetLab["Wet-lab output\nXenium folders, H5AD, CSV/manifest,\ncell tables, feature matrices, morphology metadata,\nboundaries, panel metadata"]
@@ -418,6 +423,12 @@ The v11 pilot promotion adds the real-agent control layer around this workflow:
 - validated-run reports include a Spatial Relationships section and heatmap that combine permutation neighborhood enrichment, pair-level graph-size stability, bidirectional nearest-cell distance, and reviewed-region overlap.
 
 Spatial relationship wording is intentionally conservative. `stable_enriched` and `stable_depleted` mean that a cell-type pair has more or fewer graph adjacencies than expected after label permutation and remains directionally stable across tested graph sizes. These labels do not mean physical contact, ligand-receptor signaling, mechanism, or causation. Effects that do not pass the effect-size, minimum-cell-count, and sensitivity criteria are reported as `*_sensitivity_limited` or `weak_or_indeterminate`.
+
+Validated runs also separate tissue-compartment effects from distance-scale effects:
+
+- **Region-stratified neighborhood testing** reruns seeded Squidpy permutations independently inside each reviewed ROI. A region must contain at least 50 cells and at least two cell types with 20 cells each; smaller regions are listed as skipped rather than pooled silently. Cross-region consistency requires at least two supported regional effects with `|z| >= 2` and at least 80% directional agreement.
+- **Distance-dependent co-occurrence** reports Squidpy conditional co-occurrence ratios across 20 automatically scaled distance thresholds for leading pairs supported by at least 20 cells per type. These curves are descriptive and do not carry permutation p-values.
+- The report includes `region_stratified_neighborhoods.png`, `distance_dependent_cooccurrence.png`, and matching JSON evidence files when the validated gate passes.
 
 Before rerunning the validated pilot with new reviewer files, validate label intake:
 

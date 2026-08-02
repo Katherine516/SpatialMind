@@ -149,7 +149,11 @@ def build_reference_assist_report(
             if reference_ready and len(shared) >= min_shared_features:
                 result = reference_label_transfer(
                     target,
-                    {"reference_features": reference.genes, "min_shared_features": min_shared_features},
+                    {
+                        "reference_dataset": reference,
+                        "reference_features": reference.genes,
+                        "min_shared_features": min_shared_features,
+                    },
                 )
                 payload["status"] = "reference_assist_ready"
                 payload["reference_assist_result"] = result.__dict__
