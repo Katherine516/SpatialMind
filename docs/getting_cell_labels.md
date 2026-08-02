@@ -75,18 +75,52 @@ only accepts `expert_cell_labels.csv`, which a human must write.
 
 ## Where to get a reference
 
-| Resource | What it gives you | How to get it |
+### How many do you need? One per tissue context — not all of them
+
+You need **one** labelled reference matched to the tissue you are annotating. A
+reference from the wrong tissue context is worse than none: KNN always returns a
+nearest class, so a healthy-brain reference applied to glioblastoma will assign
+every neoplastic cell some normal brain identity, with high confidence, and be
+confidently wrong.
+
+| Your Xenium dataset | Get this | Why |
 | --- | --- | --- |
-| [CZ CELLxGENE Discover](https://cellxgene.cziscience.com/) | Curated human brain / GBM scRNA with cell-type labels | Filter tissue=brain (disease=glioblastoma for GBM), download `.h5ad` |
-| [Allen Brain Map](https://portal.brain-map.org/) | Gold-standard healthy human cortex taxonomy | Direct download |
-| [Ivy Glioblastoma Atlas](https://glioblastoma.alleninstitute.org/) | **ROI vocabulary**: tumour core, infiltrating margin, perinecrotic zone, hyperplastic vessels | Free browse; use for `cell_regions.csv` naming |
-| GBmap (via CELLxGENE) | Integrated ~1M-cell GBM atlas | `.h5ad` |
-| [Broad Single Cell Portal](https://singlecell.broadinstitute.org/) / [GEO](https://www.ncbi.nlm.nih.gov/geo/) | Additional brain/GBM references | Registration or accession |
+| `..._Human_Brain_Healthy_...` | **One** healthy adult brain snRNA-seq reference | Direct tissue match |
+| `..._Human_Brain_Glioblastoma_...` | **One** GBM reference containing tumour + TME cells | A healthy reference has no neoplastic class to assign |
+| Breast / lymph node | One matched tissue reference | Same logic |
+
+Start with **one dataset — the healthy brain**. It is the cleanest match and it
+validates the whole path end to end. Add a GBM reference only when you move to the
+glioblastoma sample.
+
+### The resources
+
+| Resource | What it is | Use for |
+| --- | --- | --- |
+| [Linnarsson adult human brain](https://github.com/linnarsson-lab/adult-human-brain) (Siletti et al., *Science*) | 3,369,219 nuclei, healthy adult, whole brain; hierarchical taxonomy (superclusters → clusters). Released as loom / **h5ad** / RDS. The GitHub repo is analysis code — data comes via its Dropbox/GCS links or CELLxGENE | **Recommended healthy-brain reference** |
+| [CZ CELLxGENE Discover](https://cellxgene.cziscience.com/) | Curated, uniformly annotated `.h5ad` — including the Linnarsson atlas and GBmap | **Easiest download route**; lets you subset a brain region before downloading |
+| [Allen Brain Map](https://brain-map.org/) | Allen Institute portal. Mostly anatomy/imaging reference atlases, plus human snRNA-seq taxonomies such as SEA-AD (~1.4M cells, middle temporal gyrus, 139 supertypes) | Alternative healthy cortex reference; also the standard anatomy vocabulary |
+| GBmap (via CELLxGENE) | Integrated ~1M-cell glioblastoma atlas with tumour and microenvironment classes | **Glioblastoma reference** |
+| [Ivy Glioblastoma Atlas](https://glioblastoma.alleninstitute.org/) | Laser-microdissected **anatomic** GBM structures — not a cell-by-gene reference | **ROI vocabulary only** for `cell_regions.csv` (tumour core, infiltrating margin, perinecrotic zone, hyperplastic vessels). Read it; do not download a matrix |
+| [Broad SCP](https://singlecell.broadinstitute.org/) / [GEO](https://www.ncbi.nlm.nih.gov/geo/) | Additional references | Fallback |
 
 A reference is usable when it has per-cell **cell-type labels** and a **gene
 expression matrix** sharing enough genes with the Xenium panel. The Xenium brain
 panel is ~250–540 targeted genes, so expect tens to a few hundred shared genes —
 `--min-shared-features` defaults to 20.
+
+### Size limits to know before you download
+
+`load_h5ad` reads with `anndata.read_h5ad(path)` in memory (not backed mode) and
+then subsamples to `max_records`, which `load_scrna` currently leaves at the 5000
+default. Consequences:
+
+- Do **not** download the full 3.4M-nucleus file expecting it to load; prefer a
+  CELLxGENE region subset, or a per-supercluster file.
+- Only ~5000 reference cells are used regardless of file size. That is ample for
+  supercluster-level labels (~31 classes), but too thin for the full ~460-cluster
+  taxonomy. **Annotate at supercluster/broad-class level**, which is also what the
+  [Cell Ontology guide](cell_ontology_labeling_guide.md) recommends.
 
 Record licence, consent, and PHI status for any downloaded reference; the governance
 manifest (`scripts/build_dataset_governance_manifest.py`) has fields for these.
