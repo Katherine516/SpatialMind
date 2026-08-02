@@ -1158,25 +1158,57 @@ def _feature_slice_to_values(
     return {gene: value for gene, value in pairs}
 
 
-def _infer_marker_cell_type(features: Dict[str, float]) -> Optional[str]:
-    marker_sets = {
-        "T/NK cell": ("PTPRC", "CD3D", "CD3E", "CD8A", "CD4", "NKG7", "GNLY"),
-        "B cell": ("MS4A1", "CD79A", "CD79B", "CD19", "MZB1"),
-        "Myeloid cell": ("LYZ", "CD68", "LST1", "C1QA", "FCGR3A"),
-        "Endothelial cell": ("PECAM1", "VWF", "KDR", "RAMP2"),
-        "Fibroblast/Stromal cell": ("COL1A1", "COL1A2", "DCN", "LUM", "ACTA2"),
-        "Epithelial/Tumor-like cell": ("EPCAM", "KRT8", "KRT18", "KRT19", "MKI67"),
-        "Neural/Glial cell": ("GFAP", "AQP4", "MBP", "SNAP25", "RBFOX3"),
-    }
+MARKER_RULE_SETS = {
+    "T/NK cell": ("CD3D", "CD3E", "CD8A", "NKG7", "GNLY", "PTPRC", "CD4"),
+    "B cell": ("MS4A1", "CD79A", "CD79B", "CD19", "MZB1"),
+    "Myeloid cell": ("LYZ", "CD68", "LST1", "C1QA", "FCGR3A", "AIF1", "P2RY12"),
+    "Endothelial cell": ("PECAM1", "VWF", "KDR", "RAMP2", "CLDN5", "FLT1"),
+    "Fibroblast/Stromal cell": ("COL1A1", "COL1A2", "DCN", "LUM", "ACTA2", "PDGFRB"),
+    "Epithelial/Tumor-like cell": ("EPCAM", "KRT8", "KRT18", "KRT19", "MKI67"),
+    "Neural/Glial cell": ("GFAP", "AQP4", "MBP", "SNAP25", "RBFOX3", "PLP1", "MOG", "SLC1A3"),
+}
+# Markers that are shared across lineages carry less weight on their own. PTPRC
+# is pan-leukocyte and CD4 is expressed by myeloid cells too, so neither should
+# be able to call a T/NK cell by itself.
+MARKER_RULE_WEIGHTS = {"PTPRC": 0.4, "CD4": 0.4, "ACTA2": 0.6, "MKI67": 0.5}
+MARKER_RULE_MIN_SCORE = 2.0
+MARKER_RULE_DOMINANCE = 1.5
+
+
+def _infer_marker_cell_type(
+    features: Dict[str, float],
+    min_score: float = MARKER_RULE_MIN_SCORE,
+    dominance: float = MARKER_RULE_DOMINANCE,
+) -> Optional[str]:
+    """Weak marker-rule label, or None when the evidence does not clearly favour one class.
+
+    Returning None (leaving the cell unannotated) is preferable to naming a class
+    on trace or ambiguous evidence: these labels seed the review packets a
+    reviewer sees first, and a confident-looking wrong label anchors them. The
+    previous rule took the top nonzero score with no floor and no margin, which
+    called cells T/NK on PTPRC alone.
+    """
     scores = []
-    for label, markers in marker_sets.items():
-        score = sum(float(features.get(marker, 0.0)) for marker in markers)
+    for label, markers in MARKER_RULE_SETS.items():
+        score = 0.0
+        for marker in markers:
+            try:
+                value = max(float(features.get(marker, 0.0)), 0.0)
+            except (TypeError, ValueError):
+                continue
+            score += value * MARKER_RULE_WEIGHTS.get(marker, 1.0)
         if score > 0:
             scores.append((score, label))
     if not scores:
         return None
     scores.sort(reverse=True)
-    return scores[0][1]
+    best_score, best_label = scores[0]
+    if best_score < min_score:
+        return None
+    runner_up = scores[1][0] if len(scores) > 1 else 0.0
+    if runner_up > 0 and best_score < runner_up * dominance:
+        return None
+    return best_label
 
 
 def _decode_h5_value(value: Any) -> str:

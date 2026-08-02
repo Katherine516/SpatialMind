@@ -1853,3 +1853,32 @@ class GovernanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarkerRuleTighteningTests(unittest.TestCase):
+    def test_trace_and_ambiguous_evidence_no_longer_names_a_class(self):
+        from spatialmind.ingestion.pipeline import _infer_marker_cell_type
+
+        # PTPRC is pan-leukocyte and must not call a T/NK cell by itself.
+        self.assertIsNone(_infer_marker_cell_type({"PTPRC": 2.34}))
+        # Two equally specific markers from different lineages stay unresolved.
+        self.assertIsNone(_infer_marker_cell_type({"AQP4": 2.5, "CD3D": 2.5}))
+        # A shared marker must not outweigh a specific one: AQP4 beats CD4, which
+        # is downweighted because myeloid cells express it too.
+        self.assertEqual(_infer_marker_cell_type({"AQP4": 2.14, "CD4": 2.14}), "Neural/Glial cell")
+        # Trace evidence below the floor.
+        self.assertIsNone(_infer_marker_cell_type({"CD68": 0.3}))
+        self.assertIsNone(_infer_marker_cell_type({}))
+
+    def test_clear_evidence_still_resolves(self):
+        from spatialmind.ingestion.pipeline import _infer_marker_cell_type
+
+        self.assertEqual(
+            _infer_marker_cell_type({"CD3D": 4.0, "CD3E": 3.0, "CD8A": 3.0}), "T/NK cell"
+        )
+        self.assertEqual(
+            _infer_marker_cell_type({"AQP4": 5.0, "GFAP": 4.0, "PLP1": 3.0}), "Neural/Glial cell"
+        )
+        self.assertEqual(
+            _infer_marker_cell_type({"PECAM1": 4.0, "CLDN5": 4.0, "FLT1": 3.0}), "Endothelial cell"
+        )
