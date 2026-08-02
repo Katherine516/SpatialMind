@@ -39,7 +39,7 @@ from .labels import (
     write_expert_label_template,
     write_region_label_template,
 )
-from .loaders import load_scatac, load_scrna, load_xenium
+from .loaders import load_scatac, load_scrna, load_scrna_reference_set, load_xenium
 
 __all__ = [
     "DataFormat",
@@ -73,6 +73,7 @@ __all__ = [
     "RegionApplicationReport",
     "load_scatac",
     "load_scrna",
+    "load_scrna_reference_set",
     "load_xenium",
     "summarize_xenium_expert_readiness",
     "validate_xenium_label_intake",

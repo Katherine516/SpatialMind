@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from spatialmind.ingestion import load_scrna, load_xenium
+from spatialmind.ingestion import load_scrna_reference_set, load_xenium
 from spatialmind.ingestion.labels import MARKER_EVIDENCE_FEATURES, NON_BIOLOGICAL_FEATURES
 from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.implementations import reference_label_transfer
@@ -75,11 +75,108 @@ def _top_features(genes, limit=8):
     return ";".join("%s=%.3g" % (name, value) for value, name in pairs[:limit])
 
 
+def _h5ad_header(path):
+    """Read organism, cell classes, and gene symbols from an h5ad header only.
+
+    Deliberately avoids loading the expression matrix so a multi-gigabyte
+    reference can be screened in seconds before committing to a full run.
+    """
+    import h5py
+
+    def text(value):
+        return value.decode() if isinstance(value, bytes) else str(value)
+
+    with h5py.File(path, "r") as handle:
+        organism = ""
+        for key in ("organism", "organism_ontology_term_id"):
+            if key in handle.get("uns", {}):
+                try:
+                    organism = text(handle["uns"][key][()])
+                    break
+                except Exception:
+                    continue
+        classes = []
+        if "obs" in handle and "cell_type" in handle["obs"]:
+            node = handle["obs"]["cell_type"]
+            if isinstance(node, h5py.Group) and "categories" in node:
+                classes = [text(value) for value in node["categories"][:]]
+        genes = []
+        if "var" in handle:
+            for column in ("feature_name", "gene_symbols", "_index"):
+                if column not in handle["var"]:
+                    continue
+                node = handle["var"][column]
+                try:
+                    values = node["categories"][:] if isinstance(node, h5py.Group) else node[:]
+                except Exception:
+                    continue
+                genes = [text(value) for value in values]
+                if genes and not genes[0].upper().startswith("ENS"):
+                    break
+        shape = None
+        if "X" in handle and isinstance(handle["X"], h5py.Group):
+            shape = list(handle["X"].attrs.get("shape", []))
+    return {"organism": organism, "classes": classes, "genes": genes, "shape": shape}
+
+
+def _inspect_references(args) -> bool:
+    target = load_xenium(args.data, max_records=min(args.max_records, 300))
+    panel = {gene.upper() for gene in target.genes}
+    target_organism = str(target.metadata.get("organism") or "").strip()
+    print("TARGET   %s" % args.data)
+    print("         organism=%s  panel_genes=%d\n" % (target_organism or "unknown", len(panel)))
+
+    all_classes, organisms, ok = set(), set(), True
+    for path in args.reference:
+        try:
+            header = _h5ad_header(path)
+        except Exception as exc:
+            print("REFERENCE %s\n         UNREADABLE: %s\n" % (path, exc))
+            ok = False
+            continue
+        genes = {gene.upper() for gene in header["genes"]}
+        overlap = len(genes & panel)
+        all_classes.update(header["classes"])
+        if header["organism"]:
+            organisms.add(header["organism"].strip().lower())
+        print("REFERENCE %s" % path)
+        print("         organism=%s  cells=%s  classes=%d  panel_overlap=%d"
+              % (header["organism"] or "unknown",
+                 header["shape"][0] if header["shape"] else "?",
+                 len(header["classes"]), overlap))
+        if header["classes"]:
+            print("         classes: %s" % ", ".join(header["classes"][:6]) + (" ..." if len(header["classes"]) > 6 else ""))
+        print()
+
+    print("=" * 62)
+    verdict = []
+    if target_organism and organisms and {target_organism.lower()} != organisms:
+        known = {"human": {"human", "homo sapiens"}, "mouse": {"mouse", "mus musculus"}}
+        target_key = next((k for k, v in known.items() if target_organism.lower() in v), target_organism.lower())
+        ref_keys = {next((k for k, v in known.items() if o in v), o) for o in organisms}
+        if ref_keys != {target_key}:
+            verdict.append("BLOCKED: species mismatch (target=%s, reference=%s)" % (target_key, ", ".join(sorted(ref_keys))))
+            ok = False
+    if len(all_classes) < 2:
+        verdict.append("BLOCKED: %d cell class(es) across all references; KNN needs at least 2. "
+                       "Supply more files via --reference a.h5ad b.h5ad ..." % len(all_classes))
+        ok = False
+    if ok:
+        verdict.append("USABLE: %d combined cell classes." % len(all_classes))
+    for line in verdict:
+        print(line)
+    return ok
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build candidate cell labels for expert review.")
     parser.add_argument("--data", required=True, help="Xenium output directory or experiment.xenium file.")
     parser.add_argument("--out", default="outputs/candidate_labels", help="Output directory.")
-    parser.add_argument("--reference", default=None, help="Labelled reference (.h5ad or .csv) for KNN transfer.")
+    parser.add_argument("--reference", nargs="+", default=None,
+                        help="One or more labelled references (.h5ad/.csv). Multiple files are combined, "
+                             "which is required for atlases split one cell class per file.")
+    parser.add_argument("--inspect", action="store_true",
+                        help="Preflight only: report organism, classes, and panel overlap; write nothing.")
     parser.add_argument("--max-records", type=int, default=2500)
     parser.add_argument("--n-neighbors", type=int, default=15)
     parser.add_argument("--min-shared-features", type=int, default=20)
@@ -87,6 +184,11 @@ def main() -> None:
     parser.add_argument("--reference-max-records", type=int, default=5000, help="Reference cells sampled for KNN.")
     parser.add_argument("--allow-cross-species", action="store_true", help="Only for pre-mapped orthologs.")
     args = parser.parse_args()
+
+    if args.inspect:
+        if not args.reference:
+            parser.error("--inspect requires --reference")
+        sys.exit(0 if _inspect_references(args) else 1)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -101,7 +203,7 @@ def main() -> None:
     }
 
     if args.reference:
-        reference = load_scrna(args.reference, max_records=args.reference_max_records)
+        reference = load_scrna_reference_set(args.reference, max_records_per_file=args.reference_max_records)
         reference_labels = sorted({record.cell_type for record in reference.records if record.cell_type})
         try:
             result = reference_label_transfer(

@@ -1491,6 +1491,62 @@ class H5adReferenceLoadingTests(unittest.TestCase):
             self.assertEqual(dataset.metadata.get("organism"), "Homo sapiens")
             self.assertEqual(sorted(dataset.cell_types), ["T cell", "Tumor cell"])
 
+    def test_single_class_reference_files_combine_into_a_usable_reference(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            self.skipTest("anndata required")
+        from spatialmind.ingestion import load_scrna_reference_set
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            # Atlases such as the Siletti brain collection ship one class per file.
+            for label, profile in (("oligodendrocyte", [9.0, 0.0]), ("astrocyte", [0.0, 9.0])):
+                path = Path(tmp) / ("%s.h5ad" % label.replace(" ", "_"))
+                adata = ad.AnnData(
+                    X=np.array([profile, profile]),
+                    obs=pd.DataFrame({"cell_type": [label, label]}),
+                    var=pd.DataFrame({"feature_name": ["MOG", "AQP4"]}, index=["ENSG1", "ENSG2"]),
+                )
+                adata.uns["organism"] = "Homo sapiens"
+                adata.write_h5ad(path)
+                paths.append(str(path))
+
+            single = load_scrna(paths[0], max_records=10)
+            self.assertEqual(len(single.cell_types), 1)  # unusable alone
+
+            combined = load_scrna_reference_set(paths, max_records_per_file=10)
+            self.assertEqual(sorted(combined.cell_types), ["astrocyte", "oligodendrocyte"])
+            self.assertEqual(len(combined.records), 4)
+            self.assertEqual(combined.metadata["reference_file_count"], 2)
+
+    def test_reference_set_refuses_mixed_organisms(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            self.skipTest("anndata required")
+        from spatialmind.ingestion import load_scrna_reference_set
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for label, organism in (("astrocyte", "Homo sapiens"), ("microglial cell", "Mus musculus")):
+                path = Path(tmp) / ("%s.h5ad" % organism.split()[0])
+                adata = ad.AnnData(
+                    X=np.array([[5.0, 1.0], [4.0, 2.0]]),
+                    obs=pd.DataFrame({"cell_type": [label, label]}),
+                    var=pd.DataFrame({"feature_name": ["AQP4", "AIF1"]}, index=["G1", "G2"]),
+                )
+                adata.uns["organism"] = organism
+                adata.write_h5ad(path)
+                paths.append(str(path))
+            with self.assertRaises(Exception) as ctx:
+                load_scrna_reference_set(paths, max_records_per_file=10)
+            self.assertIn("organism", str(ctx.exception).lower())
+
     def test_spatial_h5ad_still_requires_coordinates(self):
         try:
             import anndata as ad  # type: ignore
