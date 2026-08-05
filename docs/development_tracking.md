@@ -596,7 +596,7 @@ Evaluation:
 - `PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache python3 -m compileall spatialmind/pilot scripts tests/test_spatialmind.py` passed.
 - `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/run_validated_xenium_pilot.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_validated_pilot --max-records 2500` completed successfully and correctly returned `blocked_missing_validation_inputs`.
 - `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/evaluate_xenium_pilot_readiness.py --data-root data --out outputs/xenium_pilot_scorecard --max-records 800` completed successfully.
-- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_*.py'` originally passed the active suite; the current suite passes 45/45 tests.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_*.py'` passed the active suite at the time of this step (45 tests).
 - `PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache python3 -m eval.runner --mvp --cases eval/mvp_cases --out outputs/mvp_eval_report.json` passed 10/10 MVP eval cases with mean score 1.0000.
 - `PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache python3 -m eval.runner --out outputs/eval_report.json` passed 15/15 legacy eval cases with mean score 1.0000.
 - `.venv/bin/lint-imports` passed with 3 import contracts kept and 0 broken.
@@ -699,7 +699,7 @@ Current intake result:
 Evaluation:
 
 - `PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache python3 -m compileall spatialmind scripts/validate_xenium_label_intake.py tests/test_spatialmind.py` passed.
-- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_spatialmind.py'` originally passed the active suite; the current suite passes 45/45 tests.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_spatialmind.py'` passed the active suite at the time of this step (45 tests).
 - `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/validate_xenium_label_intake.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_label_intake --max-records 2500` completed successfully.
 
 Next required input:
@@ -747,7 +747,7 @@ Evaluation:
 
 - `PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache python3 -m compileall spatialmind/pilot/xenium.py` passed.
 - `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/run_validated_xenium_pilot.py --data data/Human_Breast_Biomarkers_S1_Top_outs --out outputs/xenium_validated_pilot --max-records 2500` completed successfully.
-- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_spatialmind.py'` originally passed the active suite; the current suite passes 45/45 tests.
+- `MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python -m unittest discover -s tests -p 'test_spatialmind.py'` passed the active suite at the time of this step (45 tests).
 
 Current finding:
 
@@ -1442,5 +1442,55 @@ Verification:
 - A full blocked-run regression still produced HTML and PDF reports and correctly omitted the unmeasured robustness section.
 - A synthetic validated-report render verified that the measured robustness table appears in Markdown, HTML, and PDF; all three PDF pages were visually checked with no clipping or overlap.
 - Unit tests pass 67/67.
+- Legacy evaluation passes 15/15 with mean score 1.0000; MVP evaluation passes 10/10 with mean score 1.0000.
+- All three import contracts remain intact, `pip check` reports no broken requirements, bytecode compilation passes, and `git diff --check` reports no whitespace errors.
+
+### Step 39: Reliable Spatial Relationship Evidence
+
+Status: Complete.
+
+Work completed on 2026-07-22:
+
+- Added a validated-only spatial relationship synthesis that combines Squidpy permutation adjacency, pair-level graph-size stability, bidirectional nearest-cell distance, and reviewed-region overlap.
+- Added transparent evidence statuses: `stable_enriched`, `stable_depleted`, sensitivity-limited, and weak/indeterminate.
+- Added minimum effect, cell-count, global robustness, sign-agreement, and top-K-presence criteria before a pair can be called stable.
+- Added a diverging neighborhood z-score heatmap and relationship tables to Markdown, HTML, and PDF reports.
+- Added explicit language separating spatial adjacency from physical contact, signaling, mechanism, and causation.
+- Reused the primary `n_neighs=6` neighborhood result as the first robustness setting when parameters match, avoiding one repeated Squidpy run.
+- Increased the validated default to 250 seeded permutations and retained all finite pair results for report synthesis.
+- Tightened claim grounding so prototype neighbor counts cannot satisfy permutation-z-score evidence requirements.
+- Added unit coverage for stable relationships, region context, distance context, prototype rejection, pair-level sensitivity metadata, and cross-format report rendering.
+
+Verification:
+
+- Unit tests pass 69/69.
+- Legacy evaluation passes 15/15 with mean score 1.0000; MVP evaluation passes 10/10 with mean score 1.0000.
+- A blocked local Xenium run produced no pair findings or heatmap and clearly reported that reviewed labels and regions are required.
+- A synthetic validated rendering fixture produced the expected enriched/depleted evidence table, nearest-distance and region-overlap context, spatial adjacency heatmap, and robustness table in Markdown, HTML, and PDF.
+- Visually checked all four PDF pages and the standalone heatmap; tables, labels, color scale, captions, and page transitions are legible with no clipping or overlap.
+- All three import contracts remain intact, `pip check` reports no broken requirements, bytecode compilation passes, and `git diff --check` reports no whitespace errors.
+
+### Step 40: Region-Stratified Neighborhoods and Distance Co-Occurrence
+
+Status: Complete.
+
+Work completed on 2026-08-01:
+
+- Added independent Squidpy neighborhood permutation tests within each reviewed ROI.
+- Added explicit region and per-cell-type minimum support thresholds, deterministic region prioritization, and auditable skip reasons.
+- Added cross-region pair summaries for direction agreement, strongest region, and region-consistent versus heterogeneous effects; consistency requires at least two regional effects with `|z| >= 2`.
+- Added distance-dependent Squidpy co-occurrence probability-ratio curves for leading cell-type pairs with at least 20 cells per type.
+- Added automatic, provenance-recorded distance scaling from nearest-cell spacing and tissue extent.
+- Forced co-occurrence execution through one threading worker to avoid fragile multiprocessing behavior in CLI and notebook contexts.
+- Added region-by-pair heatmaps, distance curves, report tables, JSON evidence artifacts, limitations, and run-record hashing.
+- Kept both analyses behind the expert-label and reviewed-region validation gate.
+
+Verification:
+
+- Unit tests pass 77/77.
+- Live synthetic Squidpy probes passed for a two-region neighborhood analysis and a distance-dependent co-occurrence curve.
+- A blocked local Xenium run produced no inferred regional effects or distance curves and stated that reviewed labels and regions are required.
+- A synthetic validated fixture rendered both new figures and the corresponding tables in Markdown, HTML, and PDF.
+- Visually checked all six PDF pages plus both standalone figures; labels, legends, tables, captions, and page transitions are legible with no clipping or overlap.
 - Legacy evaluation passes 15/15 with mean score 1.0000; MVP evaluation passes 10/10 with mean score 1.0000.
 - All three import contracts remain intact, `pip check` reports no broken requirements, bytecode compilation passes, and `git diff --check` reports no whitespace errors.

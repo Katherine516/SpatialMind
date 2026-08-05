@@ -544,6 +544,8 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(stable_summary["status"], "computed")
         self.assertEqual(stable_summary["mean_sign_agreement"], 1.0)
         self.assertEqual(stable_summary["score"], 1.0)
+        self.assertEqual(stable_summary["pair_stability"][0]["settings_present"], 2)
+        self.assertEqual(stable_summary["pair_stability"][0]["sign_agreement"], 1.0)
 
         flipped = [
             setting(6, [{"pair": "A | B", "zscore": 5.0}, {"pair": "A | C", "zscore": -3.0}]),
@@ -591,6 +593,143 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(summary["top_k"], 2)
         self.assertEqual(summary["engines"], ["squidpy"])
 
+    def test_spatial_relationship_summary_combines_orthogonal_evidence(self):
+        from spatialmind.pilot.spatial_relationships import build_spatial_relationship_summary
+
+        records = []
+        for index in range(20):
+            records.append(SpotRecord("S1", float(index), 0.0, "A", {"G": 1.0}, region="core", cell_id="a%d" % index))
+            records.append(SpotRecord("S1", float(index) + 0.5, 1.0, "B", {"G": 1.0}, region="core", cell_id="b%d" % index))
+            records.append(SpotRecord("S1", float(index) + 100.0, 0.0, "C", {"G": 1.0}, region="margin", cell_id="c%d" % index))
+        dataset = SpatialDataset(
+            sample_id="S1",
+            source_path="synthetic",
+            modality="xenium_spatial_rna",
+            coordinate_system="micron",
+            records=records,
+        )
+        neighborhood = ToolResult(
+            tool_name="cell_neighborhood_enrichment",
+            summary="test",
+            metrics={
+                "engine": "squidpy",
+                "n_neighs": 6,
+                "n_perms": 250,
+                "random_state": 0,
+                "tested_pair_count": 2,
+                "all_pairs": [
+                    {"pair": "A | B", "zscore": 4.2},
+                    {"pair": "A | C", "zscore": -3.1},
+                ],
+            },
+        )
+        robustness = {
+            "status": "computed",
+            "score": 0.84,
+            "pair_stability": [
+                {"pair": "A | B", "settings_present": 3, "sign_agreement": 1.0, "top_k_presence": 1.0},
+                {"pair": "A | C", "settings_present": 3, "sign_agreement": 1.0, "top_k_presence": 1.0},
+            ],
+        }
+        summary = build_spatial_relationship_summary(dataset, [neighborhood], robustness, validated=True)
+        self.assertEqual(summary["status"], "computed")
+        by_pair = {item["pair"]: item for item in summary["relationships"]}
+        self.assertEqual(by_pair["A | B"]["evidence_status"], "stable_enriched")
+        self.assertEqual(by_pair["A | C"]["evidence_status"], "stable_depleted")
+        self.assertEqual(by_pair["A | B"]["region_overlap"], 1.0)
+        self.assertGreater(by_pair["A | C"]["median_bidirectional_nearest_distance"], 50.0)
+        self.assertIn("not evidence", summary["warnings"][0])
+
+    def test_spatial_relationship_summary_rejects_prototype_neighbor_counts(self):
+        from spatialmind.pilot.spatial_relationships import build_spatial_relationship_summary
+
+        dataset = _make_two_program_dataset()
+        result = ToolResult(
+            tool_name="cell_neighborhood_enrichment",
+            summary="prototype",
+            metrics={"engine": "prototype", "top_pairs": [{"pair": "A | B", "neighbor_count": 20}]},
+        )
+        summary = build_spatial_relationship_summary(dataset, [result], {}, validated=True)
+        self.assertEqual(summary["status"], "not_computed")
+        self.assertIn("permutation z-scores", summary["reason"])
+
+    def test_region_stratified_neighborhoods_track_consistency_and_skips(self):
+        from spatialmind.tools.implementations import run_region_stratified_neighborhoods
+
+        records = []
+        for region, offset in (("core", 0.0), ("margin", 100.0)):
+            for index in range(20):
+                records.append(SpotRecord("S1", offset + index, 0.0, "A", {"G": 1.0}, region=region, cell_id="%sa%d" % (region, index)))
+                records.append(SpotRecord("S1", offset + index, 1.0, "B", {"G": 1.0}, region=region, cell_id="%sb%d" % (region, index)))
+        records.append(SpotRecord("S1", 300.0, 0.0, "A", {"G": 1.0}, region="tiny", cell_id="tiny"))
+        dataset = SpatialDataset("S1", records, "synthetic", modality="xenium_spatial_rna")
+        calls = []
+
+        def region_result(subset, params):
+            calls.append((subset.records[0].region, params))
+            zscore = 4.0 if subset.records[0].region == "core" else 3.0
+            return ToolResult(
+                tool_name="cell_neighborhood_enrichment",
+                summary="test",
+                metrics={
+                    "engine": "squidpy",
+                    "all_pairs": [
+                        {"pair": "A | B", "zscore": zscore},
+                        {"pair": "A | A", "zscore": -2.0},
+                        {"pair": "B | B", "zscore": 0.2},
+                    ],
+                },
+            )
+
+        with patch("spatialmind.tools.implementations.cell_neighborhood_enrichment", side_effect=region_result):
+            summary = run_region_stratified_neighborhoods(
+                dataset,
+                {"min_region_cells": 40, "min_cells_per_type": 20, "n_perms": 50},
+            )
+        self.assertEqual(summary["status"], "computed")
+        self.assertEqual(summary["tested_region_count"], 2)
+        self.assertEqual(summary["skipped_region_count"], 1)
+        self.assertEqual(summary["pair_consistency"][0]["pair"], "A | B")
+        self.assertEqual(summary["pair_consistency"][0]["status"], "region_consistent")
+        self.assertEqual(summary["pair_consistency"][0]["supported_region_count"], 2)
+        weak_pair = next(item for item in summary["pair_consistency"] if item["pair"] == "B | B")
+        self.assertEqual(weak_pair["status"], "weak_or_indeterminate")
+        self.assertEqual(weak_pair["supported_region_count"], 0)
+        self.assertTrue(all(call[1]["include_all_pairs"] for call in calls))
+
+    def test_distance_cooccurrence_curves_use_symmetric_pair_average(self):
+        import numpy as np
+        from spatialmind.tools.implementations import run_distance_dependent_cooccurrence
+
+        dataset = SpatialDataset(
+            "S1",
+            [
+                SpotRecord("S1", float(index), 0.0, "A" if index < 20 else "B", {"G": 1.0}, cell_id="c%d" % index)
+                for index in range(40)
+            ],
+            "synthetic",
+            modality="xenium_spatial_rna",
+            coordinate_system="micron",
+        )
+        occurrence = np.zeros((2, 2, 6), dtype=float)
+        occurrence[0, 1, :] = np.array([1.2, 1.4, 1.6, 1.3, 1.1, 1.0])
+        occurrence[1, 0, :] = np.array([1.0, 1.2, 1.4, 1.1, 0.9, 0.8])
+        thresholds = np.arange(7, dtype=float)
+        with patch("squidpy.gr.co_occurrence", autospec=True, return_value=(occurrence, thresholds)) as mocked:
+            summary = run_distance_dependent_cooccurrence(
+                dataset,
+                pairs=["A | B"],
+                params={"n_intervals": 6, "max_distance": 6.0},
+            )
+        self.assertEqual(summary["status"], "computed")
+        self.assertEqual(summary["curve_count"], 1)
+        self.assertEqual(summary["curves"][0]["peak_ratio"], 1.5)
+        self.assertEqual(summary["curves"][0]["peak_distance"], 3.0)
+        self.assertEqual(summary["curves"][0]["left_cell_count"], 20)
+        self.assertEqual(summary["min_cells_per_type"], 20)
+        self.assertEqual(mocked.call_args.kwargs.get("n_jobs"), 1)
+        self.assertEqual(mocked.call_args.kwargs.get("backend"), "threading")
+
     def test_validated_reports_surface_spatial_robustness(self):
         from spatialmind.pilot.xenium import (
             _spatial_robustness_rows,
@@ -632,6 +771,58 @@ class ToolRegistryTests(unittest.TestCase):
                 "mean_topk_jaccard": 0.55,
                 "n_reference_pairs": 10,
             },
+            "spatial_relationships": {
+                "status": "computed",
+                "method": "Squidpy permutation neighborhood enrichment",
+                "graph": {"n_neighs": 6, "n_perms": 250, "random_state": 17},
+                "relationships": [
+                    {
+                        "pair": "A | B",
+                        "direction": "enriched",
+                        "zscore": 4.2,
+                        "settings_present": 3,
+                        "sign_agreement": 1.0,
+                        "median_bidirectional_nearest_distance": 8.5,
+                        "coordinate_units": "micron",
+                        "region_overlap": 0.8,
+                        "shared_regions": ["core"],
+                        "evidence_status": "stable_enriched",
+                    }
+                ],
+                "warnings": ["Spatial adjacency is not evidence of signaling or causation."],
+            },
+            "region_stratified_neighborhoods": {
+                "status": "computed",
+                "tested_region_count": 2,
+                "skipped_region_count": 0,
+                "pair_consistency": [
+                    {
+                        "pair": "A | B",
+                        "regions_tested": 2,
+                        "direction_agreement": 1.0,
+                        "strongest_region": "core",
+                        "strongest_abs_zscore": 3.8,
+                        "status": "region_consistent",
+                    }
+                ],
+                "warnings": ["Within-region synthetic fixture."],
+            },
+            "distance_cooccurrence": {
+                "status": "computed",
+                "coordinate_units": "micron",
+                "max_distance": 50.0,
+                "n_intervals": 20,
+                "curves": [
+                    {
+                        "pair": "A | B",
+                        "peak_ratio": 1.4,
+                        "peak_distance": 10.0,
+                        "short_range_mean_ratio": 1.3,
+                        "long_range_mean_ratio": 1.0,
+                    }
+                ],
+                "warnings": ["Descriptive synthetic fixture."],
+            },
         }
         rows = dict(_spatial_robustness_rows(payload))
         self.assertEqual(rows["Robustness score"], "0.8200")
@@ -645,8 +836,16 @@ class ToolRegistryTests(unittest.TestCase):
             _write_html_report(html_path, payload, [])
             _write_pilot_pdf_report(pdf_path, payload, [])
             self.assertIn("Spatial Robustness Sweep", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Spatial Relationships", md_path.read_text(encoding="utf-8"))
+            self.assertIn("stable_enriched", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Region-Stratified Neighborhood Testing", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Distance-Dependent Co-Occurrence", md_path.read_text(encoding="utf-8"))
             html_report = html_path.read_text(encoding="utf-8")
             self.assertIn("Spatial Robustness Sweep", html_report)
+            self.assertIn("Spatial Relationships", html_report)
+            self.assertIn("stable_enriched", html_report)
+            self.assertIn("region_consistent", html_report)
+            self.assertIn("Peak distance", html_report)
             self.assertIn("0.8200", html_report)
             with pdf_path.open("rb") as handle:
                 self.assertEqual(handle.read(5), b"%PDF-")
@@ -1093,6 +1292,449 @@ class V2ScaffoldTests(unittest.TestCase):
             self.assertIn("analysis_summary_filepath", content)
 
 
+class MorphologyLayerTests(unittest.TestCase):
+    def test_loaders_degrade_when_assets_are_missing(self):
+        from spatialmind.viz.morphology import (
+            find_morphology_image,
+            load_cell_boundaries,
+            load_morphology_thumbnail,
+            read_pixel_size,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(find_morphology_image(tmp))
+            self.assertIsNone(read_pixel_size(tmp))
+            image = load_morphology_thumbnail(tmp)
+            self.assertEqual(image["status"], "unavailable")
+            self.assertIn("reason", image)
+            boundaries = load_cell_boundaries(tmp)
+            self.assertEqual(boundaries["status"], "unavailable")
+            self.assertEqual(boundaries["polygons"], {})
+
+    def test_choose_level_picks_smallest_level_above_target(self):
+        from spatialmind.viz.morphology import _choose_level
+
+        class Level:
+            def __init__(self, shape):
+                self.shape = shape
+
+        levels = [Level((27282, 36955)), Level((13641, 18477)), Level((6820, 9238)), Level((1705, 2309)), Level((213, 288))]
+        # Level 3 (2309 wide) is the smallest still >= 1600.
+        self.assertEqual(_choose_level(levels, 1600), 3)
+        # Nothing satisfies a huge target, so the largest level is used.
+        self.assertEqual(_choose_level(levels, 99999), 0)
+
+    def test_real_xenium_morphology_and_boundaries_align(self):
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
+        from spatialmind.viz.morphology import load_cell_boundaries, load_morphology_thumbnail
+
+        image = load_morphology_thumbnail(XENIUM_LYMPH, max_dimension=400)
+        if image["status"] != "loaded":
+            self.skipTest("morphology image unavailable: %s" % image.get("reason"))
+        self.assertTrue(image["data_uri"].startswith("data:image/png;base64,"))
+        self.assertGreater(image["width_um"], 0)
+        self.assertGreater(image["height_um"], 0)
+        self.assertLessEqual(max(image["thumbnail_width"], image["thumbnail_height"]), 400)
+
+        from spatialmind.ingestion import load_xenium
+
+        dataset = load_xenium(XENIUM_LYMPH, max_records=40)
+        cell_ids = [record.cell_id for record in dataset.records]
+        boundaries = load_cell_boundaries(XENIUM_LYMPH, cell_ids=cell_ids)
+        if boundaries["status"] != "loaded":
+            self.skipTest("boundaries unavailable: %s" % boundaries.get("reason"))
+        self.assertLessEqual(boundaries["cell_count"], len(cell_ids))
+        # Each polygon must enclose its own centroid, which is what keeps the
+        # segmentation overlay registered with the plotted cells.
+        for record in dataset.records:
+            vertices = boundaries["polygons"].get(record.cell_id)
+            if not vertices:
+                continue
+            xs = [vertex[0] for vertex in vertices]
+            ys = [vertex[1] for vertex in vertices]
+            self.assertGreaterEqual(record.x, min(xs) - 1.0)
+            self.assertLessEqual(record.x, max(xs) + 1.0)
+            self.assertGreaterEqual(record.y, min(ys) - 1.0)
+            self.assertLessEqual(record.y, max(ys) + 1.0)
+
+
+class LabelTransferTests(unittest.TestCase):
+    def _reference(self):
+        records = []
+        for index in range(12):
+            records.append(SpotRecord("R", 0.0, 0.0, "T cell", {"CD8A": 9.0, "CD3D": 8.0, "EPCAM": 0.0}, cell_id="r%d" % index))
+            records.append(SpotRecord("R", 0.0, 0.0, "Tumor cell", {"CD8A": 0.0, "CD3D": 0.0, "EPCAM": 9.0}, cell_id="t%d" % index))
+        return SpatialDataset(sample_id="R", source_path="ref", modality="scrna", records=records)
+
+    def _target(self):
+        return SpatialDataset(
+            sample_id="X",
+            source_path="x",
+            modality="xenium_spatial_rna",
+            records=[
+                SpotRecord("X", 0.0, 0.0, "Unannotated cell", {"CD8A": 7.0, "CD3D": 6.0, "EPCAM": 0.0}, cell_id="a1"),
+                SpotRecord("X", 1.0, 0.0, "Unannotated cell", {"CD8A": 0.0, "CD3D": 0.0, "EPCAM": 7.0}, cell_id="a2"),
+            ],
+        )
+
+    def test_transfer_assigns_a_label_and_confidence_per_cell(self):
+        result = reference_label_transfer(
+            self._target(),
+            {"reference_dataset": self._reference(), "min_shared_features": 2},
+        )
+        self.assertEqual(result.metrics["status"], "transferred")
+        self.assertTrue(result.metrics["labels_transferred"])
+        predictions = {item["cell_id"]: item for item in result.metrics["predictions"]}
+        self.assertEqual(predictions["a1"]["predicted_label"], "T cell")
+        self.assertEqual(predictions["a2"]["predicted_label"], "Tumor cell")
+        for item in predictions.values():
+            self.assertGreaterEqual(item["confidence"], 0.0)
+            self.assertLessEqual(item["confidence"], 1.0)
+        self.assertIn("expert review", " ".join(result.caveats).lower())
+
+    def test_review_priority_is_calibrated_on_the_target_not_the_reference(self):
+        target = self._target()
+        # Extra cells so a 90th-percentile cut is meaningful.
+        for index in range(18):
+            target.records.append(
+                SpotRecord("X", float(index), 1.0, "Unannotated cell",
+                           {"CD8A": 6.0, "CD3D": 5.0, "EPCAM": 0.0}, cell_id="e%d" % index)
+            )
+        result = reference_label_transfer(
+            target, {"reference_dataset": self._reference(), "min_shared_features": 2},
+        )
+        metrics = result.metrics
+        flagged = metrics["high_review_priority_count"]
+        # Must flag a reviewable minority, not everything (the failure mode of
+        # calibrating against reference-internal distances across assays).
+        self.assertLess(flagged, len(target.records))
+        self.assertIn("platform_shift_ratio", metrics)
+        priorities = {item["review_priority"] for item in metrics["predictions"]}
+        self.assertTrue(priorities <= {"high", "normal"})
+        for item in metrics["predictions"]:
+            self.assertIn("distant_from_reference", item)
+        # Coverage limits must be stated, since vote confidence cannot express them.
+        self.assertTrue(any("no matching class" in caveat for caveat in result.caveats))
+
+    def test_marker_lineage_resolution_is_conservative(self):
+        from spatialmind.tools.implementations import lineage_for_label, lineages_conflict, marker_lineage
+
+        # Unambiguous myeloid evidence resolves.
+        lineage, score = marker_lineage({"CD68": 5.0, "AIF1": 4.0, "C1QA": 3.0})
+        self.assertEqual(lineage, "myeloid")
+        self.assertGreater(score, 0)
+        # Tied evidence across lineages must NOT resolve, rather than guess.
+        self.assertEqual(marker_lineage({"AQP4": 2.0, "CD4": 2.0})[0], "")
+        # Trace evidence below the floor must not resolve.
+        self.assertEqual(marker_lineage({"CD68": 0.2})[0], "")
+
+        self.assertEqual(lineage_for_label("intratelencephalic-projecting glutamatergic cortical neuron"), "neuronal")
+        self.assertEqual(lineage_for_label("microglial cell"), "myeloid")
+        # Most specific keyword wins.
+        self.assertEqual(lineage_for_label("oligodendrocyte precursor cell"), "opc")
+        self.assertEqual(lineage_for_label("oligodendrocyte"), "oligodendrocyte")
+
+        self.assertTrue(lineages_conflict("neuronal", "myeloid"))
+        self.assertFalse(lineages_conflict("neuronal", "neuronal"))
+        self.assertFalse(lineages_conflict("oligodendrocyte", "opc"))  # compatible
+        self.assertFalse(lineages_conflict("neuronal", ""))  # unknown never conflicts
+
+    def test_marker_disagreement_flags_cells_confidence_would_miss(self):
+        target = SpatialDataset(
+            sample_id="X",
+            source_path="x",
+            modality="xenium_spatial_rna",
+            records=[
+                # Unambiguously myeloid, but the reference has no myeloid class.
+                SpotRecord("X", 0.0, 0.0, "Unannotated cell",
+                           {"CD68": 6.0, "AIF1": 5.0, "C1QA": 4.0, "CD8A": 0.0, "EPCAM": 0.0}, cell_id="myeloid1"),
+                SpotRecord("X", 1.0, 0.0, "Unannotated cell",
+                           {"CD8A": 7.0, "CD3D": 6.0, "EPCAM": 0.0}, cell_id="lymphoid1"),
+            ],
+        )
+        def reference_cell(label, profile, index):
+            genes = {"CD68": 0.0, "AIF1": 0.0, "C1QA": 0.0, "CD8A": 0.0, "EPCAM": 0.0, "MBP": 0.0, "MOG": 0.0}
+            genes.update(profile)
+            return SpotRecord("R", 0.0, 0.0, label, genes, cell_id="%s%d" % (label[:3], index))
+
+        reference = SpatialDataset(
+            sample_id="R", source_path="r", modality="scrna",
+            records=[reference_cell("oligodendrocyte", {"MBP": 9.0, "MOG": 8.0}, i) for i in range(10)]
+                    + [reference_cell("neuron", {"CD8A": 1.0}, i) for i in range(10)],
+        )
+        result = reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2})
+        by_id = {item["cell_id"]: item for item in result.metrics["predictions"]}
+        # The myeloid cell has no correct label available in this reference.
+        self.assertEqual(by_id["myeloid1"]["marker_lineage"], "myeloid")
+        self.assertTrue(by_id["myeloid1"]["lineage_absent_from_reference"])
+        self.assertEqual(by_id["myeloid1"]["review_priority"], "high")
+        self.assertGreaterEqual(result.metrics["lineage_absent_from_reference_count"], 1)
+        self.assertIn("myeloid", result.metrics["reference_lineages"] + ["myeloid"])  # sanity on key presence
+        self.assertIn("reference_lineages", result.metrics)
+
+    def test_without_reference_dataset_no_transfer_is_claimed(self):
+        result = reference_label_transfer(
+            self._target(),
+            {"reference_features": ["CD8A", "CD3D", "EPCAM"], "min_shared_features": 2},
+        )
+        self.assertEqual(result.metrics["status"], "compatibility_only")
+        self.assertFalse(result.metrics["labels_transferred"])
+        self.assertNotIn("predictions", result.metrics)
+        # The summary must not assert that a transfer happened.
+        self.assertIn("No labels were transferred", result.summary)
+
+    def test_shared_feature_count_comes_from_the_reference_not_the_target(self):
+        # The target carries extra genes the reference never measured; only the
+        # genuinely shared ones may be counted.
+        target = self._target()
+        for record in target.records:
+            record.genes["EXTRA_GENE_A"] = 1.0
+            record.genes["EXTRA_GENE_B"] = 1.0
+        result = reference_label_transfer(
+            target,
+            {"reference_dataset": self._reference(), "min_shared_features": 2},
+        )
+        self.assertEqual(result.metrics["shared_feature_count"], 3)
+
+    def test_cross_species_reference_is_refused(self):
+        target = self._target()
+        target.metadata["organism"] = "Human"
+        reference = self._reference()
+        reference.metadata["organism"] = "Mus musculus"
+        with self.assertRaises(MissingPreconditionError) as ctx:
+            reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2})
+        self.assertIn("cross-species", str(ctx.exception))
+        # Explicit opt-in (for pre-mapped orthologs) still works.
+        result = reference_label_transfer(
+            target,
+            {"reference_dataset": reference, "min_shared_features": 2, "allow_cross_species": True},
+        )
+        self.assertEqual(result.metrics["status"], "transferred")
+
+    def test_same_species_and_unknown_species_are_allowed(self):
+        from spatialmind.tools.implementations import normalize_species
+
+        self.assertEqual(normalize_species("Homo sapiens"), "human")
+        self.assertEqual(normalize_species("NCBITaxon:10090"), "mouse")
+        target = self._target()
+        target.metadata["organism"] = "Homo sapiens"
+        reference = self._reference()
+        reference.metadata["organism"] = "Human"
+        result = reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2})
+        self.assertEqual(result.metrics["status"], "transferred")
+        # Unknown organism on either side must not hard-block a legitimate run.
+        reference.metadata["organism"] = ""
+        self.assertEqual(
+            reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2}).metrics["status"],
+            "transferred",
+        )
+
+    def test_single_class_reference_is_rejected(self):
+        reference = SpatialDataset(
+            sample_id="R",
+            source_path="ref",
+            modality="scrna",
+            records=[SpotRecord("R", 0.0, 0.0, "T cell", {"CD8A": 9.0, "CD3D": 8.0, "EPCAM": 0.0}, cell_id="r%d" % i) for i in range(6)],
+        )
+        with self.assertRaises(MissingPreconditionError):
+            reference_label_transfer(self._target(), {"reference_dataset": reference, "min_shared_features": 2})
+
+
+class H5adReferenceLoadingTests(unittest.TestCase):
+    def test_scrna_h5ad_without_spatial_coordinates_loads(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            self.skipTest("anndata required")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "reference.h5ad"
+            adata = ad.AnnData(
+                X=np.array([[5.0, 0.0, 1.0], [0.0, 6.0, 1.0], [4.0, 0.0, 2.0], [0.0, 7.0, 1.0]]),
+                obs=pd.DataFrame({"cell_type": ["T cell", "Tumor cell", "T cell", "Tumor cell"]}),
+                var=pd.DataFrame(
+                    {"feature_name": ["CD8A", "EPCAM", "ACTB"]},
+                    index=["ENSG00000153563", "ENSG00000119888", "ENSG00000075624"],
+                ),
+            )
+            adata.uns["organism"] = "Homo sapiens"
+            adata.write_h5ad(path)
+
+            dataset = load_scrna(str(path), max_records=10)
+            self.assertEqual(len(dataset.records), 4)
+            # Symbols must win over Ensembl IDs so symbol panels can align.
+            self.assertIn("CD8A", dataset.genes)
+            self.assertNotIn("ENSG00000153563", dataset.genes)
+            self.assertEqual(dataset.metadata.get("organism"), "Homo sapiens")
+            self.assertEqual(sorted(dataset.cell_types), ["T cell", "Tumor cell"])
+
+    def test_single_class_reference_files_combine_into_a_usable_reference(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            self.skipTest("anndata required")
+        from spatialmind.ingestion import load_scrna_reference_set
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            # Atlases such as the Siletti brain collection ship one class per file.
+            for label, profile in (("oligodendrocyte", [9.0, 0.0]), ("astrocyte", [0.0, 9.0])):
+                path = Path(tmp) / ("%s.h5ad" % label.replace(" ", "_"))
+                adata = ad.AnnData(
+                    X=np.array([profile, profile]),
+                    obs=pd.DataFrame({"cell_type": [label, label]}),
+                    var=pd.DataFrame({"feature_name": ["MOG", "AQP4"]}, index=["ENSG1", "ENSG2"]),
+                )
+                adata.uns["organism"] = "Homo sapiens"
+                adata.write_h5ad(path)
+                paths.append(str(path))
+
+            single = load_scrna(paths[0], max_records=10)
+            self.assertEqual(len(single.cell_types), 1)  # unusable alone
+
+            combined = load_scrna_reference_set(paths, max_records_per_file=10)
+            self.assertEqual(sorted(combined.cell_types), ["astrocyte", "oligodendrocyte"])
+            self.assertEqual(len(combined.records), 4)
+            self.assertEqual(combined.metadata["reference_file_count"], 2)
+
+    def test_reference_set_refuses_mixed_organisms(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            self.skipTest("anndata required")
+        from spatialmind.ingestion import load_scrna_reference_set
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for label, organism in (("astrocyte", "Homo sapiens"), ("microglial cell", "Mus musculus")):
+                path = Path(tmp) / ("%s.h5ad" % organism.split()[0])
+                adata = ad.AnnData(
+                    X=np.array([[5.0, 1.0], [4.0, 2.0]]),
+                    obs=pd.DataFrame({"cell_type": [label, label]}),
+                    var=pd.DataFrame({"feature_name": ["AQP4", "AIF1"]}, index=["G1", "G2"]),
+                )
+                adata.uns["organism"] = organism
+                adata.write_h5ad(path)
+                paths.append(str(path))
+            with self.assertRaises(Exception) as ctx:
+                load_scrna_reference_set(paths, max_records_per_file=10)
+            self.assertIn("organism", str(ctx.exception).lower())
+
+    def test_backed_and_memory_reads_agree(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+            from scipy import sparse  # type: ignore
+        except ImportError:
+            self.skipTest("anndata/scipy required")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "backed.h5ad"
+            rng = np.random.default_rng(0)
+            matrix = sparse.csr_matrix(rng.integers(0, 5, size=(40, 6)).astype(float))
+            adata = ad.AnnData(
+                X=matrix,
+                obs=pd.DataFrame({"cell_type": ["A" if i % 2 else "B" for i in range(40)]}),
+                var=pd.DataFrame({"feature_name": ["G%d" % i for i in range(6)]}, index=["E%d" % i for i in range(6)]),
+            )
+            adata.uns["organism"] = "Homo sapiens"
+            adata.write_h5ad(path)
+
+            layer = DataIngestionLayer()
+            backed = layer.load_h5ad(str(path), max_records=12, require_spatial=False, backed=True)
+            memory = layer.load_h5ad(str(path), max_records=12, require_spatial=False, backed=False)
+
+            self.assertEqual(memory.metadata["h5ad_read_mode"], "memory")
+            self.assertIn(backed.metadata["h5ad_read_mode"], {"backed", "memory"})
+            # Whichever path is taken, the ingested content must be identical.
+            self.assertEqual(len(backed.records), len(memory.records))
+            self.assertEqual(backed.genes, memory.genes)
+            self.assertEqual(
+                [record.cell_id for record in backed.records],
+                [record.cell_id for record in memory.records],
+            )
+            self.assertEqual(
+                [record.cell_type for record in backed.records],
+                [record.cell_type for record in memory.records],
+            )
+            for left, right in zip(backed.records, memory.records):
+                self.assertEqual(left.genes, right.genes)
+
+    def test_spatial_h5ad_still_requires_coordinates(self):
+        try:
+            import anndata as ad  # type: ignore
+            import numpy as np  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            self.skipTest("anndata required")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nospatial.h5ad"
+            adata = ad.AnnData(
+                X=np.array([[1.0, 2.0], [3.0, 4.0]]),
+                obs=pd.DataFrame({"cell_type": ["A", "B"]}),
+                var=pd.DataFrame(index=["G1", "G2"]),
+            )
+            adata.write_h5ad(path)
+            with self.assertRaises(Exception):
+                DataIngestionLayer().load_h5ad(str(path), require_spatial=True)
+
+
+class ReferenceAssistTests(unittest.TestCase):
+    def test_tabular_reference_is_accepted_without_a_xenium_folder(self):
+        from spatialmind.review.glioblastoma import _load_reference_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reference = Path(tmp) / "brain_reference.csv"
+            reference.write_text(
+                "sample_id,x,y,cell_type,CD8A,EPCAM,PTPRC\n"
+                "R1,0,0,T cell,5,0,4\n"
+                "R1,1,0,Tumor cell,0,6,0\n"
+                "R1,2,0,T cell,4,0,3\n",
+                encoding="utf-8",
+            )
+            dataset, ready, status, blockers, fmt = _load_reference_dataset(str(reference), max_records=10)
+            self.assertIsNotNone(dataset)
+            self.assertEqual(fmt, "table")
+            self.assertTrue(ready, blockers)
+            self.assertEqual(status, "reference_labels_available")
+
+    def test_single_class_reference_is_blocked(self):
+        from spatialmind.review.glioblastoma import _load_reference_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reference = Path(tmp) / "thin_reference.csv"
+            reference.write_text(
+                "sample_id,x,y,cell_type,CD8A\nR1,0,0,T cell,5\nR1,1,0,T cell,4\n",
+                encoding="utf-8",
+            )
+            dataset, ready, status, blockers, _fmt = _load_reference_dataset(str(reference), max_records=10)
+            self.assertIsNotNone(dataset)
+            self.assertFalse(ready)
+            self.assertEqual(status, "blocked_missing_reference_labels")
+            self.assertTrue(any("cell-type classes" in item for item in blockers))
+
+    def test_unreadable_reference_reports_blocker_instead_of_raising(self):
+        from spatialmind.review.glioblastoma import _load_reference_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent_reference.h5ad"
+            dataset, ready, status, blockers, fmt = _load_reference_dataset(str(missing), max_records=10)
+            self.assertIsNone(dataset)
+            self.assertFalse(ready)
+            self.assertEqual(fmt, "anndata")
+            self.assertEqual(status, "blocked_unreadable_reference")
+            self.assertTrue(blockers)
+
+
 class EvalHarnessTests(unittest.TestCase):
     def test_eval_runner_loads_cases_and_scores(self):
         runner = EvalRunner(SpatialAgent())
@@ -1211,3 +1853,32 @@ class GovernanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarkerRuleTighteningTests(unittest.TestCase):
+    def test_trace_and_ambiguous_evidence_no_longer_names_a_class(self):
+        from spatialmind.ingestion.pipeline import _infer_marker_cell_type
+
+        # PTPRC is pan-leukocyte and must not call a T/NK cell by itself.
+        self.assertIsNone(_infer_marker_cell_type({"PTPRC": 2.34}))
+        # Two equally specific markers from different lineages stay unresolved.
+        self.assertIsNone(_infer_marker_cell_type({"AQP4": 2.5, "CD3D": 2.5}))
+        # A shared marker must not outweigh a specific one: AQP4 beats CD4, which
+        # is downweighted because myeloid cells express it too.
+        self.assertEqual(_infer_marker_cell_type({"AQP4": 2.14, "CD4": 2.14}), "Neural/Glial cell")
+        # Trace evidence below the floor.
+        self.assertIsNone(_infer_marker_cell_type({"CD68": 0.3}))
+        self.assertIsNone(_infer_marker_cell_type({}))
+
+    def test_clear_evidence_still_resolves(self):
+        from spatialmind.ingestion.pipeline import _infer_marker_cell_type
+
+        self.assertEqual(
+            _infer_marker_cell_type({"CD3D": 4.0, "CD3E": 3.0, "CD8A": 3.0}), "T/NK cell"
+        )
+        self.assertEqual(
+            _infer_marker_cell_type({"AQP4": 5.0, "GFAP": 4.0, "PLP1": 3.0}), "Neural/Glial cell"
+        )
+        self.assertEqual(
+            _infer_marker_cell_type({"PECAM1": 4.0, "CLDN5": 4.0, "FLT1": 3.0}), "Endothelial cell"
+        )

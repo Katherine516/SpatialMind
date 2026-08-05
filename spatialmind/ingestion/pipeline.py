@@ -251,30 +251,73 @@ class DataIngestionLayer:
         annotation_key: Optional[str] = None,
         max_records: int = 5000,
         max_features_per_record: int = 200,
+        require_spatial: bool = True,
+        backed: bool = True,
     ) -> SpatialDataset:
         try:
             import anndata as ad  # type: ignore
         except ImportError as exc:
             raise unsupported_format_error("h5ad_anndata", path) from exc
 
-        adata = ad.read_h5ad(path)
+        # Backed mode keeps the expression matrix on disk and reads only the
+        # sampled rows. Reference atlases run to several GB, and loading the whole
+        # matrix just to sample a few thousand cells dominates ingestion time.
+        adata, read_mode = _open_h5ad(ad, path, backed=backed)
+        try:
+            return self._build_h5ad_dataset(
+                adata=adata,
+                path=path,
+                read_mode=read_mode,
+                sample_id=sample_id,
+                annotation_key=annotation_key,
+                max_records=max_records,
+                max_features_per_record=max_features_per_record,
+                require_spatial=require_spatial,
+            )
+        finally:
+            if read_mode == "backed":
+                try:
+                    adata.file.close()
+                except Exception:
+                    pass
+
+    def _build_h5ad_dataset(
+        self,
+        adata: Any,
+        path: str,
+        read_mode: str,
+        sample_id: Optional[str],
+        annotation_key: Optional[str],
+        max_records: int,
+        max_features_per_record: int,
+        require_spatial: bool,
+    ) -> SpatialDataset:
         if adata.n_obs == 0:
             raise IngestionValidationError("H5AD contains no observations: %s" % path)
 
         coords = _extract_obsm_coordinates(adata)
         if coords is None:
-            raise IngestionValidationError(
-                "H5AD must contain spatial coordinates in one of obsm keys: %s" % ", ".join(COMMON_SPATIAL_KEYS)
-            )
+            if require_spatial:
+                raise IngestionValidationError(
+                    "H5AD must contain spatial coordinates in one of obsm keys: %s" % ", ".join(COMMON_SPATIAL_KEYS)
+                )
+            # Dissociated scRNA references have no spatial coordinates. They are
+            # still valid label-transfer references, so fall back to index
+            # placeholders rather than rejecting the file.
+            coords = [(float(index), 0.0) for index in range(int(adata.n_obs))]
 
         annotation = annotation_key or _choose_annotation_key(adata.obs.keys())
-        var_names = [str(name).upper() for name in list(adata.var_names)]
+        # Prefer readable gene symbols over Ensembl IDs so references align with
+        # symbol-based panels such as Xenium.
+        var_names = _h5ad_feature_names(adata)
         selected_indices = _sample_indices(int(adata.n_obs), max_records)
         records: List[SpotRecord] = []
         inferred_sample = sample_id or _infer_sample_id_from_obs(adata.obs, selected_indices) or Path(path).stem
-        for index in selected_indices:
+        # One batched read beats thousands of single-row reads, especially backed.
+        batch = _fetch_h5ad_rows(adata, selected_indices)
+        for position, index in enumerate(selected_indices):
             coord = coords[index]
-            row = adata.X[index]
+            row = adata.X[index] if batch is None else batch[position]
             features = _matrix_row_to_features(row, var_names, max_features_per_record=max_features_per_record)
             cell_type = "Unannotated"
             if annotation:
@@ -319,6 +362,8 @@ class DataIngestionLayer:
                 "n_vars_total": int(adata.n_vars),
                 "annotation_key": annotation,
                 "annotation_strategy": "obs_column" if annotation else "marker_rule_v0",
+                "organism": _h5ad_organism(adata),
+                "h5ad_read_mode": read_mode,
                 "max_records": max_records,
                 "max_features_per_record": max_features_per_record,
             },
@@ -918,6 +963,77 @@ def _obs_value(obs: Any, index: int, key: str) -> Optional[str]:
     return None if value.lower() == "nan" else value
 
 
+def _open_h5ad(ad: Any, path: str, backed: bool = True) -> Tuple[Any, str]:
+    """Open an h5ad, preferring backed mode. Returns (adata, "backed"|"memory").
+
+    Backed mode is not universally supported (dense X, older anndata, some
+    encodings), so any failure falls back to a normal in-memory read rather than
+    breaking ingestion.
+    """
+    if backed:
+        try:
+            adata = ad.read_h5ad(path, backed="r")
+            if adata.X is not None:
+                return adata, "backed"
+            try:
+                adata.file.close()
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return ad.read_h5ad(path), "memory"
+
+
+def _fetch_h5ad_rows(adata: Any, indices: List[int]) -> Optional[Any]:
+    """Read the selected rows in one pass, or None if batching is unsupported.
+
+    Indices are already sorted ascending by _sample_indices, which is the access
+    pattern backed CSR storage handles best.
+    """
+    if not indices:
+        return None
+    try:
+        batch = adata.X[list(indices)]
+    except Exception:
+        return None
+    try:
+        if batch.shape[0] != len(indices):
+            return None
+    except Exception:
+        return None
+    return batch
+
+
+def _h5ad_feature_names(adata: Any) -> List[str]:
+    """Gene symbols where available, else var_names.
+
+    CELLxGENE h5ad files index var by Ensembl ID and keep symbols in
+    ``var['feature_name']``. Symbol-based panels such as Xenium cannot align to
+    Ensembl IDs, so prefer the symbol column when it is present and complete.
+    """
+    for column in ("feature_name", "gene_symbols", "gene_symbol", "symbol"):
+        if column in getattr(adata, "var", {}):
+            try:
+                values = [str(value) for value in adata.var[column]]
+            except Exception:
+                continue
+            if len(values) == int(adata.n_vars) and any(value and value.lower() != "nan" for value in values):
+                return [value.upper() for value in values]
+    return [str(name).upper() for name in list(adata.var_names)]
+
+
+def _h5ad_organism(adata: Any) -> str:
+    """Organism string from uns, used to block cross-species label transfer."""
+    uns = getattr(adata, "uns", {}) or {}
+    for key in ("organism", "organism_ontology_term_id"):
+        value = uns.get(key)
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "ignore")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _matrix_row_to_features(row: Any, gene_names: List[str], max_features_per_record: int) -> Dict[str, float]:
     if hasattr(row, "toarray"):
         values = row.toarray()[0]
@@ -1042,25 +1158,57 @@ def _feature_slice_to_values(
     return {gene: value for gene, value in pairs}
 
 
-def _infer_marker_cell_type(features: Dict[str, float]) -> Optional[str]:
-    marker_sets = {
-        "T/NK cell": ("PTPRC", "CD3D", "CD3E", "CD8A", "CD4", "NKG7", "GNLY"),
-        "B cell": ("MS4A1", "CD79A", "CD79B", "CD19", "MZB1"),
-        "Myeloid cell": ("LYZ", "CD68", "LST1", "C1QA", "FCGR3A"),
-        "Endothelial cell": ("PECAM1", "VWF", "KDR", "RAMP2"),
-        "Fibroblast/Stromal cell": ("COL1A1", "COL1A2", "DCN", "LUM", "ACTA2"),
-        "Epithelial/Tumor-like cell": ("EPCAM", "KRT8", "KRT18", "KRT19", "MKI67"),
-        "Neural/Glial cell": ("GFAP", "AQP4", "MBP", "SNAP25", "RBFOX3"),
-    }
+MARKER_RULE_SETS = {
+    "T/NK cell": ("CD3D", "CD3E", "CD8A", "NKG7", "GNLY", "PTPRC", "CD4"),
+    "B cell": ("MS4A1", "CD79A", "CD79B", "CD19", "MZB1"),
+    "Myeloid cell": ("LYZ", "CD68", "LST1", "C1QA", "FCGR3A", "AIF1", "P2RY12"),
+    "Endothelial cell": ("PECAM1", "VWF", "KDR", "RAMP2", "CLDN5", "FLT1"),
+    "Fibroblast/Stromal cell": ("COL1A1", "COL1A2", "DCN", "LUM", "ACTA2", "PDGFRB"),
+    "Epithelial/Tumor-like cell": ("EPCAM", "KRT8", "KRT18", "KRT19", "MKI67"),
+    "Neural/Glial cell": ("GFAP", "AQP4", "MBP", "SNAP25", "RBFOX3", "PLP1", "MOG", "SLC1A3"),
+}
+# Markers that are shared across lineages carry less weight on their own. PTPRC
+# is pan-leukocyte and CD4 is expressed by myeloid cells too, so neither should
+# be able to call a T/NK cell by itself.
+MARKER_RULE_WEIGHTS = {"PTPRC": 0.4, "CD4": 0.4, "ACTA2": 0.6, "MKI67": 0.5}
+MARKER_RULE_MIN_SCORE = 2.0
+MARKER_RULE_DOMINANCE = 1.5
+
+
+def _infer_marker_cell_type(
+    features: Dict[str, float],
+    min_score: float = MARKER_RULE_MIN_SCORE,
+    dominance: float = MARKER_RULE_DOMINANCE,
+) -> Optional[str]:
+    """Weak marker-rule label, or None when the evidence does not clearly favour one class.
+
+    Returning None (leaving the cell unannotated) is preferable to naming a class
+    on trace or ambiguous evidence: these labels seed the review packets a
+    reviewer sees first, and a confident-looking wrong label anchors them. The
+    previous rule took the top nonzero score with no floor and no margin, which
+    called cells T/NK on PTPRC alone.
+    """
     scores = []
-    for label, markers in marker_sets.items():
-        score = sum(float(features.get(marker, 0.0)) for marker in markers)
+    for label, markers in MARKER_RULE_SETS.items():
+        score = 0.0
+        for marker in markers:
+            try:
+                value = max(float(features.get(marker, 0.0)), 0.0)
+            except (TypeError, ValueError):
+                continue
+            score += value * MARKER_RULE_WEIGHTS.get(marker, 1.0)
         if score > 0:
             scores.append((score, label))
     if not scores:
         return None
     scores.sort(reverse=True)
-    return scores[0][1]
+    best_score, best_label = scores[0]
+    if best_score < min_score:
+        return None
+    runner_up = scores[1][0] if len(scores) > 1 else 0.0
+    if runner_up > 0 and best_score < runner_up * dominance:
+        return None
+    return best_label
 
 
 def _decode_h5_value(value: Any) -> str:

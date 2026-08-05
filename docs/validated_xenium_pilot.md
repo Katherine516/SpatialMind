@@ -100,6 +100,32 @@ The single-dataset pilot currently writes:
 - `run_record_path`: hashed local provenance for the preparation run
 - `review_figures`: QA visualizations generated from current loader labels only
 - `spatial_robustness`: an actual Squidpy graph-size sweep on validated runs. Markdown, HTML, and PDF reports show the sweep settings and score immediately after claim reliability.
+- `spatial_relationships`: a validated-only synthesis of permutation adjacency, graph-size sensitivity, nearest-cell distance, and reviewed-region co-occupancy.
+
+## Spatial Relationship Evidence
+
+The report does not collapse spatial organization into one interaction score. For each leading enriched and depleted cell-type pair it records:
+
+- Squidpy neighborhood-enrichment z-score from a fixed, seeded nearest-neighbor graph;
+- pair-level direction agreement and top-K presence across the graph-size sweep;
+- the minimum cell count supporting the pair;
+- median bidirectional nearest-cell distance in the dataset coordinate units;
+- overlap of the two cell types across user-reviewed tissue regions;
+- an evidence status and restricted interpretation sentence.
+
+`stable_enriched` or `stable_depleted` requires `|z| >= 2`, at least 20 cells in each class, global robustness score `>= 0.6`, pair sign agreement `>= 0.8` across at least two settings, and top-K presence `>= 0.5`. These are transparent reporting thresholds, not a universal biological significance standard. Results below those criteria remain sensitivity-limited or indeterminate. Spatial adjacency is never described as proof of signaling, physical contact, mechanism, or causation.
+
+### Region-Stratified Testing
+
+For each reviewed ROI, the pilot filters cell types below the minimum support threshold and reruns an independent seeded Squidpy neighborhood permutation test. The default requirements are 50 total cells per region and 20 cells per included cell type. Cross-region consistency requires at least two regional effects with `|z| >= 2` and at least 80% directional agreement; weaker same-sign scores cannot earn a consistency label. Results record tested and skipped regions, tested versus supported regions per pair, within-region z-scores, direction agreement, the strongest region, and whether an effect is consistent, heterogeneous, region-specific, or weak/indeterminate. These z-score categories are transparent effect thresholds, not multiplicity-adjusted significance calls.
+
+This controls interpretation of a common confound: a global adjacency pattern may be caused by both cell types occupying the same tissue compartment. Region-specific z-scores are not treated as directly comparable when region size, density, or composition differs, and they are not generalized beyond the section without biological replicates.
+
+### Distance-Dependent Co-Occurrence
+
+The pilot uses `squidpy.gr.co_occurrence` to calculate conditional cell-type co-occurrence ratios over 20 distance thresholds for pairs with at least 20 cells per type. The default maximum distance is derived reproducibly from nearest-cell spacing and tissue extent, and the exact range, coordinate units, support counts, and skipped pairs are written to the evidence JSON. Curves are summarized by peak ratio and distance plus short- and long-range means.
+
+A ratio above one means greater conditional co-occurrence than expected from marginal cell-type frequency at that distance threshold. It is descriptive scale evidence, not a permutation significance test and not evidence of signaling or causation. Cross-dataset comparison requires harmonized coordinate units, segmentation, sampling density, and field of view.
 
 ## Required Inputs To Become Validated-Ready
 

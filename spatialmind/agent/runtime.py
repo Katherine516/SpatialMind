@@ -89,7 +89,16 @@ def build_xenium_mvp_plan(include_marker_detection: bool = True) -> List[ToolCal
     steps.extend(
         [
             ToolCallSpec("region_summary", {"top_n_features": 10}, requires=["annotation", "user_regions"]),
-            ToolCallSpec("cell_neighborhood_enrichment", {"radius": 35.0}, requires=["annotation", "spatial_coords"]),
+            ToolCallSpec(
+                "cell_neighborhood_enrichment",
+                {
+                    "n_neighs": 6,
+                    "n_perms": 250,
+                    "random_state": 0,
+                    "include_all_pairs": True,
+                },
+                requires=["annotation", "spatial_coords"],
+            ),
         ]
     )
     return steps

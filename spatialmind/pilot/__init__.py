@@ -1,4 +1,5 @@
 from .claims import build_pilot_claim_ledger, build_pilot_claim_reliability, claim_ledger_summary
+from .spatial_relationships import build_spatial_relationship_summary
 from .xenium import DEFAULT_DATASET, DEFAULT_OUTPUT, pilot_gate, run_pilot, scan_pilot_readiness
 
 __all__ = [
@@ -6,6 +7,7 @@ __all__ = [
     "DEFAULT_OUTPUT",
     "build_pilot_claim_ledger",
     "build_pilot_claim_reliability",
+    "build_spatial_relationship_summary",
     "claim_ledger_summary",
     "pilot_gate",
     "run_pilot",

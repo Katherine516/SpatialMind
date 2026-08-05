@@ -48,7 +48,7 @@ def build_pilot_claim_ledger(payload: Dict[str, Any], results: List[ToolResult])
             confidence="medium",
         ),
         BiologicalClaim(
-            claim_text="Cell-type neighborhood enrichment can support cell-level spatial co-localization claims when adjusted statistics are present.",
+            claim_text="Cell-type neighborhood enrichment can support cell-level spatial adjacency claims when permutation z-scores and graph-sensitivity evidence are present.",
             claim_type="spatial_colocalization",
             evidence_refs=["neighborhood_test", "zscore", "cell_labels"],
             resolution="subcellular",

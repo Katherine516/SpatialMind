@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from spatialmind.ingestion.labels import load_xenium_analysis_clusters
 from spatialmind.schemas import SpatialDataset
+from spatialmind.viz.morphology import load_cell_boundaries, load_morphology_thumbnail
 from spatialmind.viz.renderers import PALETTE
 
 
@@ -19,15 +20,28 @@ class XeniumExplorerLiteViewer:
         output_dir: str,
         dataset_path: Optional[str] = None,
         filename: str = "explorer_lite_viewer.html",
+        include_morphology: bool = True,
+        include_boundaries: bool = True,
     ) -> str:
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, filename)
-        payload = self._payload(dataset, dataset_path)
+        payload = self._payload(
+            dataset,
+            dataset_path,
+            include_morphology=include_morphology,
+            include_boundaries=include_boundaries,
+        )
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(_html_document(payload))
         return path
 
-    def _payload(self, dataset: SpatialDataset, dataset_path: Optional[str]) -> Dict[str, Any]:
+    def _payload(
+        self,
+        dataset: SpatialDataset,
+        dataset_path: Optional[str],
+        include_morphology: bool = True,
+        include_boundaries: bool = True,
+    ) -> Dict[str, Any]:
         bounds = dataset.bounds()
         clusters = load_xenium_analysis_clusters(dataset_path) if dataset_path else {}
         labels = sorted({record.cell_type for record in dataset.records if record.cell_type})
@@ -59,9 +73,21 @@ class XeniumExplorerLiteViewer:
                     "top_features": _top_features(record.genes),
                 }
             )
+        morphology: Dict[str, Any] = {"status": "not_requested"}
+        boundaries: Dict[str, Any] = {"status": "not_requested", "polygons": {}}
+        if dataset_path:
+            if include_morphology:
+                morphology = load_morphology_thumbnail(dataset_path)
+            if include_boundaries:
+                boundaries = load_cell_boundaries(
+                    dataset_path,
+                    cell_ids=[item["cell_id"] for item in records],
+                )
         return {
             "sample_id": dataset.sample_id,
             "dataset_path": dataset_path or dataset.source_path,
+            "morphology": morphology,
+            "boundaries": boundaries,
             "source_path": dataset.source_path,
             "coordinate_system": dataset.coordinate_system,
             "records": records,
@@ -209,6 +235,18 @@ def _html_document(payload: Dict[str, Any]) -> str:
           <label for="cellSearch">Cell ID</label>
           <input id="cellSearch" placeholder="Search">
         </div>
+        <div class="field">
+          <label for="showMorphology">Morphology</label>
+          <input type="checkbox" id="showMorphology">
+        </div>
+        <div class="field">
+          <label for="showBoundaries">Segmentation</label>
+          <input type="checkbox" id="showBoundaries">
+        </div>
+        <div class="field">
+          <label for="imageOpacity">Image opacity</label>
+          <input type="range" id="imageOpacity" min="0" max="100" value="70">
+        </div>
         <button id="clearSelection">Clear</button>
       </div>
       <div class="plot-shell">
@@ -286,7 +324,10 @@ def _html_document(payload: Dict[str, Any]) -> str:
       labelEdits: new Map(),
       lastCell: null,
       dragStart: null,
-      dragRect: null
+      dragRect: null,
+      showMorphology: (DATA.morphology || {}).status === 'loaded',
+      showBoundaries: false,
+      imageOpacity: 0.7
     };
     const el = {
       subtitle: document.getElementById('subtitle'),
@@ -296,6 +337,9 @@ def _html_document(payload: Dict[str, Any]) -> str:
       labelFilter: document.getElementById('labelFilter'),
       clusterFilter: document.getElementById('clusterFilter'),
       cellSearch: document.getElementById('cellSearch'),
+      showMorphology: document.getElementById('showMorphology'),
+      showBoundaries: document.getElementById('showBoundaries'),
+      imageOpacity: document.getElementById('imageOpacity'),
       clearSelection: document.getElementById('clearSelection'),
       visibleStatus: document.getElementById('visibleStatus'),
       selectionStatus: document.getElementById('selectionStatus'),
@@ -348,6 +392,15 @@ def _html_document(payload: Dict[str, Any]) -> str:
       el.labelFilter.addEventListener('change', () => { state.labelFilter = el.labelFilter.value; render(); });
       el.clusterFilter.addEventListener('change', () => { state.clusterFilter = el.clusterFilter.value; render(); });
       el.cellSearch.addEventListener('input', searchCell);
+      el.showMorphology.checked = state.showMorphology;
+      el.showMorphology.disabled = (DATA.morphology || {}).status !== 'loaded';
+      el.showBoundaries.disabled = (DATA.boundaries || {}).status !== 'loaded';
+      el.showMorphology.addEventListener('change', () => { state.showMorphology = el.showMorphology.checked; render(); });
+      el.showBoundaries.addEventListener('change', () => { state.showBoundaries = el.showBoundaries.checked; render(); });
+      el.imageOpacity.addEventListener('input', () => {
+        state.imageOpacity = Number(el.imageOpacity.value) / 100;
+        render();
+      });
       el.clearSelection.addEventListener('click', () => { state.selected.clear(); render(); });
       el.applyRegion.addEventListener('click', applyRegion);
       el.applyLabel.addEventListener('click', applyLabel);
@@ -381,7 +434,9 @@ def _html_document(payload: Dict[str, Any]) -> str:
       background.setAttribute('height', box.height);
       background.setAttribute('fill', '#fbfbf7');
       el.plot.appendChild(background);
+      drawMorphology(box);
       const colorMap = buildColorMap(records);
+      drawBoundaries(records, box, colorMap);
       records.forEach(record => {
         const p = project(record, box);
         const circle = document.createElementNS(NS, 'circle');
@@ -417,12 +472,66 @@ def _html_document(payload: Dict[str, Any]) -> str:
     }
 
     function project(record, box) {
+      return projectXY(record.x, record.y, box);
+    }
+
+    function projectXY(x, y, box) {
       const spanX = Math.max(DATA.bounds.max_x - DATA.bounds.min_x, 1);
       const spanY = Math.max(DATA.bounds.max_y - DATA.bounds.min_y, 1);
       return {
-        x: ((record.x - DATA.bounds.min_x) / spanX) * box.width,
-        y: box.height - ((record.y - DATA.bounds.min_y) / spanY) * box.height
+        x: ((x - DATA.bounds.min_x) / spanX) * box.width,
+        y: box.height - ((y - DATA.bounds.min_y) / spanY) * box.height
       };
+    }
+
+    // Xenium micron-Y maps directly to morphology image rows (y increases downward),
+    // but this plot draws Y upward, so the image is mirrored back about its own centre
+    // to stay registered with the cell centroids.
+    function drawMorphology(box) {
+      const morphology = DATA.morphology || {};
+      if (!state.showMorphology || morphology.status !== 'loaded') return;
+      const topLeft = projectXY(0, 0, box);
+      const bottomRight = projectXY(morphology.width_um, morphology.height_um, box);
+      const left = Math.min(topLeft.x, bottomRight.x);
+      const right = Math.max(topLeft.x, bottomRight.x);
+      const top = Math.min(topLeft.y, bottomRight.y);
+      const bottom = Math.max(topLeft.y, bottomRight.y);
+      const image = document.createElementNS(NS, 'image');
+      image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', morphology.data_uri);
+      image.setAttribute('href', morphology.data_uri);
+      image.setAttribute('x', left.toFixed(2));
+      image.setAttribute('y', top.toFixed(2));
+      image.setAttribute('width', Math.max(right - left, 1).toFixed(2));
+      image.setAttribute('height', Math.max(bottom - top, 1).toFixed(2));
+      image.setAttribute('preserveAspectRatio', 'none');
+      image.setAttribute('opacity', state.imageOpacity.toFixed(2));
+      image.setAttribute('transform', `translate(0, ${(top + bottom).toFixed(2)}) scale(1, -1)`);
+      el.plot.appendChild(image);
+    }
+
+    function drawBoundaries(records, box, colorMap) {
+      const boundaries = DATA.boundaries || {};
+      if (!state.showBoundaries || boundaries.status !== 'loaded') return;
+      const polygons = boundaries.polygons || {};
+      records.forEach(record => {
+        const vertices = polygons[record.cell_id];
+        if (!vertices || vertices.length < 3) return;
+        const points = vertices
+          .map(vertex => {
+            const p = projectXY(vertex[0], vertex[1], box);
+            return `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+          })
+          .join(' ');
+        const polygon = document.createElementNS(NS, 'polygon');
+        polygon.setAttribute('points', points);
+        polygon.dataset.cellId = record.cell_id;
+        polygon.setAttribute('fill', 'none');
+        polygon.setAttribute('stroke', colorMap.get(colorValue(record)) || '#9aa6b2');
+        polygon.setAttribute('stroke-width', state.selected.has(record.cell_id) ? '1.6' : '0.8');
+        polygon.setAttribute('stroke-opacity', state.selected.has(record.cell_id) ? '1' : '0.75');
+        polygon.setAttribute('pointer-events', 'none');
+        el.plot.appendChild(polygon);
+      });
     }
 
     function unproject(point, box) {

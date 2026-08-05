@@ -13,6 +13,11 @@ The base path remains dependency-light for fast testing, while the core workstat
 
 ## Architecture
 
+**New here? Read [docs/agent_architecture.md](docs/agent_architecture.md)** — the single end-to-end
+explanation of how the agent works: every stage from the `.xenium` bundle through the gate, the six
+MVP tools, robustness, claim reliability, and the Explorer-lite viewer. The rest of this README is a
+command reference.
+
 ```mermaid
 flowchart TB
     WetLab["Wet-lab output\nXenium folders, H5AD, CSV/manifest,\ncell tables, feature matrices, morphology metadata,\nboundaries, panel metadata"]
@@ -237,14 +242,23 @@ Supported now:
 - report-ready provenance showing the `.xenium` file used as input,
 - Explorer-lite local HTML viewer for filtering, selecting cells, inspecting cell details, assigning draft ROI/labels, and exporting `cell_regions.csv` / `expert_cell_labels.csv`.
 
+The viewer now renders the real tissue context in pure Python, with no external viewer:
+
+- **Morphology image layer.** `spatialmind/viz/morphology.py` reads the OME-TIFF pyramid with `tifffile`, picks the smallest pyramid level that still meets the requested detail, applies a percentile contrast stretch, and embeds the result as a base64 PNG. Nothing decodes the full-resolution plane, so a ~450 MB image costs a few seconds.
+- **Segmentation boundary layer.** Per-cell polygons are read from `cell_boundaries.parquet` for exactly the loaded cells and drawn over the image.
+- **Registration.** Xenium centroids are microns and the image is pixels, related by `pixel = micron / pixel_size` from `experiment.xenium`. Micron-Y maps directly to image rows, so the overlay is mirrored back to match the plot's Y-up axis. Verified against local data: every sampled cell centroid falls inside its own segmentation polygon.
+- Toggles for morphology, segmentation, and image opacity sit in the viewer toolbar.
+
+Every layer degrades to an explicit `status` payload when the asset or optional dependency is missing, so dependency-light environments still get the cell map.
+
 Still not a full Xenium Explorer replacement:
 
-- no full GUI image pyramid viewer,
-- no segmentation-boundary-aware image overlay editing,
+- no tiled/deep-zoom pyramid navigation (a single downsampled level is embedded),
+- no transcript-level point rendering,
 - no persistent browser-side label database,
 - no full zarr-backed image/cell browser.
 
-Recommended workflow: use the Explorer-lite viewer for fast cell-level review preparation and CSV export. Use Xenium Explorer, QuPath, or napari when morphology image context, segmentation boundaries, or pathology-grade ROI drawing are required, then let SpatialMind ingest the resulting label/region CSVs and generate the validated report.
+Recommended workflow: use the Explorer-lite viewer for fast cell-level review preparation and CSV export. Use Xenium Explorer, QuPath, or napari when deep-zoom morphology navigation, transcript-level inspection, or pathology-grade ROI drawing are required, then let SpatialMind ingest the resulting label/region CSVs and generate the validated report.
 
 Build the viewer directly:
 
@@ -406,6 +420,15 @@ The v11 pilot promotion adds the real-agent control layer around this workflow:
 - review-only visualization gallery for blocked runs,
 - local run record with hashes for inputs, reports, templates, and figures.
 - validated-run reports expose the spatial-robustness sweep next to claim reliability, including neighborhood sizes, permutations, seed, top-K, engine, sign agreement, top-K Jaccard, and the resulting R score.
+- validated-run reports include a Spatial Relationships section and heatmap that combine permutation neighborhood enrichment, pair-level graph-size stability, bidirectional nearest-cell distance, and reviewed-region overlap.
+
+Spatial relationship wording is intentionally conservative. `stable_enriched` and `stable_depleted` mean that a cell-type pair has more or fewer graph adjacencies than expected after label permutation and remains directionally stable across tested graph sizes. These labels do not mean physical contact, ligand-receptor signaling, mechanism, or causation. Effects that do not pass the effect-size, minimum-cell-count, and sensitivity criteria are reported as `*_sensitivity_limited` or `weak_or_indeterminate`.
+
+Validated runs also separate tissue-compartment effects from distance-scale effects:
+
+- **Region-stratified neighborhood testing** reruns seeded Squidpy permutations independently inside each reviewed ROI. A region must contain at least 50 cells and at least two cell types with 20 cells each; smaller regions are listed as skipped rather than pooled silently. Cross-region consistency requires at least two supported regional effects with `|z| >= 2` and at least 80% directional agreement.
+- **Distance-dependent co-occurrence** reports Squidpy conditional co-occurrence ratios across 20 automatically scaled distance thresholds for leading pairs supported by at least 20 cells per type. These curves are descriptive and do not carry permutation p-values.
+- The report includes `region_stratified_neighborhoods.png`, `distance_dependent_cooccurrence.png`, and matching JSON evidence files when the validated gate passes.
 
 Before rerunning the validated pilot with new reviewer files, validate label intake:
 

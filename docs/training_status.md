@@ -23,7 +23,7 @@ Current gates:
 
 | Gate | Result |
 | --- | --- |
-| Unit tests | 61/61 passing in the full environment |
+| Unit tests | 81/81 passing in the full environment |
 | Legacy eval | 15/15 passing, mean score 1.0000 |
 | MVP eval | 10/10 passing, mean score 1.0000 |
 | Full environment `pip check` | Passing |

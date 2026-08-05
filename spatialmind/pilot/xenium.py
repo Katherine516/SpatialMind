@@ -20,10 +20,15 @@ from spatialmind.ingestion import (
     write_region_label_template,
 )
 from spatialmind.pilot.claims import build_pilot_claim_ledger, build_pilot_claim_reliability, claim_ledger_summary
+from spatialmind.pilot.spatial_relationships import build_spatial_relationship_summary
 from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
-from spatialmind.tools.implementations import run_neighborhood_robustness
+from spatialmind.tools.implementations import (
+    run_distance_dependent_cooccurrence,
+    run_neighborhood_robustness,
+    run_region_stratified_neighborhoods,
+)
 from spatialmind.viz import (
     PdfFigure,
     PdfSection,
@@ -125,7 +130,69 @@ def run_pilot(
         for result in results:
             _write_json(output_dir / ("%s.json" % result.tool_name), result)
         figures.extend(_write_figures(dataset, output_dir))
-        spatial_robustness = run_neighborhood_robustness(dataset)
+        neighborhood_result = next(
+            (result for result in results if result.tool_name == "cell_neighborhood_enrichment"),
+            None,
+        )
+        spatial_robustness = run_neighborhood_robustness(dataset, baseline_result=neighborhood_result)
+
+    if readiness_only:
+        spatial_relationships = {
+            "status": "not_run",
+            "reason": "Readiness-only mode skips spatial analysis.",
+            "relationships": [],
+            "warnings": [],
+        }
+    else:
+        spatial_relationships = build_spatial_relationship_summary(
+            dataset=dataset,
+            results=results,
+            robustness=spatial_robustness,
+            validated=gate["status"] == "validated_ready",
+        )
+        relationship_figure = _render_spatial_relationship_heatmap(
+            spatial_relationships,
+            output_dir / "spatial_relationships_heatmap.png",
+        )
+        if relationship_figure:
+            spatial_relationships["figure"] = relationship_figure
+            figures.append(relationship_figure)
+
+    region_stratified_neighborhoods: Dict[str, Any] = {
+        "status": "not_run",
+        "reason": "Region-stratified testing runs only for validated pilots.",
+        "regions": [],
+        "pair_consistency": [],
+    }
+    distance_cooccurrence: Dict[str, Any] = {
+        "status": "not_run",
+        "reason": "Distance-dependent co-occurrence runs only for validated pilots.",
+        "curves": [],
+    }
+    if gate["status"] == "validated_ready" and not readiness_only:
+        region_stratified_neighborhoods = run_region_stratified_neighborhoods(dataset)
+        relationship_pairs = [
+            str(item.get("pair"))
+            for item in spatial_relationships.get("relationships", [])
+            if isinstance(item, dict) and item.get("pair")
+        ]
+        distance_cooccurrence = run_distance_dependent_cooccurrence(dataset, pairs=relationship_pairs)
+        region_figure = _render_region_stratified_heatmap(
+            region_stratified_neighborhoods,
+            output_dir / "region_stratified_neighborhoods.png",
+        )
+        if region_figure:
+            region_stratified_neighborhoods["figure"] = region_figure
+            figures.append(region_figure)
+        cooccurrence_figure = _render_distance_cooccurrence_curves(
+            distance_cooccurrence,
+            output_dir / "distance_dependent_cooccurrence.png",
+        )
+        if cooccurrence_figure:
+            distance_cooccurrence["figure"] = cooccurrence_figure
+            figures.append(cooccurrence_figure)
+        _write_json(output_dir / "region_stratified_neighborhoods.json", region_stratified_neighborhoods)
+        _write_json(output_dir / "distance_dependent_cooccurrence.json", distance_cooccurrence)
 
     payload = {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -158,6 +225,9 @@ def run_pilot(
             "validated_figures": "Generated only after expert labels and user regions pass the pilot gate.",
         },
         "spatial_robustness": spatial_robustness,
+        "spatial_relationships": spatial_relationships,
+        "region_stratified_neighborhoods": region_stratified_neighborhoods,
+        "distance_cooccurrence": distance_cooccurrence,
         "report_md": "" if readiness_only else str(output_dir / "validated_xenium_pilot_report.md"),
         "report_html": "" if readiness_only else str(output_dir / "validated_xenium_pilot_report.html"),
         "report_pdf": str(output_dir / "validated_xenium_pilot_report.pdf")
@@ -194,6 +264,12 @@ def run_pilot(
     }
     if payload["report_pdf"]:
         report_artifacts["pdf_report"] = payload["report_pdf"]
+    region_json = output_dir / "region_stratified_neighborhoods.json"
+    cooccurrence_json = output_dir / "distance_dependent_cooccurrence.json"
+    if region_json.exists():
+        report_artifacts["region_stratified_neighborhoods"] = str(region_json)
+    if cooccurrence_json.exists():
+        report_artifacts["distance_dependent_cooccurrence"] = str(cooccurrence_json)
     run_record = StorageLayer(root=str(output_dir)).write_mvp_run_record(
         query="Validated Xenium pilot: annotate cells, summarize user regions, and test neighborhoods.",
         tool_trace=[{"tool_name": result.tool_name, "summary": result.summary, "metrics": result.metrics} for result in results],
@@ -331,6 +407,188 @@ def _write_figures(dataset: SpatialDataset, output_dir: Path) -> List[str]:
         viz.render_distribution_svg(dataset, str(output_dir), []),
         viz.render_distribution_interactive_html(dataset, str(output_dir), []),
     ]
+
+
+def _render_spatial_relationship_heatmap(summary: Dict[str, Any], path: Path) -> str:
+    relationships = summary.get("relationships") or []
+    if summary.get("status") != "computed" or not relationships:
+        return ""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:
+        return ""
+
+    labels = sorted(
+        {
+            str(value)
+            for row in relationships
+            for value in (row.get("left_cell_type"), row.get("right_cell_type"))
+            if value
+        }
+    )
+    if not labels:
+        return ""
+    index = {label: position for position, label in enumerate(labels)}
+    matrix = np.full((len(labels), len(labels)), np.nan, dtype=float)
+    for row in relationships:
+        left = str(row.get("left_cell_type") or "")
+        right = str(row.get("right_cell_type") or "")
+        if left not in index or right not in index:
+            continue
+        value = float(row.get("zscore") or 0.0)
+        matrix[index[left], index[right]] = value
+        matrix[index[right], index[left]] = value
+
+    finite = np.abs(matrix[np.isfinite(matrix)])
+    limit = max(2.0, float(np.max(finite)) if finite.size else 2.0)
+    side = min(12.0, max(6.5, 0.52 * len(labels) + 3.5))
+    fig, ax = plt.subplots(figsize=(side, side * 0.86), dpi=180)
+    image_artist = ax.imshow(matrix, cmap="coolwarm", vmin=-limit, vmax=limit, interpolation="nearest")
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=8)
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_title("Cell-Type Spatial Adjacency", fontsize=14, pad=14)
+    ax.set_xlabel("Permutation z-score: red = enriched adjacency, blue = depleted adjacency", fontsize=9)
+    if len(labels) <= 12:
+        for row_index in range(len(labels)):
+            for column_index in range(len(labels)):
+                value = matrix[row_index, column_index]
+                if np.isfinite(value):
+                    ax.text(
+                        column_index,
+                        row_index,
+                        "%.1f" % value,
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="white" if abs(value) > limit * 0.55 else "#17202a",
+                    )
+    colorbar = fig.colorbar(image_artist, ax=ax, fraction=0.045, pad=0.04)
+    colorbar.set_label("Neighborhood enrichment z-score", fontsize=9)
+    fig.text(
+        0.01,
+        0.01,
+        "Adjacency reflects the tested spatial graph and does not establish signaling, mechanism, or causation.",
+        fontsize=8,
+        color="#4b5563",
+    )
+    fig.tight_layout(rect=[0.02, 0.045, 1, 1])
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(path)
+
+
+def _render_region_stratified_heatmap(summary: Dict[str, Any], path: Path) -> str:
+    regions = summary.get("regions") or []
+    pair_rows = summary.get("pair_consistency") or []
+    if summary.get("status") != "computed" or not regions or not pair_rows:
+        return ""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:
+        return ""
+    region_names = [str(item.get("region")) for item in regions if item.get("region")]
+    pair_names = [str(item.get("pair")) for item in pair_rows[:10] if item.get("pair")]
+    if not region_names or not pair_names:
+        return ""
+    matrix = np.full((len(region_names), len(pair_names)), np.nan, dtype=float)
+    region_index = {name: index for index, name in enumerate(region_names)}
+    pair_index = {name: index for index, name in enumerate(pair_names)}
+    for item in pair_rows[:10]:
+        pair = str(item.get("pair") or "")
+        if pair not in pair_index:
+            continue
+        for value in item.get("by_region") or []:
+            region = str(value.get("region") or "")
+            if region in region_index and value.get("zscore") is not None:
+                matrix[region_index[region], pair_index[pair]] = float(value["zscore"])
+    finite = np.abs(matrix[np.isfinite(matrix)])
+    limit = max(2.0, float(np.max(finite)) if finite.size else 2.0)
+    width = min(14.0, max(8.0, 0.85 * len(pair_names) + 3.0))
+    height = min(10.0, max(4.8, 0.55 * len(region_names) + 2.8))
+    fig, ax = plt.subplots(figsize=(width, height), dpi=180)
+    artist = ax.imshow(matrix, cmap="coolwarm", vmin=-limit, vmax=limit, aspect="auto", interpolation="nearest")
+    ax.set_xticks(range(len(pair_names)))
+    ax.set_yticks(range(len(region_names)))
+    ax.set_xticklabels([name.replace(" | ", " / ") for name in pair_names], rotation=55, ha="right", fontsize=8)
+    ax.set_yticklabels(region_names, fontsize=8)
+    ax.set_title("Region-Stratified Cell-Type Adjacency", fontsize=14, pad=12)
+    ax.set_xlabel("Permutation z-score within each reviewed region", fontsize=9)
+    if len(region_names) * len(pair_names) <= 80:
+        for row_index in range(len(region_names)):
+            for column_index in range(len(pair_names)):
+                value = matrix[row_index, column_index]
+                if np.isfinite(value):
+                    ax.text(
+                        column_index,
+                        row_index,
+                        "%.1f" % value,
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="white" if abs(value) > limit * 0.55 else "#17202a",
+                    )
+    colorbar = fig.colorbar(artist, ax=ax, fraction=0.035, pad=0.03)
+    colorbar.set_label("Within-region enrichment z-score", fontsize=9)
+    fig.text(
+        0.01,
+        0.01,
+        "Blank cells were not testable under the minimum cell-count criteria.",
+        fontsize=8,
+        color="#4b5563",
+    )
+    fig.tight_layout(rect=[0.02, 0.05, 1, 1])
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(path)
+
+
+def _render_distance_cooccurrence_curves(summary: Dict[str, Any], path: Path) -> str:
+    curves = summary.get("curves") or []
+    if summary.get("status") != "computed" or not curves:
+        return ""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return ""
+    fig, ax = plt.subplots(figsize=(9.4, 5.8), dpi=180)
+    palette = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf", "#8c564b", "#7f7f7f"]
+    for index, curve in enumerate(curves[:8]):
+        points = curve.get("points") or []
+        xs = [float(item["distance"]) for item in points if item.get("distance") is not None]
+        ys = [float(item["cooccurrence_ratio"]) for item in points if item.get("cooccurrence_ratio") is not None]
+        if not xs or len(xs) != len(ys):
+            continue
+        ax.plot(xs, ys, color=palette[index % len(palette)], linewidth=1.8, marker="o", markersize=2.8, label=str(curve.get("pair") or "pair"))
+    ax.axhline(1.0, color="#4b5563", linewidth=1.0, linestyle="--")
+    ax.set_title("Distance-Dependent Cell-Type Co-Occurrence", fontsize=14, pad=12)
+    ax.set_xlabel("Distance threshold (%s)" % (summary.get("coordinate_units") or "dataset units"))
+    ax.set_ylabel("Conditional co-occurrence ratio")
+    ax.grid(True, color="#d1d5db", linewidth=0.6, alpha=0.65)
+    ax.legend(frameon=False, fontsize=8, loc="best")
+    fig.text(
+        0.01,
+        0.01,
+        "Ratio 1 is the marginal-frequency baseline; curves are descriptive and do not provide permutation p-values.",
+        fontsize=8,
+        color="#4b5563",
+    )
+    fig.tight_layout(rect=[0.02, 0.05, 1, 1])
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(path)
 
 
 def _write_review_figures(dataset: SpatialDataset, output_dir: Path) -> List[str]:
@@ -540,6 +798,112 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         for result in results:
             lines.extend(["### `%s`" % result.tool_name, "", result.summary, ""])
             lines.extend(_marker_group_markdown(result))
+    relationship_summary = payload.get("spatial_relationships") or {}
+    relationship_rows = _spatial_relationship_report_rows(payload)
+    lines.extend(["## Spatial Relationships", "", "- Status: `%s`" % relationship_summary.get("status", "not_run")])
+    if relationship_summary.get("method"):
+        graph = relationship_summary.get("graph") or {}
+        lines.extend(
+            [
+                "- Method: `%s`" % relationship_summary["method"],
+                "- Primary graph: `n_neighs=%s`, `n_perms=%s`, `seed=%s`"
+                % (graph.get("n_neighs"), graph.get("n_perms"), graph.get("random_state")),
+            ]
+        )
+    if relationship_summary.get("figure"):
+        lines.extend(["", "![Spatial relationship heatmap](%s)" % Path(relationship_summary["figure"]).name])
+    if relationship_rows:
+        lines.extend(
+            [
+                "",
+                "| Cell-type pair | Direction | z-score | Pair stability | Nearest distance | Region overlap | Evidence status |",
+                "| --- | --- | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for row in relationship_rows:
+            lines.append("| %s | %s | %s | %s | %s | %s | `%s` |" % row)
+        interpretations = _spatial_relationship_interpretations(payload)
+        if interpretations:
+            lines.extend(["", "### Allowed Spatial Interpretation", ""])
+            lines.extend("- %s" % value for value in interpretations)
+    elif relationship_summary.get("reason"):
+        lines.extend(["", relationship_summary["reason"]])
+    for warning in relationship_summary.get("warnings") or []:
+        lines.append("- Limitation: %s" % warning)
+    lines.append("")
+
+    region_summary = payload.get("region_stratified_neighborhoods") or {}
+    region_rows = _region_stratified_report_rows(payload)
+    lines.extend(
+        [
+            "## Region-Stratified Neighborhood Testing",
+            "",
+            "- Status: `%s`" % region_summary.get("status", "not_run"),
+        ]
+    )
+    if "tested_region_count" in region_summary:
+        lines.append(
+            "- Tested regions: `%s`; skipped regions: `%s`"
+            % (region_summary.get("tested_region_count", 0), region_summary.get("skipped_region_count", 0))
+        )
+    if region_summary.get("parameters", {}).get("min_abs_zscore") is not None:
+        lines.append(
+            "- Cross-region consistency threshold: `|z| >= %s` in at least two regions"
+            % region_summary["parameters"]["min_abs_zscore"]
+        )
+    if region_summary.get("figure"):
+        lines.extend(["", "![Region-stratified neighborhood heatmap](%s)" % Path(region_summary["figure"]).name])
+    if region_rows:
+        lines.extend(
+            [
+                "",
+                "| Cell-type pair | Regions tested / supported | Direction agreement | Strongest region | Strongest |z| | Status |",
+                "| --- | ---: | ---: | --- | ---: | --- |",
+            ]
+        )
+        lines.extend("| %s | %s | %s | %s | %s | `%s` |" % row for row in region_rows)
+    elif region_summary.get("reason"):
+        lines.extend(["", str(region_summary["reason"])])
+    for warning in region_summary.get("warnings") or []:
+        lines.append("- Limitation: %s" % warning)
+    lines.append("")
+
+    cooccurrence_summary = payload.get("distance_cooccurrence") or {}
+    cooccurrence_rows = _distance_cooccurrence_report_rows(payload)
+    lines.extend(
+        [
+            "## Distance-Dependent Co-Occurrence",
+            "",
+            "- Status: `%s`" % cooccurrence_summary.get("status", "not_run"),
+        ]
+    )
+    if cooccurrence_summary.get("status") == "computed":
+        lines.append(
+            "- Distance range: `0-%s %s` across `%s` thresholds; minimum `%s` cells per type"
+            % (
+                cooccurrence_summary.get("max_distance"),
+                cooccurrence_summary.get("coordinate_units", "dataset units"),
+                cooccurrence_summary.get("n_intervals"),
+                cooccurrence_summary.get("min_cells_per_type", "not recorded"),
+            )
+        )
+    if cooccurrence_summary.get("figure"):
+        lines.extend(["", "![Distance-dependent co-occurrence curves](%s)" % Path(cooccurrence_summary["figure"]).name])
+    if cooccurrence_rows:
+        lines.extend(
+            [
+                "",
+                "| Cell-type pair | Peak ratio | Peak distance | Short-range mean | Long-range mean |",
+                "| --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        lines.extend("| %s | %s | %s | %s | %s |" % row for row in cooccurrence_rows)
+    elif cooccurrence_summary.get("reason"):
+        lines.extend(["", str(cooccurrence_summary["reason"])])
+    for warning in cooccurrence_summary.get("warnings") or []:
+        lines.append("- Limitation: %s" % warning)
+    lines.append("")
+
     lines.extend(["## Claim Ledger", ""])
     for item in payload["claim_ledger"]:
         lines.extend(
@@ -654,6 +1018,136 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
             "<table><tr><th>Setting / metric</th><th>Value</th></tr>%s</table>%s</section>"
             % (robustness_body, reason_html)
         )
+    relationship_summary = payload.get("spatial_relationships") or {}
+    relationship_rows = _spatial_relationship_report_rows(payload)
+    relationship_body = "".join(
+        "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>"
+        % tuple(html.escape(str(value)) for value in row)
+        for row in relationship_rows
+    )
+    graph = relationship_summary.get("graph") or {}
+    relationship_method = ""
+    if relationship_summary.get("method"):
+        relationship_method = (
+            "<p>Method: <code>%s</code>. Primary graph: <code>n_neighs=%s</code>, "
+            "<code>n_perms=%s</code>, <code>seed=%s</code>.</p>"
+            % (
+                html.escape(str(relationship_summary.get("method"))),
+                html.escape(str(graph.get("n_neighs"))),
+                html.escape(str(graph.get("n_perms"))),
+                html.escape(str(graph.get("random_state"))),
+            )
+        )
+    relationship_figure = ""
+    if relationship_summary.get("figure"):
+        figure_name = Path(str(relationship_summary["figure"])).name
+        relationship_figure = '<div class="figure"><img src="%s" alt="Spatial relationship heatmap"></div>' % html.escape(figure_name)
+    relationship_table = (
+        "<table><tr><th>Cell-type pair</th><th>Direction</th><th>z-score</th><th>Pair stability</th>"
+        "<th>Nearest distance</th><th>Region overlap</th><th>Evidence status</th></tr>%s</table>" % relationship_body
+        if relationship_body
+        else "<p>%s</p>" % html.escape(str(relationship_summary.get("reason") or "No relationship rows were produced."))
+    )
+    relationship_warnings = "".join(
+        "<li>%s</li>" % html.escape(str(value)) for value in relationship_summary.get("warnings") or []
+    )
+    relationship_interpretations = "".join(
+        "<li>%s</li>" % html.escape(value) for value in _spatial_relationship_interpretations(payload)
+    )
+    interpretation_html = (
+        "<h3>Allowed Spatial Interpretation</h3><ul>%s</ul>" % relationship_interpretations
+        if relationship_interpretations
+        else ""
+    )
+    relationship_html = (
+        "<section><h2>Spatial Relationships</h2><p>Status: <code>%s</code></p>%s%s%s%s<ul>%s</ul></section>"
+        % (
+            html.escape(str(relationship_summary.get("status") or "not_run")),
+            relationship_method,
+            relationship_figure,
+            relationship_table,
+            interpretation_html,
+            relationship_warnings,
+        )
+    )
+    region_summary = payload.get("region_stratified_neighborhoods") or {}
+    region_rows = _region_stratified_report_rows(payload)
+    region_body = "".join(
+        "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>"
+        % tuple(html.escape(str(value)) for value in row)
+        for row in region_rows
+    )
+    region_table = (
+        "<table><tr><th>Cell-type pair</th><th>Regions tested / supported</th><th>Direction agreement</th>"
+        "<th>Strongest region</th><th>Strongest |z|</th><th>Status</th></tr>%s</table>" % region_body
+        if region_body
+        else "<p>%s</p>" % html.escape(str(region_summary.get("reason") or "No region-stratified rows were produced."))
+    )
+    region_figure = ""
+    if region_summary.get("figure"):
+        figure_name = Path(str(region_summary["figure"])).name
+        region_figure = '<div class="figure"><img src="%s" alt="Region-stratified neighborhood heatmap"></div>' % html.escape(figure_name)
+    region_warnings = "".join(
+        "<li>%s</li>" % html.escape(str(value)) for value in region_summary.get("warnings") or []
+    )
+    region_counts_html = ""
+    if "tested_region_count" in region_summary:
+        region_counts_html = " Tested regions: <code>%s</code>; skipped regions: <code>%s</code>." % (
+            html.escape(str(region_summary.get("tested_region_count", 0))),
+            html.escape(str(region_summary.get("skipped_region_count", 0))),
+        )
+    if region_summary.get("parameters", {}).get("min_abs_zscore") is not None:
+        region_counts_html += " Consistency requires <code>|z| &gt;= %s</code> in at least two regions." % html.escape(
+            str(region_summary["parameters"]["min_abs_zscore"])
+        )
+    region_html = (
+        "<section><h2>Region-Stratified Neighborhood Testing</h2><p>Status: <code>%s</code>.%s</p>%s%s<ul>%s</ul></section>"
+        % (
+            html.escape(str(region_summary.get("status") or "not_run")),
+            region_counts_html,
+            region_figure,
+            region_table,
+            region_warnings,
+        )
+    )
+    cooccurrence_summary = payload.get("distance_cooccurrence") or {}
+    cooccurrence_rows = _distance_cooccurrence_report_rows(payload)
+    cooccurrence_body = "".join(
+        "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+        % tuple(html.escape(str(value)) for value in row)
+        for row in cooccurrence_rows
+    )
+    cooccurrence_table = (
+        "<table><tr><th>Cell-type pair</th><th>Peak ratio</th><th>Peak distance</th>"
+        "<th>Short-range mean</th><th>Long-range mean</th></tr>%s</table>" % cooccurrence_body
+        if cooccurrence_body
+        else "<p>%s</p>" % html.escape(str(cooccurrence_summary.get("reason") or "No co-occurrence curves were produced."))
+    )
+    cooccurrence_figure = ""
+    if cooccurrence_summary.get("figure"):
+        figure_name = Path(str(cooccurrence_summary["figure"])).name
+        cooccurrence_figure = '<div class="figure"><img src="%s" alt="Distance-dependent co-occurrence curves"></div>' % html.escape(figure_name)
+    cooccurrence_warnings = "".join(
+        "<li>%s</li>" % html.escape(str(value)) for value in cooccurrence_summary.get("warnings") or []
+    )
+    cooccurrence_range_html = ""
+    if cooccurrence_summary.get("status") == "computed":
+        cooccurrence_range_html = " Distance range: <code>0-%s %s</code> across <code>%s</code> thresholds; minimum <code>%s</code> cells per type." % (
+            html.escape(str(cooccurrence_summary.get("max_distance"))),
+            html.escape(str(cooccurrence_summary.get("coordinate_units", "dataset units"))),
+            html.escape(str(cooccurrence_summary.get("n_intervals"))),
+            html.escape(str(cooccurrence_summary.get("min_cells_per_type", "not recorded"))),
+        )
+    cooccurrence_html = (
+        "<section><h2>Distance-Dependent Co-Occurrence</h2><p>Status: <code>%s</code>.%s</p>%s%s<ul>%s</ul></section>"
+        % (
+            html.escape(str(cooccurrence_summary.get("status") or "not_run")),
+            cooccurrence_range_html,
+            cooccurrence_figure,
+            cooccurrence_table,
+            cooccurrence_warnings,
+        )
+    )
     limitations = "".join("<li>%s</li>" % html.escape(item) for item in _limitations(payload))
     label_rows = "".join(
         "<tr><td>%s</td><td>%d</td></tr>" % (html.escape(label), count)
@@ -678,6 +1172,9 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
 <section><h2>Typed Tool Plan</h2><p>Plan validation: <code>%s</code></p><ul>%s</ul></section>
 <section><h2>Generated Templates</h2><ul><li><code>%s</code></li><li><code>%s</code></li></ul></section>
 <section><h2>Tool Results</h2>%s</section>
+%s
+%s
+%s
 <section><h2>Claim Ledger</h2><ul>%s</ul></section>
 <section><h2>Claim Reliability</h2><table><tr><th>Claim</th><th>Reliability</th><th>S</th><th>A</th><th>P</th><th>R</th><th>Interpretation</th></tr>%s</table><p><small>S = statistical strength, A = annotation quality, P = panel adequacy, R = spatial robustness. The current default combiner is weakest-link.</small></p></section>
 %s
@@ -699,6 +1196,9 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         html.escape(payload["expert_label_template"]),
         html.escape(payload["region_label_template"]),
         result_html or "<p>No analysis tools were run because validation inputs are incomplete.</p>",
+        relationship_html,
+        region_html,
+        cooccurrence_html,
         claims,
         reliability_rows or "<tr><td colspan=\"7\">No reliability records generated.</td></tr>",
         robustness_html,
@@ -797,6 +1297,121 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
         ),
     ]
     sections.extend(result_sections)
+    relationship_summary = payload.get("spatial_relationships") or {}
+    relationship_rows = _spatial_relationship_report_rows(payload)
+    relationship_paragraphs = ["Status: %s" % relationship_summary.get("status", "not_run")]
+    graph = relationship_summary.get("graph") or {}
+    if relationship_summary.get("method"):
+        relationship_paragraphs.append(
+            "Method: %s. Primary graph: n_neighs=%s, n_perms=%s, seed=%s."
+            % (
+                relationship_summary.get("method"),
+                graph.get("n_neighs"),
+                graph.get("n_perms"),
+                graph.get("random_state"),
+            )
+        )
+    elif relationship_summary.get("reason"):
+        relationship_paragraphs.append(str(relationship_summary["reason"]))
+    relationship_figures = []
+    if relationship_summary.get("figure") and Path(str(relationship_summary["figure"])).exists():
+        relationship_figures.append(
+            PdfFigure(path=str(relationship_summary["figure"]), caption="Neighborhood enrichment z-score matrix")
+        )
+    relationship_tables = []
+    if relationship_rows:
+        relationship_tables.append(
+            PdfTable(
+                headers=["Pair", "Direction", "z", "Stability", "NN distance", "Region overlap", "Evidence"],
+                rows=relationship_rows,
+                column_widths=[2.0, 0.8, 0.6, 0.8, 1.0, 0.9, 1.5],
+            )
+        )
+    sections.append(
+        PdfSection(
+            title="Spatial Relationships",
+            paragraphs=relationship_paragraphs,
+            bullets=_spatial_relationship_interpretations(payload) + list(relationship_summary.get("warnings") or []),
+            tables=relationship_tables,
+            figures=relationship_figures,
+        )
+    )
+    region_summary = payload.get("region_stratified_neighborhoods") or {}
+    region_rows = _region_stratified_report_rows(payload)
+    region_figures = []
+    if region_summary.get("figure") and Path(str(region_summary["figure"])).exists():
+        region_figures.append(
+            PdfFigure(path=str(region_summary["figure"]), caption="Within-region neighborhood enrichment z-scores")
+        )
+    region_tables = []
+    if region_rows:
+        region_tables.append(
+            PdfTable(
+                headers=["Pair", "Tested / supported", "Direction agreement", "Strongest region", "Strongest |z|", "Status"],
+                rows=region_rows,
+                column_widths=[2.0, 0.7, 1.1, 1.3, 0.8, 1.2],
+            )
+        )
+    region_paragraphs = ["Status: %s." % region_summary.get("status", "not_run")]
+    if "tested_region_count" in region_summary:
+        region_paragraphs.append(
+            "Tested regions: %s; skipped regions: %s."
+            % (region_summary.get("tested_region_count", 0), region_summary.get("skipped_region_count", 0))
+        )
+    if region_summary.get("parameters", {}).get("min_abs_zscore") is not None:
+        region_paragraphs.append(
+            "Consistency requires |z| >= %s in at least two regions."
+            % region_summary["parameters"]["min_abs_zscore"]
+        )
+    if region_summary.get("reason"):
+        region_paragraphs.append(str(region_summary["reason"]))
+    sections.append(
+        PdfSection(
+            title="Region-Stratified Neighborhood Testing",
+            paragraphs=region_paragraphs,
+            bullets=list(region_summary.get("warnings") or []),
+            tables=region_tables,
+            figures=region_figures,
+        )
+    )
+    cooccurrence_summary = payload.get("distance_cooccurrence") or {}
+    cooccurrence_rows = _distance_cooccurrence_report_rows(payload)
+    cooccurrence_figures = []
+    if cooccurrence_summary.get("figure") and Path(str(cooccurrence_summary["figure"])).exists():
+        cooccurrence_figures.append(
+            PdfFigure(path=str(cooccurrence_summary["figure"]), caption="Distance-dependent conditional co-occurrence ratios")
+        )
+    cooccurrence_tables = []
+    if cooccurrence_rows:
+        cooccurrence_tables.append(
+            PdfTable(
+                headers=["Pair", "Peak ratio", "Peak distance", "Short-range mean", "Long-range mean"],
+                rows=cooccurrence_rows,
+                column_widths=[2.2, 0.9, 1.1, 1.2, 1.2],
+            )
+        )
+    cooccurrence_paragraphs = ["Status: %s." % cooccurrence_summary.get("status", "not_run")]
+    if cooccurrence_summary.get("status") == "computed":
+        cooccurrence_paragraphs.append(
+            "Distance range: 0-%s %s across %s thresholds; minimum %s cells per type."
+            % (
+                cooccurrence_summary.get("max_distance"),
+                cooccurrence_summary.get("coordinate_units", "dataset units"),
+                cooccurrence_summary.get("n_intervals"),
+                cooccurrence_summary.get("min_cells_per_type", "not recorded"),
+            )
+        )
+    if cooccurrence_summary.get("reason"):
+        cooccurrence_paragraphs.append(str(cooccurrence_summary["reason"]))
+    sections.append(
+        PdfSection(
+            title="Distance-Dependent Co-Occurrence",
+            paragraphs=cooccurrence_paragraphs,
+            bullets=list(cooccurrence_summary.get("warnings") or []),
+            tables=cooccurrence_tables,
+            figures=cooccurrence_figures,
+        )
+    )
     sections.append(
         PdfSection(
             title="Claim Ledger and Reliability",
@@ -955,6 +1570,116 @@ def _pilot_structural_inputs() -> List[str]:
     return list(DEFAULT_XENIUM_INPUTS) + ["expert_labels", "user_regions"]
 
 
+def _spatial_relationship_report_rows(
+    payload: Dict[str, Any],
+) -> List[Tuple[str, str, str, str, str, str, str]]:
+    summary = payload.get("spatial_relationships")
+    if not isinstance(summary, dict) or summary.get("status") != "computed":
+        return []
+    rows = []
+    for item in summary.get("relationships") or []:
+        if not isinstance(item, dict):
+            continue
+        sign_agreement = item.get("sign_agreement")
+        top_k_presence = item.get("top_k_presence")
+        settings_present = int(item.get("settings_present") or 0)
+        stability = (
+            "sign %.2f; top-K %.2f (%d settings)"
+            % (float(sign_agreement), float(top_k_presence), settings_present)
+            if sign_agreement is not None and top_k_presence is not None
+            else "sign %.2f (%d settings)" % (float(sign_agreement), settings_present)
+            if sign_agreement is not None
+            else "not established"
+        )
+        distance = item.get("median_bidirectional_nearest_distance")
+        distance_text = (
+            "%.3f %s" % (float(distance), item.get("coordinate_units") or "units")
+            if distance is not None
+            else "not available"
+        )
+        region_overlap = item.get("region_overlap")
+        shared_regions = ", ".join(str(value) for value in item.get("shared_regions") or [])
+        region_text = (
+            "%.3f%s" % (float(region_overlap), " (%s)" % shared_regions if shared_regions else "")
+            if region_overlap is not None
+            else "not available"
+        )
+        rows.append(
+            (
+                str(item.get("pair") or "").replace("|", "/"),
+                str(item.get("direction") or "indeterminate"),
+                "%.4f" % float(item.get("zscore") or 0.0),
+                stability,
+                distance_text,
+                region_text,
+                str(item.get("evidence_status") or "weak_or_indeterminate"),
+            )
+        )
+    return rows
+
+
+def _spatial_relationship_interpretations(payload: Dict[str, Any]) -> List[str]:
+    summary = payload.get("spatial_relationships")
+    if not isinstance(summary, dict) or summary.get("status") != "computed":
+        return []
+    interpretations = []
+    for item in summary.get("relationships") or []:
+        if not isinstance(item, dict) or not item.get("allowed_interpretation"):
+            continue
+        interpretations.append("%s: %s" % (item.get("pair") or "Pair", item["allowed_interpretation"]))
+    return interpretations
+
+
+def _region_stratified_report_rows(
+    payload: Dict[str, Any],
+) -> List[Tuple[str, str, str, str, str, str]]:
+    summary = payload.get("region_stratified_neighborhoods")
+    if not isinstance(summary, dict) or summary.get("status") != "computed":
+        return []
+    rows = []
+    for item in (summary.get("pair_consistency") or [])[:12]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            (
+                str(item.get("pair") or "").replace("|", "/"),
+                "%s / %s"
+                % (
+                    item.get("regions_tested") or 0,
+                    item.get("supported_region_count", item.get("regions_tested") or 0),
+                ),
+                "%.3f" % float(item.get("direction_agreement") or 0.0),
+                str(item.get("strongest_region") or "not available"),
+                "%.3f" % float(item.get("strongest_abs_zscore") or 0.0),
+                str(item.get("status") or "unknown"),
+            )
+        )
+    return rows
+
+
+def _distance_cooccurrence_report_rows(
+    payload: Dict[str, Any],
+) -> List[Tuple[str, str, str, str, str]]:
+    summary = payload.get("distance_cooccurrence")
+    if not isinstance(summary, dict) or summary.get("status") != "computed":
+        return []
+    units = str(summary.get("coordinate_units") or "units")
+    rows = []
+    for item in summary.get("curves") or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            (
+                str(item.get("pair") or "").replace("|", "/"),
+                "%.3f" % float(item.get("peak_ratio") or 0.0),
+                "%.3f %s" % (float(item.get("peak_distance") or 0.0), units),
+                "%.3f" % float(item.get("short_range_mean_ratio") or 0.0),
+                "%.3f" % float(item.get("long_range_mean_ratio") or 0.0),
+            )
+        )
+    return rows
+
+
 def _spatial_robustness_rows(payload: Dict[str, Any]) -> List[Tuple[str, str]]:
     if payload.get("status") != "validated_ready":
         return []
@@ -993,6 +1718,10 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
     ]
     if payload.get("status") != "validated_ready":
         items.append("Analysis tools were not run because validation inputs are incomplete; generated templates are preparation artifacts.")
+    if payload.get("region_stratified_neighborhoods", {}).get("status") == "computed":
+        items.append("Region-stratified tests are within-section analyses; biological generalization requires replicate sections or donors.")
+    if payload.get("distance_cooccurrence", {}).get("status") == "computed":
+        items.append("Distance-dependent co-occurrence curves are descriptive probability ratios and do not provide permutation significance tests.")
     return items
 
 
