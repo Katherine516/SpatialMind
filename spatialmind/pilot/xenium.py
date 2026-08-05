@@ -125,6 +125,14 @@ def run_pilot(
         "score": 0.0,
         "reason": "Neighborhood robustness sweep runs only for validated pilots.",
     }
+    # Descriptive lane: QC, expression clusters, per-cluster markers, and
+    # cluster-level neighbourhood structure need no expert labels, because they
+    # group by data-derived clusters rather than claimed cell identities. A
+    # blocked run should still hand back this analysis instead of only a refusal.
+    descriptive: Dict[str, Any] = {"status": "not_run", "reason": "Descriptive analysis was not requested."}
+    if not readiness_only and gate["status"] != "validated_ready":
+        descriptive = _run_descriptive_lane(dataset, output_dir)
+
     if gate["status"] == "validated_ready" and not readiness_only:
         results = _run_validated_tools(dataset, plan)
         for result in results:
@@ -224,6 +232,7 @@ def run_pilot(
             "review_figures": "Generated from current loader labels/clusters for expert review and QA only.",
             "validated_figures": "Generated only after expert labels and user regions pass the pilot gate.",
         },
+        "descriptive_analysis": descriptive,
         "spatial_robustness": spatial_robustness,
         "spatial_relationships": spatial_relationships,
         "region_stratified_neighborhoods": region_stratified_neighborhoods,
@@ -389,6 +398,53 @@ def pilot_gate(
         "label_coverage": round(label_coverage, 4),
         "region_coverage": round(region_coverage, 4),
     }
+
+
+def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str, Any]:
+    """Label-free analysis: QC, clusters, per-cluster markers, cluster neighbourhoods.
+
+    Every result here is a statement about data-derived groupings, never about
+    named cell types, so it stands without expert annotation.
+    """
+    registry = build_mvp_registry()
+    payload: Dict[str, Any] = {"status": "computed", "group_key": "cluster", "tools": []}
+    try:
+        clustering = registry.get("qc_and_cluster").run(dataset, {})
+    except Exception as exc:
+        return {"status": "not_run", "reason": "Clustering failed: %s" % exc}
+    payload["tools"].append("qc_and_cluster")
+    payload["cluster_counts"] = clustering.metrics.get("cluster_counts", {})
+    payload["cluster_count"] = len(payload["cluster_counts"])
+    payload["expression_qc"] = clustering.metrics.get("expression_qc", {})
+    payload["clustering_method"] = clustering.metrics.get("method")
+    _write_json(output_dir / "descriptive_qc_and_cluster.json", clustering)
+
+    for tool_name, params, key in (
+        ("marker_detection", {"group_key": "cluster"}, "markers_by_cluster"),
+        ("cell_neighborhood_enrichment", {"group_key": "cluster"}, "cluster_neighborhood"),
+    ):
+        try:
+            result = registry.get(tool_name).run(dataset, dict(params))
+        except Exception as exc:
+            payload[key] = {"status": "not_run", "reason": str(exc)}
+            continue
+        payload["tools"].append(tool_name)
+        _write_json(output_dir / ("descriptive_%s.json" % tool_name), result)
+        if tool_name == "marker_detection":
+            payload[key] = {
+                str(group): [str(row.get("gene")) for row in rows[:8] if isinstance(row, dict)]
+                for group, rows in (result.metrics.get("markers_by_group") or {}).items()
+            }
+        else:
+            payload[key] = {
+                "top_pairs": result.metrics.get("top_pairs", [])[:10],
+                "engine": result.metrics.get("engine"),
+            }
+    payload["interpretation"] = (
+        "Clusters are derived from measured expression, not from cell-type labels. Marker genes "
+        "describe what distinguishes each cluster; naming clusters as cell types requires expert review."
+    )
+    return payload
 
 
 def _run_validated_tools(dataset: SpatialDataset, plan: List[Any]) -> List[ToolResult]:
@@ -745,8 +801,9 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         "- Loaded features: `%d`" % payload["features_loaded"],
         "",
     ]
+    lines.extend(_descriptive_markdown(payload))
     if payload["blocking_reasons"]:
-        lines.extend(["## Blocking Reasons", ""])
+        lines.extend(["## What Is Still Needed To Go Further", ""])
         lines.extend("- %s" % item for item in payload["blocking_reasons"])
         lines.extend(["", "## Required Next Inputs", ""])
         lines.extend("- %s" % item for item in payload["required_next_inputs"])
@@ -1737,3 +1794,51 @@ def _figure_html(path: str) -> str:
     if name.lower().endswith(".html"):
         return '<div class="figure"><p><a href="%s">%s</a></p></div>' % (escaped_name, escaped_name)
     return '<div class="figure"><p><code>%s</code></p></div>' % escaped_name
+
+
+def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
+    """Label-free results, rendered before any refusal text."""
+    descriptive = payload.get("descriptive_analysis") or {}
+    if descriptive.get("status") != "computed":
+        return []
+    lines = [
+        "## Descriptive Analysis (no expert labels required)",
+        "",
+        "These results group cells by data-derived expression clusters, so they stand "
+        "without expert annotation. Cluster identities are not cell-type claims.",
+        "",
+    ]
+    qc = descriptive.get("expression_qc") or {}
+    if qc:
+        lines.extend([
+            "| QC metric | Value |",
+            "| --- | ---: |",
+            "| Cells | %s |" % qc.get("n_cells", "-"),
+            "| Features | %s |" % qc.get("n_features", "-"),
+            "| Median counts / cell | %s |" % qc.get("median_total_counts", "-"),
+            "| Median features / cell | %s |" % qc.get("median_features_per_cell", "-"),
+            "",
+        ])
+    counts = descriptive.get("cluster_counts") or {}
+    if counts:
+        lines.extend(["### Expression clusters (%s)" % (descriptive.get("clustering_method") or "leiden"), "",
+                      "| Cluster | Cells |", "| --- | ---: |"])
+        for cluster, count in sorted(counts.items(), key=lambda item: -int(item[1])):
+            lines.append("| `%s` | %s |" % (cluster, count))
+        lines.append("")
+    markers = descriptive.get("markers_by_cluster")
+    if isinstance(markers, dict) and markers:
+        lines.extend(["### Top markers per cluster (one-vs-rest)", "",
+                      "| Cluster | Marker genes |", "| --- | --- |"])
+        for cluster, genes in sorted(markers.items()):
+            lines.append("| `%s` | %s |" % (cluster, ", ".join("`%s`" % gene for gene in genes[:6])))
+        lines.append("")
+    neighborhood = descriptive.get("cluster_neighborhood")
+    if isinstance(neighborhood, dict) and neighborhood.get("top_pairs"):
+        lines.extend(["### Cluster spatial co-occurrence", "",
+                      "| Cluster pair | z-score |", "| --- | ---: |"])
+        for pair in neighborhood["top_pairs"][:8]:
+            lines.append("| `%s` | %s |" % (pair.get("pair"), pair.get("zscore")))
+        lines.append("")
+    lines.extend([descriptive.get("interpretation", ""), ""])
+    return lines

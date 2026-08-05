@@ -1882,3 +1882,65 @@ class MarkerRuleTighteningTests(unittest.TestCase):
         self.assertEqual(
             _infer_marker_cell_type({"PECAM1": 4.0, "CLDN5": 4.0, "FLT1": 3.0}), "Endothelial cell"
         )
+
+
+class DescriptiveLaneTests(unittest.TestCase):
+    def _clustered_dataset(self):
+        records = []
+        for index in range(24):
+            if index % 3 == 0:
+                genes = {"AQP4": 8.0, "GJA1": 7.0, "MOG": 0.0, "SLC17A7": 0.0}
+            elif index % 3 == 1:
+                genes = {"AQP4": 0.0, "GJA1": 0.0, "MOG": 8.0, "SLC17A7": 0.0}
+            else:
+                genes = {"AQP4": 0.0, "GJA1": 0.0, "MOG": 0.0, "SLC17A7": 8.0}
+            records.append(SpotRecord("S1", float(index), float(index % 5), "Unannotated cell", genes, cell_id="c%d" % index))
+        return SpatialDataset(sample_id="S1", source_path="synthetic", modality="xenium_spatial_rna", records=records)
+
+    def test_marker_detection_can_group_by_data_derived_clusters(self):
+        from spatialmind.tools.implementations import resolve_group_labels, store_cluster_assignments
+
+        dataset = self._clustered_dataset()
+        # No expert labels anywhere.
+        self.assertTrue(all(record.cell_type == "Unannotated cell" for record in dataset.records))
+        store_cluster_assignments(dataset, [str(index % 3) for index in range(len(dataset.records))])
+        labels, key = resolve_group_labels(dataset, {"group_key": "cluster"})
+        self.assertEqual(key, "cluster")
+        self.assertEqual(sorted(set(labels)), ["0", "1", "2"])
+
+        result = marker_detection(dataset, {"group_key": "cluster", "engine": "prototype"})
+        self.assertEqual(result.metrics["group_key"], "cluster")
+        markers = result.metrics["markers_by_group"]
+        self.assertEqual(sorted(markers), ["0", "1", "2"])
+        # Each cluster's defining gene should top its own marker list.
+        self.assertEqual(markers["0"][0]["gene"], "AQP4")
+        self.assertEqual(markers["1"][0]["gene"], "MOG")
+        self.assertEqual(markers["2"][0]["gene"], "SLC17A7")
+
+    def test_cluster_grouping_requires_assignments(self):
+        from spatialmind.tools.implementations import resolve_group_labels
+
+        dataset = self._clustered_dataset()
+        with self.assertRaises(MissingPreconditionError):
+            resolve_group_labels(dataset, {"group_key": "cluster"})
+
+    def test_blocked_pilot_still_returns_descriptive_results(self):
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
+        from spatialmind.pilot.xenium import run_pilot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "pilot"
+            result = run_pilot(XENIUM_LYMPH, out, max_records=150)
+            self.assertTrue(result["status"].startswith("blocked"))
+            descriptive = result["descriptive_analysis"]
+            self.assertEqual(descriptive["status"], "computed")
+            self.assertIn("qc_and_cluster", descriptive["tools"])
+            self.assertGreaterEqual(descriptive["cluster_count"], 2)
+            # Results must appear before the refusal section in the report.
+            report = (out / "validated_xenium_pilot_report.md").read_text()
+            self.assertIn("Descriptive Analysis (no expert labels required)", report)
+            self.assertLess(
+                report.index("Descriptive Analysis"),
+                report.index("What Is Still Needed To Go Further"),
+            )

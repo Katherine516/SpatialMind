@@ -764,6 +764,45 @@ def reference_label_transfer(dataset: SpatialDataset, params: Dict[str, object])
     return _knn_reference_label_transfer(dataset, reference_dataset, shared, params)
 
 
+CLUSTER_ASSIGNMENT_KEY = "cluster_assignments"
+
+
+def store_cluster_assignments(dataset: SpatialDataset, labels: List[str]) -> None:
+    """Record per-cell cluster ids on the dataset, keyed by cell_id."""
+    if len(labels) != len(dataset.records):
+        return
+    dataset.metadata[CLUSTER_ASSIGNMENT_KEY] = {
+        (record.cell_id or str(index)): str(label)
+        for index, (record, label) in enumerate(zip(dataset.records, labels))
+    }
+
+
+def resolve_group_labels(dataset: SpatialDataset, params: Dict[str, object]) -> Tuple[List[str], str]:
+    """Per-record grouping labels for a tool, plus the resolved group key.
+
+    ``cell_type`` uses the applied labels. ``cluster`` uses data-derived clusters
+    -- from params, from a previous clustering run, or from the platform's own
+    graph clusters -- which is what makes descriptive analysis possible before any
+    expert annotation exists.
+    """
+    group_key = str(params.get("group_key", "cell_type") or "cell_type")
+    if group_key != "cluster":
+        return [record.cell_type or "" for record in dataset.records], "cell_type"
+    assignments = params.get(CLUSTER_ASSIGNMENT_KEY) or dataset.metadata.get(CLUSTER_ASSIGNMENT_KEY) or {}
+    if not isinstance(assignments, dict) or not assignments:
+        raise MissingPreconditionError(
+            "group_key='cluster' requires cluster assignments; run qc_and_cluster first or pass "
+            "cluster_assignments={cell_id: cluster}."
+        )
+    labels = []
+    for index, record in enumerate(dataset.records):
+        key = record.cell_id or str(index)
+        labels.append(str(assignments.get(key, "")))
+    if len({label for label in labels if label}) < 2:
+        raise MissingPreconditionError("group_key='cluster' needs at least two populated clusters.")
+    return labels, "cluster"
+
+
 # Broad lineages with canonical markers, used to sanity-check transferred labels
 # against the target's own measured expression. Deliberately coarse: the point is
 # to catch a myeloid cell labelled as a neuron, not to arbitrate subtypes.
@@ -1142,10 +1181,11 @@ def _marker_groups(dataset: SpatialDataset) -> List[str]:
 def _scanpy_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[str, object]) -> Optional[ToolResult]:
     if params.get("engine") == "prototype":
         return None
-    group_key = str(params.get("group_key", "cell_type"))
-    if group_key != "cell_type":
-        return None
-    if len(_marker_groups(dataset)) < 2:
+    try:
+        group_labels, group_key = resolve_group_labels(dataset, params)
+    except MissingPreconditionError:
+        raise
+    if len({label for label in group_labels if label}) < 2:
         return None
     try:
         import scanpy as sc  # type: ignore
@@ -1153,10 +1193,12 @@ def _scanpy_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[s
         return None
     try:
         adata = _dataset_to_anndata(dataset)
+        adata.obs["spatialmind_group"] = [label or "unassigned" for label in group_labels]
+        adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
         method = str(params.get("method", "wilcoxon"))
         n_top = int(params.get("n_top", 25) or 25)
-        sc.tl.rank_genes_groups(adata, groupby="cell_type", method=method)
-        groups = [str(value) for value in adata.obs["cell_type"].cat.categories]
+        sc.tl.rank_genes_groups(adata, groupby="spatialmind_group", method=method)
+        groups = [str(value) for value in adata.obs["spatialmind_group"].cat.categories]
         markers_by_group: Dict[str, object] = {}
         flattened: List[Dict[str, object]] = []
         for group in groups:
@@ -1185,10 +1227,8 @@ def _scanpy_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[s
 
 def _prototype_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
     require_records(dataset)
-    group_key = str(params.get("group_key", "cell_type"))
-    if group_key != "cell_type":
-        raise InvalidParameterError("Prototype marker_detection only supports group_key='cell_type'.")
-    groups = _marker_groups(dataset)
+    group_labels, group_key = resolve_group_labels(dataset, params)
+    groups = sorted({label for label in group_labels if label})
     if len(groups) < 2:
         raise MissingPreconditionError("marker_detection requires at least two cell groups.")
     genes = expression_feature_names(dataset)
@@ -1196,8 +1236,8 @@ def _prototype_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dic
     markers_by_group: Dict[str, object] = {}
     flattened: List[Dict[str, object]] = []
     for group in groups:
-        in_group = [record for record in dataset.records if record.cell_type == group]
-        rest = [record for record in dataset.records if record.cell_type != group]
+        in_group = [record for record, label in zip(dataset.records, group_labels) if label == group]
+        rest = [record for record, label in zip(dataset.records, group_labels) if label != group]
         rows = []
         for gene in genes:
             first = [record.genes.get(gene, 0.0) for record in in_group]
@@ -1462,6 +1502,9 @@ def _scanpy_spatial_clustering(dataset: SpatialDataset, params: Dict[str, object
         )
         labels = [str(value) for value in adata.obs["spatialmind_cluster"].tolist()]
         counts = dict(Counter(labels))
+        # Publish assignments so marker and neighbourhood tools can group by these
+        # data-derived clusters instead of requiring expert cell-type labels.
+        store_cluster_assignments(dataset, labels)
         cluster_style = "spatial-domain" if cluster_on == "spatial" else "expression"
         return ToolResult(
             tool_name="spatial_clustering",
@@ -1547,6 +1590,9 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         return None
     try:
         adata = _dataset_to_anndata(dataset)
+        group_labels, group_key = resolve_group_labels(dataset, params)
+        adata.obs["spatialmind_group"] = [label or "unassigned" for label in group_labels]
+        adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
         n_neighs = int(params.get("n_neighs", min(6, max(2, len(dataset.records) - 1))) or 6)
         n_perms = int(params.get("n_perms", 100) or 100)
         n_jobs = int(params.get("n_jobs", 1) or 1)
@@ -1557,7 +1603,7 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
             warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
             sq.gr.nhood_enrichment(
                 adata,
-                cluster_key="cell_type",
+                cluster_key="spatialmind_group",
                 n_perms=n_perms,
                 seed=random_state,
                 n_jobs=n_jobs,
@@ -1565,8 +1611,8 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
                 numba_parallel=False,
                 show_progress_bar=False,
             )
-        result = adata.uns.get("cell_type_nhood_enrichment", {})
-        clusters = [str(value) for value in adata.obs["cell_type"].cat.categories]
+        result = adata.uns.get("spatialmind_group_nhood_enrichment", {})
+        clusters = [str(value) for value in adata.obs["spatialmind_group"].cat.categories]
         all_pairs = _nhood_enrichment_pairs(result.get("zscore"), result.get("pvalue"), clusters, limit=None)
         expected_pair_count = len(clusters) * (len(clusters) + 1) // 2
         nonfinite_pair_count = max(expected_pair_count - len(all_pairs), 0)
@@ -1574,6 +1620,7 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         metrics = {
             "engine": "squidpy",
             "method": "nhood_enrichment",
+            "group_key": group_key,
             "n_neighs": n_neighs,
             "n_perms": n_perms,
             "n_jobs": n_jobs,
