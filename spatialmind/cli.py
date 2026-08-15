@@ -1,9 +1,12 @@
 import argparse
 import os
+from pathlib import Path
 
 from .agent import SpatialMindAgent
 from .datasets import inspect_data_root, write_dataset_report
+from .ingestion import infer_data_type
 from .llm import build_llm_provider
+from .pilot import run_pilot
 from .storage import StorageLayer
 
 
@@ -28,6 +31,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="html",
         choices=["html", "pdf", "both"],
         help="Report delivery format. PDF output retains an HTML source for auditability.",
+    )
+    parser.add_argument("--max-records", type=int, default=5000, help="Maximum cells loaded for Xenium review runs.")
+    parser.add_argument("--full-section", action="store_true", help="Load all Xenium cells for final validated inference.")
+    parser.add_argument("--review-max-records", type=int, default=5000, help="Rows written to Xenium review templates.")
+    parser.add_argument("--min-label-coverage", type=float, default=0.7)
+    parser.add_argument("--min-region-coverage", type=float, default=0.7)
+    parser.add_argument("--allow-single-region", action="store_true")
+    parser.add_argument(
+        "--allow-sampled-validation",
+        action="store_true",
+        help="Development-only override for validated Xenium analysis on a sampled section.",
+    )
+    parser.add_argument(
+        "--readiness-only",
+        action="store_true",
+        help="For Xenium, write a fast readiness JSON without building analysis artifacts.",
     )
     return parser
 
@@ -67,6 +86,29 @@ def main() -> None:
         return
     if not args.prompt:
         parser.error("prompt is required unless --inspect-data is used")
+    if infer_data_type(args.data) in {"xenium_directory", "xenium_experiment_file"}:
+        result = run_pilot(
+            dataset_path=args.data,
+            output_dir=Path(args.out),
+            max_records=0 if args.full_section else args.max_records,
+            min_label_coverage=args.min_label_coverage,
+            min_region_coverage=args.min_region_coverage,
+            allow_single_region=args.allow_single_region,
+            report_format=args.report_format,
+            readiness_only=args.readiness_only,
+            require_complete_section=not args.allow_sampled_validation,
+            review_max_records=args.review_max_records,
+            query=args.prompt,
+        )
+        print("Xenium pilot status: %s" % result["status"])
+        if result.get("report_path"):
+            print("Report: %s" % os.path.abspath(str(result["report_path"])))
+        print("Validation record: %s" % os.path.abspath(os.path.join(args.out, "pilot_validation.json")))
+        if result.get("run_record_path"):
+            print("Replay record: %s" % os.path.abspath(str(result["run_record_path"])))
+        if result.get("blocking_reasons"):
+            print("Blockers: %s" % "; ".join(result["blocking_reasons"]))
+        return
     provider = build_llm_provider(args.llm_provider, model=args.llm_model)
     agent = SpatialMindAgent(output_root=args.out, memory_root=args.memory, llm_provider=provider)
     run = agent.run(args.prompt, args.data, report_format=args.report_format)

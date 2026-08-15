@@ -1,5 +1,28 @@
 # SpatialMind Next Development Plan
 
+## 2026-08-12 Priority Update
+
+The scientific-correctness sprint is implemented:
+
+- Xenium source counts are preserved separately from normalized expression; count-aware QC now reports `source=raw_counts`.
+- Morphology/count-summary pseudo-features are excluded from normalization and expression analysis.
+- Validated Scanpy/Squidpy tools fail closed with `strict_engine=True`.
+- Sampled review runs and complete-section inference are explicitly separated; final claims require `--full-section`.
+- The general CLI and `POST /runs` route Xenium inputs through the validated pilot rather than the lightweight three-tool path.
+- Spatial variable genes are part of the fixed validated Xenium plan.
+- A fresh leakage-aware packet is available at `outputs/brain_expert_benchmark_20260812/`.
+
+The next milestone is no longer another unsupervised software pass. It is the first human-grounded validation loop:
+
+1. Review at least 675/750 jointly labeled and region-assigned cells in each brain packet, including reviewer IDs and timestamps.
+2. Revalidate the packet and freeze the generated train/validation/test truth files without changing spatial-block assignments.
+3. Train or calibrate annotation only on `train`; select thresholds on `validation`; report macro-F1, balanced accuracy, per-class recall, abstention coverage, and calibration on untouched `test`.
+4. Apply the accepted annotation procedure across each full section, audit uncertain/out-of-reference cells, and obtain reviewer approval for the final `expert_cell_labels.csv` and `cell_regions.csv`.
+5. Run the final pilot with `--full-section`, then review claim truth and calibrate S/A/P/R reliability on held-out claims.
+6. Add independent sections/donors before making healthy-versus-glioblastoma condition-level generalizations.
+
+Do not convert `candidate_label`, `suggested_label`, expression clusters, or grid-based draft regions directly into truth. They are review evidence only.
+
 ## Current Position
 
 SpatialMind has moved beyond the earlier v0.3/v2 scaffold. The current project state is a v7 MVP agent with:

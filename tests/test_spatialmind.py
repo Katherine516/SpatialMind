@@ -1,11 +1,12 @@
 import math
 import os
+import csv
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from eval.runner import EvalRunner
+from eval.runner import EvalRunner, _case_directory
 from spatialmind.agent import SpatialMindAgent
 from spatialmind.agent_loop import SpatialAgent
 from spatialmind.datasets import discover_dataset_candidates, inspect_dataset
@@ -52,7 +53,7 @@ from spatialmind.viz import (
     write_pdf_report,
 )
 from spatialmind.storage import StorageLayer
-from spatialmind.storage import index_run_records, verify_run_record
+from spatialmind.storage import index_run_records, replay_run_record, verify_run_record
 from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_mvp_registry
 from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.fusion import ModalityFuser
@@ -144,6 +145,9 @@ class IngestionTests(unittest.TestCase):
         self.assertIn("Tumor cell", dataset.cell_types)
         self.assertEqual(dataset.qc_metrics["record_count"], 20)
         self.assertIn("Applied library-size normalization", " ".join(dataset.processing_steps))
+        self.assertTrue(dataset.records[0].raw_genes)
+        self.assertNotEqual(dataset.records[0].raw_genes, dataset.records[0].genes)
+        self.assertEqual(dataset.metadata["expression_layers"]["normalization_target_sum"], 10000.0)
 
     def test_ingestion_sanitizes_nonfinite_features_before_normalization(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -198,6 +202,10 @@ class IngestionTests(unittest.TestCase):
         self.assertIn("xenium_explorer_assets", dataset.metadata)
         self.assertIn("gene_matrix", dataset.metadata)
         self.assertEqual(dataset.metadata["gene_matrix"]["loader"], "h5py_10x_csc_v1")
+        first = dataset.records[0]
+        self.assertEqual(first.genes["TRANSCRIPT_COUNTS"], first.raw_genes["TRANSCRIPT_COUNTS"])
+        self.assertEqual(dataset.qc_metrics["qc_expression_layer"], "raw_counts")
+        self.assertEqual(dataset.metadata["analysis_scope"], "sampled")
 
     def test_loads_xenium_experiment_file_entrypoint(self):
         experiment_path = os.path.join(XENIUM_LYMPH, "experiment.xenium")
@@ -451,6 +459,7 @@ class ToolRegistryTests(unittest.TestCase):
                     "qc_and_cluster",
                     "annotation",
                     "marker_detection",
+                    "spatial_variable_genes",
                     "feature_overlay",
                     "region_summary",
                     "cell_neighborhood_enrichment",
@@ -474,6 +483,24 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(result.quality_metrics.differential.n_significant.role, "statistical_evidence")
         self.assertIn("quality_metrics", result.metrics)
 
+    def test_spatial_variable_gene_results_expose_morans_i_quality_metric(self):
+        from spatialmind.tools.implementations import attach_quality_metrics
+
+        dataset = DataIngestionLayer().load_csv(DEMO, sample_id="BRCA_04")
+        result = ToolResult(
+            tool_name="spatial_variable_genes",
+            summary="Synthetic spatial-gene result.",
+            metrics={
+                "engine": "squidpy",
+                "n_neighs": 6,
+                "top_genes": [{"gene": "AQP4", "morans_i": 0.42, "pval_adj": 0.01}],
+            },
+        )
+        attached = attach_quality_metrics(result, dataset, {"n_neighs": 6})
+        self.assertEqual(attached.quality_metrics.spatial.morans_i.status, "computed")
+        self.assertEqual(attached.quality_metrics.spatial.morans_i.value, 0.42)
+        self.assertEqual(attached.quality_metrics.spatial.cooccurrence_z.status, "not_applicable")
+
     @unittest.skipUnless(_HAS_SCANPY, "scanpy required for expression clustering path")
     def test_qc_and_cluster_defaults_to_expression_clustering_with_qc(self):
         dataset = _make_two_program_dataset()
@@ -485,11 +512,35 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertTrue(str(metrics["representation"]).startswith("X_pca"))
         # Two cleanly separated expression programs should not collapse to one cluster.
         self.assertGreaterEqual(len(metrics["cluster_counts"]), 2)
+        self.assertIsNotNone(metrics["silhouette"])
+        self.assertGreaterEqual(metrics["silhouette"], -1.0)
+        self.assertLessEqual(metrics["silhouette"], 1.0)
+        self.assertIsNotNone(metrics["modularity"])
+        self.assertGreaterEqual(metrics["modularity"], -1.0)
+        self.assertLessEqual(metrics["modularity"], 1.0)
+        self.assertEqual(metrics["excluded_zero_feature_cell_count"], 0)
+        self.assertEqual(result.quality_metrics.clustering.modularity.provenance.method, "weighted kNN graph modularity")
         qc = metrics["expression_qc"]
         self.assertEqual(qc["n_cells"], 60)
         self.assertEqual(qc["n_features"], 12)
         self.assertGreater(qc["mean_total_counts"], 0.0)
         self.assertGreater(qc["mean_features_per_cell"], 0.0)
+
+    @unittest.skipUnless(_HAS_SCANPY, "scanpy required for expression clustering path")
+    def test_expression_clustering_excludes_zero_feature_cells(self):
+        dataset = _make_two_program_dataset()
+        dataset.records.append(
+            SpotRecord("S1", 100.0, 100.0, "Unannotated cell", {}, cell_id="zero-expression")
+        )
+        result = build_mvp_registry().get("qc_and_cluster").run(dataset, {})
+        self.assertEqual(result.metrics["total_cell_count"], 61)
+        self.assertEqual(result.metrics["analyzed_cell_count"], 60)
+        self.assertEqual(result.metrics["excluded_zero_feature_cell_count"], 1)
+        assignments = dataset.metadata["cluster_assignments"]
+        self.assertEqual(assignments["zero-expression"], "")
+        markers = build_mvp_registry().get("marker_detection").run(dataset, {"group_key": "cluster"})
+        self.assertEqual(markers.metrics["excluded_unassigned_cell_count"], 1)
+        self.assertNotIn("unassigned", markers.metrics["groups"])
 
     @unittest.skipUnless(_HAS_SCANPY, "scanpy required for expression clustering path")
     def test_qc_and_cluster_spatial_mode_is_opt_in(self):
@@ -759,6 +810,26 @@ class ToolRegistryTests(unittest.TestCase):
             "claim_reliability": [],
             "run_record_path": "run.json",
             "report_html": "report.html",
+            "descriptive_analysis": {
+                "status": "computed",
+                "clustering_method": "pca_neighbors_leiden",
+                "expression_qc": {
+                    "n_cells": 20,
+                    "n_features": 10,
+                    "median_total_counts": 12.0,
+                    "median_features_per_cell": 4.0,
+                },
+                "clustering_diagnostics": {
+                    "analyzed_cell_count": 19,
+                    "excluded_zero_feature_cell_count": 1,
+                    "silhouette": 0.42,
+                    "modularity": 0.61,
+                },
+                "cluster_counts": {"0": 10, "1": 9},
+                "markers_by_cluster": {"0": ["AQP4", "GJA1"], "1": ["MOG", "CLDN11"]},
+                "cluster_neighborhood": {"top_pairs": [{"pair": "0 | 1", "zscore": -2.4}]},
+                "interpretation": "Synthetic descriptive fixture.",
+            },
             "spatial_robustness": {
                 "status": "computed",
                 "score": 0.82,
@@ -836,12 +907,16 @@ class ToolRegistryTests(unittest.TestCase):
             _write_html_report(html_path, payload, [])
             _write_pilot_pdf_report(pdf_path, payload, [])
             self.assertIn("Spatial Robustness Sweep", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Descriptive Analysis (no expert labels required)", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Weighted graph modularity", md_path.read_text(encoding="utf-8"))
             self.assertIn("Spatial Relationships", md_path.read_text(encoding="utf-8"))
             self.assertIn("stable_enriched", md_path.read_text(encoding="utf-8"))
             self.assertIn("Region-Stratified Neighborhood Testing", md_path.read_text(encoding="utf-8"))
             self.assertIn("Distance-Dependent Co-Occurrence", md_path.read_text(encoding="utf-8"))
             html_report = html_path.read_text(encoding="utf-8")
             self.assertIn("Spatial Robustness Sweep", html_report)
+            self.assertIn("Descriptive Analysis (no expert labels required)", html_report)
+            self.assertIn("Weighted graph modularity", html_report)
             self.assertIn("Spatial Relationships", html_report)
             self.assertIn("stable_enriched", html_report)
             self.assertIn("region_consistent", html_report)
@@ -987,6 +1062,43 @@ class ValidatedPilotTests(unittest.TestCase):
         )
         self.assertFalse(invalid.ok)
         self.assertIn("missing required outputs", invalid.errors[0])
+        self.assertIn("spatial_variable_genes", [step.tool_name for step in plan])
+        strict_tools = {
+            step.tool_name
+            for step in plan
+            if step.params.get("strict_engine")
+        }
+        self.assertEqual(
+            strict_tools,
+            {"qc_and_cluster", "marker_detection", "spatial_variable_genes", "cell_neighborhood_enrichment"},
+        )
+
+    def test_analysis_scope_distinguishes_sample_from_full_section(self):
+        from spatialmind.pilot.xenium import _analysis_scope
+
+        sampled = SpatialDataset(
+            sample_id="X1",
+            source_path="xenium",
+            records=[SpotRecord("X1", 0.0, 0.0, "T cell", {"CD8A": 1.0})],
+            metadata={
+                "analysis_scope": "sampled",
+                "n_obs_total": 10,
+                "sampling": {"total_records": 10, "method": "deterministic_even_index"},
+            },
+        )
+        full = SpatialDataset(
+            sample_id="X2",
+            source_path="xenium",
+            records=[SpotRecord("X2", 0.0, 0.0, "T cell", {"CD8A": 1.0})],
+            metadata={
+                "analysis_scope": "full_section",
+                "n_obs_total": 1,
+                "sampling": {"total_records": 1, "method": "all"},
+            },
+        )
+        self.assertFalse(_analysis_scope(sampled)["complete_section_requirement_met"])
+        self.assertTrue(_analysis_scope(full)["complete_section_requirement_met"])
+        self.assertFalse(_analysis_scope(full)["validated_claims_allowed"])
 
     def test_pilot_reports_structurally_valid_plan_regardless_of_inputs(self):
         # The plan is structurally sound; input availability is the gate's job, so
@@ -1736,6 +1848,11 @@ class ReferenceAssistTests(unittest.TestCase):
 
 
 class EvalHarnessTests(unittest.TestCase):
+    def test_mvp_cli_defaults_to_matching_case_suite(self):
+        self.assertEqual(_case_directory(None, False), "eval/test_cases")
+        self.assertEqual(_case_directory(None, True), "eval/mvp_cases")
+        self.assertEqual(_case_directory("custom/cases", True), "custom/cases")
+
     def test_eval_runner_loads_cases_and_scores(self):
         runner = EvalRunner(SpatialAgent())
         cases = runner.load_cases(os.path.join(ROOT, "eval", "test_cases"))
@@ -1744,6 +1861,167 @@ class EvalHarnessTests(unittest.TestCase):
         self.assertEqual(report["summary"]["case_count"], 2)
         self.assertGreaterEqual(report["summary"]["mean_score"], 0.5)
 
+
+class BrainExpertBenchmarkTests(unittest.TestCase):
+    def test_stratified_selection_is_deterministic_and_keeps_cluster_spatial_coverage(self):
+        from spatialmind.review.brain_benchmark import _stratified_select
+
+        rows = []
+        for index in range(120):
+            cluster = "0" if index < 100 else "1"
+            rows.append(
+                {
+                    "cell_id": "cell-%03d" % index,
+                    "expression_cluster": cluster,
+                    "proposed_spatial_block": "block-%d" % (index % 4),
+                    "selection_priority": 8 if index in {2, 103} else 0,
+                }
+            )
+        first = _stratified_select(rows, 40, "brain")
+        second = _stratified_select(rows, 40, "brain")
+        self.assertEqual([row["cell_id"] for row in first], [row["cell_id"] for row in second])
+        self.assertEqual(len(first), 40)
+        self.assertEqual({row["expression_cluster"] for row in first}, {"0", "1"})
+        self.assertGreaterEqual(len({row["proposed_spatial_block"] for row in first}), 4)
+        self.assertIn("cell-002", {row["cell_id"] for row in first})
+        self.assertIn("cell-103", {row["cell_id"] for row in first})
+
+    def test_spatial_block_splits_never_leak_cells_from_one_block(self):
+        from spatialmind.review.brain_benchmark import _assign_spatial_block_splits
+
+        mapping = _assign_spatial_block_splits(["block-%d" % index for index in range(16)], "brain")
+        self.assertEqual(set(mapping.values()), {"train", "validation", "test"})
+        self.assertEqual(len(mapping), 16)
+        self.assertEqual(mapping, _assign_spatial_block_splits(mapping.keys(), "brain"))
+
+    def test_qc_rebalancing_keeps_critical_exceptions_without_dominating_cohort(self):
+        from spatialmind.review.brain_benchmark import _rebalance_qc_strata
+
+        rows = []
+        for index in range(100):
+            rows.append(
+                {
+                    "cell_id": "cell-%03d" % index,
+                    "expression_cluster": str(index % 2),
+                    "qc_stratum": "low_transcript_count" if index < 70 else "typical",
+                    "selection_priority": 6 if index in {0, 1} else 0,
+                }
+            )
+        selected = rows[:40]
+        balanced = _rebalance_qc_strata(selected, rows, "brain", minimum_typical_fraction=0.6)
+        self.assertGreaterEqual(sum(1 for row in balanced if row["qc_stratum"] == "typical"), 24)
+        self.assertIn("cell-000", {row["cell_id"] for row in balanced})
+        self.assertIn("cell-001", {row["cell_id"] for row in balanced})
+
+    def test_completed_review_packet_materializes_frozen_truth_splits(self):
+        from spatialmind.review.brain_benchmark import validate_brain_benchmark_packet
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp) / "healthy_brain"
+            dataset_dir.mkdir()
+            labels = []
+            regions = []
+            splits = []
+            split_names = ["train", "train", "validation", "validation", "test", "test"]
+            for index, split_name in enumerate(split_names):
+                cell_id = "cell-%d" % index
+                labels.append(
+                    {
+                        "cell_id": cell_id,
+                        "expert_label": "astrocyte",
+                        "cl_id": "CL:0000127",
+                        "secondary_state": "",
+                        "confidence": "0.9",
+                        "reviewer_id": "reviewer-a",
+                        "expression_cluster": "0",
+                        "proposed_spatial_block": "block-%d" % index,
+                    }
+                )
+                regions.append(
+                    {
+                        "cell_id": cell_id,
+                        "region": "region-%d" % (index % 2),
+                        "region_confidence": "0.9",
+                        "region_reviewer_id": "reviewer-b",
+                    }
+                )
+                splits.append(
+                    {
+                        "cell_id": cell_id,
+                        "proposed_spatial_block": "block-%d" % index,
+                        "provisional_split": split_name,
+                        "split_unit": "proposed_spatial_block",
+                    }
+                )
+
+            def write(path, rows):
+                with path.open("w", newline="", encoding="utf-8") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+            write(dataset_dir / "expert_cell_labels_for_review.csv", labels)
+            write(dataset_dir / "cell_regions_for_review.csv", regions)
+            write(dataset_dir / "benchmark_split_manifest.csv", splits)
+            report = validate_brain_benchmark_packet(tmp, minimum_review_coverage=0.9)
+            self.assertEqual(report["status"], "ready")
+            self.assertTrue((dataset_dir / "reviewed_benchmark_truth.csv").exists())
+            self.assertTrue((dataset_dir / "frozen_splits" / "test.csv").exists())
+            with (dataset_dir / "reviewed_benchmark_truth.csv").open(newline="", encoding="utf-8") as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), 6)
+
+    def test_validator_requires_joint_label_region_coverage(self):
+        from spatialmind.review.brain_benchmark import validate_brain_benchmark_packet
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp) / "glioblastoma"
+            dataset_dir.mkdir()
+            labels = []
+            regions = []
+            splits = []
+            for index in range(10):
+                cell_id = "cell-%d" % index
+                split_name = "train" if index < 6 else ("validation" if index < 8 else "test")
+                labels.append(
+                    {
+                        "cell_id": cell_id,
+                        "expert_label": "" if index == 0 else "astrocyte",
+                        "reviewer_id": "" if index == 0 else "reviewer-a",
+                    }
+                )
+                regions.append(
+                    {
+                        "cell_id": cell_id,
+                        "region": "" if index == 1 else "tumor_core",
+                        "region_reviewer_id": "" if index == 1 else "reviewer-b",
+                    }
+                )
+                splits.append(
+                    {
+                        "cell_id": cell_id,
+                        "proposed_spatial_block": "block-%d" % index,
+                        "provisional_split": split_name,
+                        "split_unit": "proposed_spatial_block",
+                    }
+                )
+
+            def write(path, rows):
+                with path.open("w", newline="", encoding="utf-8") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+            write(dataset_dir / "expert_cell_labels_for_review.csv", labels)
+            write(dataset_dir / "cell_regions_for_review.csv", regions)
+            write(dataset_dir / "benchmark_split_manifest.csv", splits)
+            report = validate_brain_benchmark_packet(tmp, minimum_review_coverage=0.9)
+            dataset_report = report["datasets"]["glioblastoma"]
+            self.assertEqual(report["status"], "awaiting_expert_review")
+            self.assertEqual(dataset_report["label_coverage"], 0.9)
+            self.assertEqual(dataset_report["region_coverage"], 0.9)
+            self.assertEqual(dataset_report["joint_label_region_coverage"], 0.8)
+            self.assertTrue(any("Joint label-and-region" in item for item in dataset_report["blockers"]))
+            self.assertFalse((dataset_dir / "reviewed_benchmark_truth.csv").exists())
 
 class AgentTests(unittest.TestCase):
     def test_agent_creates_report_and_provenance(self):
@@ -1832,6 +2110,29 @@ class ReportExportTests(unittest.TestCase):
             self.assertEqual(verification.status, "verified")
             indexed = index_run_records(os.path.join(tmp, "outputs"), os.path.join(tmp, "runs.sqlite"))
             self.assertEqual(indexed["run_records_indexed"], 1)
+
+    def test_xenium_replay_uses_workflow_type_and_preserves_full_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = os.path.join(tmp, "input.txt")
+            with open(input_path, "w", encoding="utf-8") as handle:
+                handle.write("input")
+            record = StorageLayer(root=os.path.join(tmp, "outputs")).write_mvp_run_record(
+                query="Custom user request without legacy replay wording",
+                tool_trace=[],
+                params={
+                    "workflow_type": "validated_xenium_pilot",
+                    "max_records": 0,
+                    "require_complete_section": True,
+                    "review_max_records": 750,
+                },
+                input_files=[input_path],
+            )
+            replay = replay_run_record(record.run_record_path, verify_only=False)
+            self.assertEqual(replay["status"], "verified_replay_ready")
+            self.assertEqual(replay["query"], "Custom user request without legacy replay wording")
+            self.assertEqual(replay["params"]["max_records"], 0)
+            self.assertTrue(replay["params"]["require_complete_section"])
+            self.assertEqual(replay["params"]["review_max_records"], 750)
 
 
 class GovernanceTests(unittest.TestCase):
@@ -1936,11 +2237,66 @@ class DescriptiveLaneTests(unittest.TestCase):
             descriptive = result["descriptive_analysis"]
             self.assertEqual(descriptive["status"], "computed")
             self.assertIn("qc_and_cluster", descriptive["tools"])
+            self.assertIn("spatial_variable_genes", descriptive["tools"])
             self.assertGreaterEqual(descriptive["cluster_count"], 2)
             # Results must appear before the refusal section in the report.
             report = (out / "validated_xenium_pilot_report.md").read_text()
             self.assertIn("Descriptive Analysis (no expert labels required)", report)
+            self.assertIn("Spatially autocorrelated genes", report)
             self.assertLess(
                 report.index("Descriptive Analysis"),
                 report.index("What Is Still Needed To Go Further"),
             )
+            html_report = (out / "validated_xenium_pilot_report.html").read_text()
+            self.assertIn("Descriptive Analysis (no expert labels required)", html_report)
+            self.assertIn("Spatially autocorrelated genes", html_report)
+            self.assertLess(html_report.index("Descriptive Analysis"), html_report.index("Blocking Reasons"))
+
+
+class DescriptiveFigureTests(unittest.TestCase):
+    def _dataset(self):
+        records = []
+        for index in range(30):
+            if index % 3 == 0:
+                genes = {"AQP4": 8.0, "GJA1": 7.0, "MOG": 0.0, "SLC17A7": 0.0}
+            elif index % 3 == 1:
+                genes = {"AQP4": 0.0, "GJA1": 0.0, "MOG": 8.0, "SLC17A7": 0.0}
+            else:
+                genes = {"AQP4": 0.0, "GJA1": 0.0, "MOG": 0.0, "SLC17A7": 8.0}
+            records.append(
+                SpotRecord("S1", float(index), float(index % 6), "Unannotated cell", genes, cell_id="c%d" % index)
+            )
+        return SpatialDataset(sample_id="S1", source_path="synthetic", modality="xenium_spatial_rna", records=records)
+
+    def test_cluster_map_and_marker_heatmap_render(self):
+        from spatialmind.pilot.xenium import _render_cluster_marker_heatmap, _render_cluster_spatial_map
+
+        dataset = self._dataset()
+        assignments = {record.cell_id: str(index % 3) for index, record in enumerate(dataset.records)}
+        with tempfile.TemporaryDirectory() as tmp:
+            spatial = _render_cluster_spatial_map(dataset, assignments, Path(tmp) / "map.png")
+            if not spatial:
+                self.skipTest("matplotlib unavailable")
+            self.assertTrue(os.path.getsize(spatial) > 0)
+            heatmap = _render_cluster_marker_heatmap(
+                dataset,
+                assignments,
+                {"0": ["AQP4", "GJA1"], "1": ["MOG"], "2": ["SLC17A7"]},
+                Path(tmp) / "heat.png",
+            )
+            self.assertTrue(os.path.getsize(heatmap) > 0)
+
+    def test_figures_are_skipped_without_cluster_assignments(self):
+        from spatialmind.pilot.xenium import _write_descriptive_figures
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(_write_descriptive_figures(self._dataset(), {}, Path(tmp)), [])
+
+    def test_descriptive_lane_runs_even_when_gate_passes(self):
+        import inspect
+
+        from spatialmind.pilot import xenium as pilot_module
+
+        source = inspect.getsource(pilot_module.run_pilot)
+        # The lane must not be conditioned on the gate being blocked.
+        self.assertIn("if not readiness_only:\n        descriptive = _run_descriptive_lane", source)

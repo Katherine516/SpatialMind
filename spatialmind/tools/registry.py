@@ -12,6 +12,7 @@ MVP_TOOL_NAMES = [
     "qc_and_cluster",
     "annotation",
     "marker_detection",
+    "spatial_variable_genes",
     "feature_overlay",
     "region_summary",
     "cell_neighborhood_enrichment",

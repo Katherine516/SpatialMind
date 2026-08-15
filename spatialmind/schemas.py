@@ -24,6 +24,9 @@ class SpotRecord:
     genes: Dict[str, float]
     region: Optional[str] = None
     cell_id: Optional[str] = None
+    # Immutable source values used for count-aware QC and reproducible exports.
+    # ``genes`` is the analysis layer and may be normalized/log-transformed.
+    raw_genes: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

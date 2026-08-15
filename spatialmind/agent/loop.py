@@ -249,6 +249,8 @@ class SpatialAgent:
             planned.append(("cell_neighborhood_enrichment", {"n_neighs": 6}))
         if any(token in lowered for token in ["overlay", "show gene", "feature"]):
             planned.append(("feature_overlay", {}))
+        if any(token in lowered for token in ["spatially variable", "spatial variable", "variable genes", "spatial genes"]):
+            planned.append(("spatial_variable_genes", {"n_top": 25, "n_neighs": 6, "n_perms": 100}))
         return _dedupe_planned(planned)
 
     def _resolve_dependencies(self, planned: List[tuple[str, Dict[str, object]]]) -> List[tuple[str, Dict[str, object]]]:

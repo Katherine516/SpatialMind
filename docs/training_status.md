@@ -1,6 +1,6 @@
 # SpatialMind Training Status
 
-Last updated: 2026-07-11
+Last updated: 2026-08-11
 
 ## Summary
 
@@ -23,25 +23,32 @@ Current gates:
 
 | Gate | Result |
 | --- | --- |
-| Unit tests | 81/81 passing in the full environment |
+| Unit tests | 104/104 passing in the full environment |
 | Legacy eval | 15/15 passing, mean score 1.0000 |
-| MVP eval | 10/10 passing, mean score 1.0000 |
+| MVP eval | 11/11 passing, mean score 1.0000; includes the Xenium spatial-gene planning route |
 | Full environment `pip check` | Passing |
 | Numerical runtime isolation | Passing; default `.venv` is PyTorch-free with one OpenMP runtime |
 | Import boundary check | Passing |
-| Real backend validation | Scanpy DE/clustering/HVG and Squidpy neighborhood enrichment passing |
+| Real backend validation | Scanpy DE/clustering plus Squidpy Moran's I and neighborhood enrichment passing |
 | Xenium breast MVP run | Completed with report and visualizations |
 | Xenium expert-label readiness inventory | Completed for 4 local Xenium datasets |
-| Local training record generation | 18 records, mean behavior score 1.0000 |
+| Local training record generation | 19 records, mean behavior score 1.0000 |
 | Region-label template generation | Completed for 4 local Xenium datasets |
-| Validated Xenium pilot scorecard | 4 datasets scanned, 0 validated-ready |
+| Validated Xenium pilot scorecard | 4 datasets scanned, 0 validated-ready because reviewed labels/regions are absent |
 | v11 real-agent pilot controls | Typed plan, claim ledger, limitations, and run record generated |
 | Xenium label-intake validator | Generated blocked intake report for breast dataset |
 | v12 claim-level reliability | S/A/P/R weakest-link scores generated for every pilot claim |
 | Human brain reliability pass | 8 local claim/control records, AUROC 1.0000 on local controls, calibrated model not fit |
 | Claim-truth review packet | Generated for healthy brain and glioblastoma; awaiting expert review |
+| Brain cell/ROI benchmark packet | 1,500 cells frozen across healthy brain and glioblastoma; integrity gates pass, expert truth pending |
 
 Latest local training artifacts:
+
+- `outputs/layer_audit_20260811/LAYER_EVALUATION_REPORT.md`
+- `outputs/layer_audit_20260811/xenium_brain_healthy_workflow_final/validated_xenium_pilot_report.html`
+- `outputs/layer_audit_20260811/xenium_brain_healthy_workflow_final/validated_xenium_pilot_report.pdf`
+- `outputs/layer_audit_20260811/eval_legacy_final.json`
+- `outputs/layer_audit_20260811/eval_mvp_final.json`
 
 - `outputs/full_workflow_20260711/FULL_WORKFLOW_REPORT.md`
 - `outputs/full_workflow_20260711/training/local_spatialmind/training_records.jsonl`
@@ -66,9 +73,9 @@ Latest local training artifacts:
 - `outputs/claim_reliability_review_packet_v12/claim_truth_validation_report.md`
 - `outputs/training/human_brain_claim_reliability_review_gate_v12/claim_reliability_calibration_model.json`
 
-The latest 18 generated records are distributed as:
+The latest 19 generated records are distributed as:
 
-- 10 MVP query-plan-result records,
+- 11 MVP query-plan-result records,
 - 4 real-wrapper exploratory Xenium pipeline records,
 - 4 Xenium expert-label readiness records.
 
@@ -199,7 +206,7 @@ Current local status:
 2. Add reviewed positive spatial claims and null-control claims for healthy brain and glioblastoma.
 3. Rerun `scripts/train_claim_reliability_local.py` and fit the calibrated logistic reliability combiner once enough truth labels exist.
 4. Rerun `scripts/train_spatialmind_local.py` to convert reviewed labels into stronger query-plan-result records.
-5. Expand the local corpus from 18 records to at least 50 reviewed v7 MVP records.
+5. Expand the local corpus from 19 records to at least 50 reviewed v7 MVP records.
 6. Add expert-reviewed interpretations and corrections for at least one Xenium tissue.
 7. Expand to 100 to 200 examples across scRNA, scATAC, Xenium, and reference-assist workflows.
 8. Train or tune the planner only after the labels and expected outputs are reviewed.
@@ -224,3 +231,45 @@ The post-environment-fix training refresh is stored under `outputs/training/curr
 | Biological calibration | `not_fit`; awaiting expert review |
 
 The detailed run report is `outputs/training/current_20260717/TRAINING_AND_REVIEW_REPORT.md`. The exact process for obtaining and validating `expert_cell_labels.csv`, `cell_regions.csv`, and completed claim truth is documented in `docs/expert_review_workflow.md`.
+
+## 2026-08-11 Brain Benchmark Preparation
+
+The next real biological-validation step is now prepared under `outputs/brain_expert_benchmark_20260811/`.
+
+| Metric | Healthy brain | Glioblastoma |
+| --- | ---: | ---: |
+| Total Xenium cells | 24,406 | 40,887 |
+| Expression-analysis pool | 10,000 | 10,000 |
+| Expert-review cohort | 750 | 750 |
+| Expression clusters | 9 | 11 |
+| Weighted graph modularity | 0.77452 | 0.77921 |
+| PCA silhouette | 0.11455 | 0.16364 |
+| Spatial blocks represented | 15 | 15 |
+| Train / validation / test | 554 / 79 / 117 | 531 / 114 / 105 |
+| Spatial-block leakage | 0 | 0 |
+| Joint reviewed label/ROI coverage | 0% | 0% |
+
+This is benchmark preparation, not model training from biological truth. The software can now freeze and validate reviewed truth without leakage, but annotation accuracy, macro-F1, per-class recall, region agreement, spatial claim calibration, and healthy-versus-glioblastoma biological comparison remain unmeasurable until experts complete at least 675 jointly labeled/regioned cells per tissue with reviewer provenance.
+
+## 2026-08-12 Scientific-Correctness And Benchmark Refresh
+
+The analysis contract now preserves immutable source values separately from normalized expression, uses preserved Xenium counts for QC, and excludes morphology/count-summary pseudo-features from normalization. Validated biological runs require real Scanpy/Squidpy backends and complete-section scope; sampled runs remain suitable for review preparation and label-free descriptive analysis only.
+
+The refreshed benchmark is `outputs/brain_expert_benchmark_20260812/`:
+
+| Metric | Healthy brain | Glioblastoma |
+| --- | ---: | ---: |
+| Total section cells | 24,406 | 40,887 |
+| Expression pool | 10,000 | 10,000 |
+| Review cohort | 750 | 750 |
+| Expression clusters | 9 | 11 |
+| PCA silhouette | 0.10071 | 0.14773 |
+| Weighted graph modularity | 0.76355 | 0.77580 |
+| Train / validation / test | 552 / 80 / 118 | 534 / 114 / 102 |
+| Candidate-evidence coverage | 12.00% | 6.53% |
+| Joint expert label/ROI coverage | 0% | 0% |
+| Spatial-block leakage | 0 | 0 |
+
+Older glioblastoma `suggested_label` columns are now normalized into candidate-only evidence. They never populate `expert_label`. The agent still has no biologically trained annotation model because no reviewed truth has been supplied.
+
+Two 300-cell real-engine smoke runs are available at `outputs/next_move_healthy_brain/` and `outputs/next_move_glioblastoma/`. Both used Scanpy clustering/markers, Squidpy Moran's I, Squidpy neighborhood permutations, and raw-count QC; both correctly blocked biological claims for missing expert labels and regions.

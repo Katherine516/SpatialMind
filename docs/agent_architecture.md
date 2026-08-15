@@ -4,7 +4,7 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: unit tests 81/81, legacy eval 15/15, MVP eval 10/10, import-linter clean.
+Last verified: 2026-08-12. Unit tests 106/106; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
 
 ## The one-sentence version
 
@@ -38,7 +38,8 @@ scope boundary, not an omission.
 
 Everything downstream speaks one contract. `load_xenium` produces a
 `SpatialDataset` of `SpotRecord`s carrying `cell_id`, `x`/`y` (microns),
-`cell_type`, `region`, and a `genes` dict, plus dataset-level metadata, QC metrics,
+`cell_type`, `region`, normalized analysis values in `genes`, immutable source values
+in `raw_genes`, plus dataset-level metadata, QC metrics,
 and caveats.
 
 Two details that matter:
@@ -51,6 +52,13 @@ Two details that matter:
   library-size and area proxies on a different scale, so
   `expression_feature_names()` excludes them from every expression matrix. Left in,
   they dominate PCA and rank as top "markers".
+- **Source and analysis layers are separate.** Count-aware QC and AnnData
+  `layers["counts"]` use preserved Xenium counts. Library-size normalization and
+  `log1p` change only biological values in `genes`; count summaries and morphology
+  features remain unchanged. H5AD ingestion prefers `layers["counts"]` when it
+  exists and records source-value semantics when it does not.
+- **Scope is explicit.** Every Xenium load records total cells, loaded cells,
+  sampling method, fraction loaded, and `sampled` versus `full_section` scope.
 
 ## Stage 3: Label and region intake
 
@@ -72,8 +80,9 @@ analysis. It requires:
 3. User regions applied, ≥70% coverage
 4. ≥2 biological cell classes
 5. ≥2 user-defined regions
+6. Complete-section scope for final validated inference
 
-Any failure ⇒ `blocked_missing_validation_inputs`. **No analysis tool runs.**
+Missing review evidence yields `blocked_missing_validation_inputs`; a passing review gate on a sample yields `blocked_sampled_inference`; a failed required backend yields `blocked_analysis_backend`. A label-free descriptive lane still runs strict Scanpy/Squidpy QC, expression clustering, per-cluster markers, Moran's I, and cluster neighborhoods. Those outputs describe data-derived groups only and never name them as cell types.
 
 ## Stage 5: Typed plan validation
 
@@ -83,16 +92,23 @@ dependencies; `validate_tool_plan()` checks it. Plan validation checks *structur
 *availability* is the gate's job alone. That separation is why a blocked run still
 reports a valid plan instead of duplicating the gate's blockers as fake plan errors.
 
-## Stage 6: The six MVP tools (validated runs only)
+## Stage 6: The seven MVP tools
 
 | Tool | Backend | What it does |
 | --- | --- | --- |
 | `qc_and_cluster` | Scanpy | Per-cell QC, then normalize → log1p → PCA → neighbours → Leiden on **expression**. `cluster_on="spatial"` opts into spatial-domain clustering. |
 | `annotation` | — | Summarises applied expert labels |
 | `marker_detection` | Scanpy | **One-vs-rest** markers for every cell type by default; explicit `group1`+`group2` gives a pairwise contrast |
+| `spatial_variable_genes` | Squidpy | Moran's I over a spatial kNN graph with seeded permutations and FDR correction; Scanpy HVG is an explicit development fallback only |
 | `region_summary` | — | Cell-type composition and feature means per user region |
 | `cell_neighborhood_enrichment` | Squidpy | Permutation z-scores for cell-type adjacency |
 | `feature_overlay` | — | Single-feature spatial values, with panel-absence guarding |
+
+`qc_and_cluster`, cluster-group marker detection, `spatial_variable_genes`, and cluster-group neighborhood enrichment can run in the descriptive lane before expert labels exist. Annotation, reviewed-region summaries, and cell-type relationship claims remain validation-gated.
+
+All statistical tools in the validated plan carry `strict_engine=True`. If Scanpy,
+Leiden, or Squidpy is absent or fails, the run records a backend blocker; it cannot
+silently publish coordinate bins, pseudo-p-values, variance ranks, or radius counts.
 
 ## Stage 7: Robustness and spatial relationships
 
@@ -166,6 +182,10 @@ produce the full review packet — that is the point: a blocked run should be
   only; writes one `pilot_validation.json`. ~0.67s and 17 KB per dataset, no
   matplotlib. Used by the multi-dataset scorecard.
 - **Full run** — every artifact above, including the morphology-backed viewer.
+- **Sampled review run** — bounded by `max_records`; useful for review preparation
+  and descriptive QA, but not eligible for final biological claims.
+- **Full-section validated run** — launched with `--full-section` after labels and
+  regions pass; analysis and review-template row limits are independent.
 
 ## Getting labels: the two routes
 

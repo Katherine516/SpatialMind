@@ -145,26 +145,38 @@ def replay_run_record(record_path: str, output_dir: Optional[str] = None, verify
     payload = _load_json(Path(record_path))
     query = str(payload.get("query") or "")
     input_paths = list((payload.get("input_file_md5") or {}).keys())
-    if "Validated Xenium pilot" not in query or not input_paths:
+    params = dict(payload.get("params") or {})
+    is_xenium_pilot = (
+        params.get("workflow_type") == "validated_xenium_pilot"
+        or "Validated Xenium pilot" in query
+    )
+    if not is_xenium_pilot or not input_paths:
         return {
             "status": "blocked_replay_not_supported",
             "verification": verification.to_dict(),
             "reason": "Automatic replay is currently implemented for validated Xenium pilot run records only.",
         }
-    params = dict(payload.get("params") or {})
     replay_output = output_dir or "outputs/replay/%s" % str(payload.get("run_id") or Path(record_path).stem)
     return {
         "status": "verified_replay_ready",
         "verification": verification.to_dict(),
         "replay_output_dir": replay_output,
         "dataset_path": input_paths[0],
+        "query": query,
         "params": {
-            "max_records": int(params.get("max_records") or 5000),
+            "max_records": _int_param(params, "max_records", 5000),
             "min_label_coverage": float(params.get("min_label_coverage") or 0.7),
             "min_region_coverage": float(params.get("min_region_coverage") or 0.7),
             "allow_single_region": bool(params.get("allow_single_region") or False),
+            "require_complete_section": bool(params.get("require_complete_section", True)),
+            "review_max_records": _int_param(params, "review_max_records", 5000),
         },
     }
+
+
+def _int_param(params: Dict[str, Any], key: str, default: int) -> int:
+    value = params.get(key, default)
+    return int(default if value is None else value)
 
 
 def _check_file(path: str, expected: str) -> FileCheck:

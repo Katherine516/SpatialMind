@@ -15,6 +15,7 @@ KNOWN_COLUMNS = {"sample_id", "x", "y", "cell_type", "region", "spot_id", "barco
 TABLE_TYPES = {"tidy_csv", "segmentation_csv", "multiplex_imaging_csv", "spatial_table"}
 COMMON_ANNOTATION_KEYS = ("cell_type", "celltype", "cell_type_key", "annotation", "cluster", "leiden", "seurat_clusters")
 COMMON_SPATIAL_KEYS = ("spatial", "X_spatial")
+NON_EXPRESSION_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
 
 SUPPORTED_RAW_DATA_TYPES = [
     {
@@ -235,6 +236,11 @@ class DataIngestionLayer:
             modality=source.modality,
             coordinate_system=coordinate_system,
             sources=[source],
+            metadata={
+                "source_value_semantics": "unspecified_numeric",
+                "raw_counts_available": False,
+                "analysis_scope": "full_section",
+            },
         )
         dataset.processing_steps.append("Loaded %d records from %s." % (len(records), path))
         if rejected_rows:
@@ -314,10 +320,12 @@ class DataIngestionLayer:
         records: List[SpotRecord] = []
         inferred_sample = sample_id or _infer_sample_id_from_obs(adata.obs, selected_indices) or Path(path).stem
         # One batched read beats thousands of single-row reads, especially backed.
-        batch = _fetch_h5ad_rows(adata, selected_indices)
+        counts_layer = _choose_h5ad_counts_layer(adata)
+        batch = _fetch_h5ad_rows(adata, selected_indices, layer_key=counts_layer)
         for position, index in enumerate(selected_indices):
             coord = coords[index]
-            row = adata.X[index] if batch is None else batch[position]
+            matrix = adata.layers[counts_layer] if counts_layer else adata.X
+            row = matrix[index] if batch is None else batch[position]
             features = _matrix_row_to_features(row, var_names, max_features_per_record=max_features_per_record)
             cell_type = "Unannotated"
             if annotation:
@@ -333,6 +341,7 @@ class DataIngestionLayer:
                     genes=features,
                     region=_obs_value(adata.obs, index, "region"),
                     cell_id=str(adata.obs_names[index]),
+                    raw_genes=dict(features),
                 )
             )
 
@@ -366,6 +375,17 @@ class DataIngestionLayer:
                 "h5ad_read_mode": read_mode,
                 "max_records": max_records,
                 "max_features_per_record": max_features_per_record,
+                "source_value_semantics": "raw_counts" if counts_layer else "adata_X_unspecified",
+                "raw_counts_available": bool(counts_layer),
+                "raw_count_layer": counts_layer,
+                "analysis_scope": "full_section" if len(records) == int(adata.n_obs) else "sampled",
+                "sampling": {
+                    "method": "all" if len(records) == int(adata.n_obs) else "deterministic_even_index",
+                    "requested_records": max_records,
+                    "loaded_records": len(records),
+                    "total_records": int(adata.n_obs),
+                    "fraction_loaded": round(len(records) / float(adata.n_obs), 6),
+                },
             },
         )
         if len(records) < int(adata.n_obs):
@@ -400,11 +420,13 @@ class DataIngestionLayer:
         metadata["xenium_resolved_directory"] = path
         inferred_sample = sample_id or str(metadata.get("run_name") or Path(path).name)
         total_rows = 0
+        reached_record_limit = False
         records: List[SpotRecord] = []
         selected_cell_ids: List[str] = []
         target_indices: Optional[set[int]] = None
         estimated_total = _safe_int(metadata.get("num_cells_detected"))
-        if estimated_total and estimated_total > max_records:
+        record_limit = max_records if max_records > 0 else None
+        if estimated_total and record_limit is not None and estimated_total > record_limit:
             target_indices = set(_sample_indices(estimated_total, max_records))
         with _open_text(cells_path) as handle:
             reader = csv.DictReader(handle)
@@ -433,7 +455,8 @@ class DataIngestionLayer:
                     selected_cell_ids.append(cell_id)
                 except (TypeError, ValueError):
                     continue
-                if target_indices is None and len(records) >= max_records:
+                if target_indices is None and record_limit is not None and len(records) >= record_limit:
+                    reached_record_limit = True
                     break
 
         if not records:
@@ -459,6 +482,13 @@ class DataIngestionLayer:
                         annotated_count += 1
             matrix_metadata["marker_rule_annotations"] = annotated_count
 
+        for record in records:
+            record.raw_genes = dict(record.genes)
+
+        complete_section = max_records <= 0 or (
+            target_indices is None and not reached_record_limit and bool(estimated_total and len(records) >= estimated_total)
+        )
+
         sources = [
             RawDataSource(
                 path=input_path,
@@ -483,8 +513,12 @@ class DataIngestionLayer:
                 "n_obs_total": estimated_total,
                 "max_records": max_records,
                 "max_features_per_record": max_features_per_record,
+                "source_value_semantics": "raw_counts",
+                "raw_counts_available": bool(matrix_features),
+                "raw_count_source": "cell_feature_matrix.h5" if matrix_features else "cells.csv count summaries",
+                "analysis_scope": "full_section" if complete_section else "sampled",
                 "sampling": {
-                    "method": "deterministic_even_index" if target_indices is not None else "all_or_first_n",
+                    "method": "all" if complete_section else ("deterministic_even_index" if target_indices is not None else "first_n"),
                     "requested_records": max_records,
                     "loaded_records": len(records),
                     "total_records": estimated_total,
@@ -589,24 +623,41 @@ class DataIngestionLayer:
 
         nonfinite_feature_values = 0
         for record in dataset.records:
+            if not record.raw_genes:
+                record.raw_genes = dict(record.genes)
             for feature, value in list(record.genes.items()):
                 if not math.isfinite(value):
                     record.genes[feature] = 0.0
                     nonfinite_feature_values += 1
+            for feature, value in list(record.raw_genes.items()):
+                if not math.isfinite(value):
+                    record.raw_genes[feature] = 0.0
 
         xs = [record.x for record in dataset.records]
         ys = [record.y for record in dataset.records]
         coordinate_pairs = [(record.x, record.y) for record in dataset.records]
         duplicate_coordinates = len(coordinate_pairs) - len(set(coordinate_pairs))
-        missing_feature_rows = sum(1 for record in dataset.records if not record.genes)
-        negative_values = sum(1 for record in dataset.records for value in record.genes.values() if value < 0)
-        totals = [sum(max(value, 0.0) for value in record.genes.values()) for record in dataset.records]
+        expression_values = [
+            {feature: value for feature, value in record.raw_genes.items() if feature not in NON_EXPRESSION_FEATURES}
+            for record in dataset.records
+        ]
+        missing_feature_rows = sum(1 for values in expression_values if not values)
+        negative_values = sum(1 for values in expression_values for value in values.values() if value < 0)
+        totals = [sum(max(value, 0.0) for value in values.values()) for values in expression_values]
+        if not any(totals):
+            totals = [
+                max(record.raw_genes.get("TRANSCRIPT_COUNTS", record.raw_genes.get("TOTAL_COUNTS", 0.0)), 0.0)
+                for record in dataset.records
+            ]
         positive_totals = [value for value in totals if value > 0]
         dataset.qc_metrics.update(
             {
                 "record_count": len(dataset.records),
                 "cell_type_count": len(dataset.cell_types),
                 "feature_count": len(dataset.genes),
+                "expression_feature_count": len(
+                    {feature for record in dataset.records for feature in record.raw_genes if feature not in NON_EXPRESSION_FEATURES}
+                ),
                 "region_count": len({record.region for record in dataset.records if record.region}),
                 "duplicate_coordinate_count": duplicate_coordinates,
                 "missing_feature_row_count": missing_feature_rows,
@@ -614,6 +665,7 @@ class DataIngestionLayer:
                 "nonfinite_feature_value_count": nonfinite_feature_values,
                 "nonfinite_coordinate_record_count": nonfinite_coordinate_records,
                 "median_total_feature_count": round(_median(positive_totals), 4) if positive_totals else 0.0,
+                "qc_expression_layer": "raw_counts" if dataset.metadata.get("raw_counts_available") else "source_values",
                 "coordinate_bounds": {
                     "min_x": min(xs) if xs else 0.0,
                     "max_x": max(xs) if xs else 0.0,
@@ -644,14 +696,27 @@ class DataIngestionLayer:
 
     def _normalize_features(self, dataset: SpatialDataset) -> None:
         for record in dataset.records:
-            total = sum(max(value, 0.0) for value in record.genes.values())
+            if not record.raw_genes:
+                record.raw_genes = dict(record.genes)
+            expression = {
+                feature: value for feature, value in record.raw_genes.items() if feature not in NON_EXPRESSION_FEATURES
+            }
+            total = sum(max(value, 0.0) for value in expression.values())
             if total <= 0:
                 continue
-            for feature, value in list(record.genes.items()):
+            for feature, value in expression.items():
                 record.genes[feature] = math.log1p((max(value, 0.0) / total) * 10000.0)
         dataset.normalized = True
+        dataset.metadata["expression_layers"] = {
+            "analysis": "genes: library-size normalized log1p values",
+            "source": "raw_genes: immutable source values",
+            "normalization_target_sum": 10000.0,
+            "non_expression_features_excluded": sorted(NON_EXPRESSION_FEATURES),
+        }
         dataset.processing_steps.append("Applied library-size normalization and log1p transform.")
-        dataset.notes.append("Feature values were library-size normalized and log1p transformed.")
+        dataset.notes.append(
+            "Expression features were library-size normalized and log1p transformed; source values and morphology/count summaries were preserved."
+        )
 
     def _annotate_feature_metadata(self, dataset: SpatialDataset) -> None:
         genes = dataset.genes
@@ -984,7 +1049,15 @@ def _open_h5ad(ad: Any, path: str, backed: bool = True) -> Tuple[Any, str]:
     return ad.read_h5ad(path), "memory"
 
 
-def _fetch_h5ad_rows(adata: Any, indices: List[int]) -> Optional[Any]:
+def _choose_h5ad_counts_layer(adata: Any) -> Optional[str]:
+    layers = getattr(adata, "layers", {})
+    for key in ("counts", "raw_counts"):
+        if key in layers:
+            return key
+    return None
+
+
+def _fetch_h5ad_rows(adata: Any, indices: List[int], layer_key: Optional[str] = None) -> Optional[Any]:
     """Read the selected rows in one pass, or None if batching is unsupported.
 
     Indices are already sorted ascending by _sample_indices, which is the access
@@ -993,7 +1066,8 @@ def _fetch_h5ad_rows(adata: Any, indices: List[int]) -> Optional[Any]:
     if not indices:
         return None
     try:
-        batch = adata.X[list(indices)]
+        matrix = adata.layers[layer_key] if layer_key else adata.X
+        batch = matrix[list(indices)]
     except Exception:
         return None
     try:

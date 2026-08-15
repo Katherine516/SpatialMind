@@ -20,3 +20,6 @@ data/**
 !data/demo_spatial.csv
 !data/cell_ontology_terms/
 !data/cell_ontology_terms/CL_0000127_astrocyte.json
+
+# Scratch renders from local report checks
+tmp/

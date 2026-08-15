@@ -25,10 +25,12 @@ from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
 from spatialmind.tools.implementations import (
+    CLUSTER_ASSIGNMENT_KEY,
     run_distance_dependent_cooccurrence,
     run_neighborhood_robustness,
     run_region_stratified_neighborhoods,
 )
+from spatialmind.viz.renderers import PALETTE
 from spatialmind.viz import (
     PdfFigure,
     PdfSection,
@@ -53,6 +55,9 @@ def run_pilot(
     allow_single_region: bool = False,
     report_format: str = "html",
     readiness_only: bool = False,
+    require_complete_section: bool = True,
+    review_max_records: int = 5000,
+    query: str = "Validated Xenium pilot: annotate cells, summarize user regions, and test spatial relationships.",
 ) -> Dict[str, Any]:
     normalized_format = normalize_report_format(report_format)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -73,6 +78,21 @@ def run_pilot(
         min_region_coverage=min_region_coverage,
         allow_single_region=allow_single_region,
     )
+    analysis_scope = _analysis_scope(dataset)
+    if (
+        gate["status"] == "validated_ready"
+        and require_complete_section
+        and not readiness_only
+        and not analysis_scope["complete_section"]
+    ):
+        gate["status"] = "blocked_sampled_inference"
+        gate["blocking_reasons"].append(
+            "Validated biological inference requires the complete tissue section; this run loaded %.2f%% of cells."
+            % (100.0 * float(analysis_scope["fraction_loaded"]))
+        )
+        gate["required_next_inputs"].append(
+            "Rerun with `max_records=0` (CLI: `--full-section`) after review labels and regions are complete."
+        )
     intake_report = build_xenium_label_intake_report(
         dataset=dataset,
         dataset_path=dataset_path,
@@ -97,13 +117,13 @@ def run_pilot(
         label_template = write_expert_label_template(
             dataset,
             str(output_dir / "expert_label_template.csv"),
-            max_rows=max_records,
+            max_rows=review_max_records if review_max_records > 0 else len(dataset.records),
             dataset_path=dataset_path,
         )
         region_template = write_region_label_template(
             dataset,
             str(output_dir / "region_label_template.csv"),
-            max_rows=max_records,
+            max_rows=review_max_records if review_max_records > 0 else len(dataset.records),
             dataset_path=dataset_path,
         )
         review_figures = _write_review_figures(dataset, output_dir)
@@ -129,20 +149,33 @@ def run_pilot(
     # cluster-level neighbourhood structure need no expert labels, because they
     # group by data-derived clusters rather than claimed cell identities. A
     # blocked run should still hand back this analysis instead of only a refusal.
+    # Runs for validated pilots too: the cluster-level view is independent evidence
+    # that does not depend on the labels, so a labelled dataset should keep it
+    # alongside the cell-type view rather than lose it.
     descriptive: Dict[str, Any] = {"status": "not_run", "reason": "Descriptive analysis was not requested."}
-    if not readiness_only and gate["status"] != "validated_ready":
+    if not readiness_only:
         descriptive = _run_descriptive_lane(dataset, output_dir)
 
+    analysis_backend_error = ""
     if gate["status"] == "validated_ready" and not readiness_only:
-        results = _run_validated_tools(dataset, plan)
-        for result in results:
-            _write_json(output_dir / ("%s.json" % result.tool_name), result)
-        figures.extend(_write_figures(dataset, output_dir))
-        neighborhood_result = next(
-            (result for result in results if result.tool_name == "cell_neighborhood_enrichment"),
-            None,
-        )
-        spatial_robustness = run_neighborhood_robustness(dataset, baseline_result=neighborhood_result)
+        try:
+            results = _run_validated_tools(dataset, plan)
+            for result in results:
+                _write_json(output_dir / ("%s.json" % result.tool_name), result)
+            figures.extend(_write_figures(dataset, output_dir))
+            neighborhood_result = next(
+                (result for result in results if result.tool_name == "cell_neighborhood_enrichment"),
+                None,
+            )
+            spatial_robustness = run_neighborhood_robustness(dataset, baseline_result=neighborhood_result)
+        except Exception as exc:
+            analysis_backend_error = "%s: %s" % (type(exc).__name__, exc)
+            results = []
+            gate["status"] = "blocked_analysis_backend"
+            gate["blocking_reasons"].append("Validated analysis backend failed: %s" % analysis_backend_error)
+            gate["required_next_inputs"].append(
+                "Repair the Scanpy/Squidpy environment and rerun; prototype fallbacks are disabled for validated claims."
+            )
 
     if readiness_only:
         spatial_relationships = {
@@ -158,13 +191,6 @@ def run_pilot(
             robustness=spatial_robustness,
             validated=gate["status"] == "validated_ready",
         )
-        relationship_figure = _render_spatial_relationship_heatmap(
-            spatial_relationships,
-            output_dir / "spatial_relationships_heatmap.png",
-        )
-        if relationship_figure:
-            spatial_relationships["figure"] = relationship_figure
-            figures.append(relationship_figure)
 
     region_stratified_neighborhoods: Dict[str, Any] = {
         "status": "not_run",
@@ -178,30 +204,72 @@ def run_pilot(
         "curves": [],
     }
     if gate["status"] == "validated_ready" and not readiness_only:
-        region_stratified_neighborhoods = run_region_stratified_neighborhoods(dataset)
-        relationship_pairs = [
-            str(item.get("pair"))
-            for item in spatial_relationships.get("relationships", [])
-            if isinstance(item, dict) and item.get("pair")
-        ]
-        distance_cooccurrence = run_distance_dependent_cooccurrence(dataset, pairs=relationship_pairs)
-        region_figure = _render_region_stratified_heatmap(
-            region_stratified_neighborhoods,
-            output_dir / "region_stratified_neighborhoods.png",
-        )
-        if region_figure:
-            region_stratified_neighborhoods["figure"] = region_figure
-            figures.append(region_figure)
-        cooccurrence_figure = _render_distance_cooccurrence_curves(
-            distance_cooccurrence,
-            output_dir / "distance_dependent_cooccurrence.png",
-        )
-        if cooccurrence_figure:
-            distance_cooccurrence["figure"] = cooccurrence_figure
-            figures.append(cooccurrence_figure)
+        try:
+            region_stratified_neighborhoods = run_region_stratified_neighborhoods(
+                dataset, params={"strict_engine": True}
+            )
+            relationship_pairs = [
+                str(item.get("pair"))
+                for item in spatial_relationships.get("relationships", [])
+                if isinstance(item, dict) and item.get("pair")
+            ]
+            distance_cooccurrence = run_distance_dependent_cooccurrence(
+                dataset, pairs=relationship_pairs, params={"strict_engine": True}
+            )
+            region_figure = _render_region_stratified_heatmap(
+                region_stratified_neighborhoods,
+                output_dir / "region_stratified_neighborhoods.png",
+            )
+            if region_figure:
+                region_stratified_neighborhoods["figure"] = region_figure
+                figures.append(region_figure)
+            cooccurrence_figure = _render_distance_cooccurrence_curves(
+                distance_cooccurrence,
+                output_dir / "distance_dependent_cooccurrence.png",
+            )
+            if cooccurrence_figure:
+                distance_cooccurrence["figure"] = cooccurrence_figure
+                figures.append(cooccurrence_figure)
+        except Exception as exc:
+            downstream_error = "%s: %s" % (type(exc).__name__, exc)
+            analysis_backend_error = "; ".join(value for value in (analysis_backend_error, downstream_error) if value)
+            gate["status"] = "blocked_analysis_backend"
+            gate["blocking_reasons"].append("Validated spatial backend failed: %s" % downstream_error)
+            gate["required_next_inputs"].append(
+                "Repair the Scanpy/Squidpy environment and rerun; partial spatial outputs cannot support validated claims."
+            )
+            region_stratified_neighborhoods = {
+                "status": "not_run",
+                "reason": "Validated spatial backend failed: %s" % downstream_error,
+                "regions": [],
+                "pair_consistency": [],
+            }
+            distance_cooccurrence = {
+                "status": "not_run",
+                "reason": "Validated spatial backend failed: %s" % downstream_error,
+                "curves": [],
+            }
+            spatial_relationships = build_spatial_relationship_summary(
+                dataset=dataset,
+                results=results,
+                robustness=spatial_robustness,
+                validated=False,
+            )
         _write_json(output_dir / "region_stratified_neighborhoods.json", region_stratified_neighborhoods)
         _write_json(output_dir / "distance_dependent_cooccurrence.json", distance_cooccurrence)
 
+    if gate["status"] == "validated_ready" and not readiness_only:
+        relationship_figure = _render_spatial_relationship_heatmap(
+            spatial_relationships,
+            output_dir / "spatial_relationships_heatmap.png",
+        )
+        if relationship_figure:
+            spatial_relationships["figure"] = relationship_figure
+            figures.append(relationship_figure)
+
+    analysis_scope["validated_claims_allowed"] = bool(
+        analysis_scope["complete_section"] and gate["status"] == "validated_ready"
+    )
     payload = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "dataset_path": dataset_path,
@@ -210,6 +278,9 @@ def run_pilot(
         "blocking_reasons": gate["blocking_reasons"],
         "required_next_inputs": gate["required_next_inputs"],
         "records_loaded": len(dataset.records),
+        "analysis_scope": analysis_scope,
+        "expression_layers": dataset.metadata.get("expression_layers", {}),
+        "analysis_backend_error": analysis_backend_error,
         "features_loaded": len(dataset.genes),
         "cell_types": dataset.cell_types,
         "regions": sorted({record.region for record in dataset.records if record.region}),
@@ -251,6 +322,7 @@ def run_pilot(
             else str(output_dir / "validated_xenium_pilot_report.html")
         ),
         "readiness_only": readiness_only,
+        "require_complete_section": require_complete_section,
         "run_record_path": "",
     }
     payload["claim_ledger"] = build_pilot_claim_ledger(payload, results)
@@ -280,13 +352,16 @@ def run_pilot(
     if cooccurrence_json.exists():
         report_artifacts["distance_dependent_cooccurrence"] = str(cooccurrence_json)
     run_record = StorageLayer(root=str(output_dir)).write_mvp_run_record(
-        query="Validated Xenium pilot: annotate cells, summarize user regions, and test neighborhoods.",
+        query=query,
         tool_trace=[{"tool_name": result.tool_name, "summary": result.summary, "metrics": result.metrics} for result in results],
         params={
+            "workflow_type": "validated_xenium_pilot",
             "max_records": max_records,
             "min_label_coverage": min_label_coverage,
             "min_region_coverage": min_region_coverage,
             "allow_single_region": allow_single_region,
+            "require_complete_section": require_complete_section,
+            "review_max_records": review_max_records,
             "report_format": normalized_format,
             "tool_plan": _jsonable(plan),
         },
@@ -409,7 +484,9 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     registry = build_mvp_registry()
     payload: Dict[str, Any] = {"status": "computed", "group_key": "cluster", "tools": []}
     try:
-        clustering = registry.get("qc_and_cluster").run(dataset, {})
+        clustering = registry.get("qc_and_cluster").run(
+            dataset, {"resolution": 0.55, "random_state": 0, "strict_engine": True}
+        )
     except Exception as exc:
         return {"status": "not_run", "reason": "Clustering failed: %s" % exc}
     payload["tools"].append("qc_and_cluster")
@@ -417,11 +494,42 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     payload["cluster_count"] = len(payload["cluster_counts"])
     payload["expression_qc"] = clustering.metrics.get("expression_qc", {})
     payload["clustering_method"] = clustering.metrics.get("method")
+    payload["clustering_diagnostics"] = {
+        "silhouette": clustering.metrics.get("silhouette"),
+        "modularity": clustering.metrics.get("modularity"),
+        "analyzed_cell_count": clustering.metrics.get("analyzed_cell_count"),
+        "excluded_zero_feature_cell_count": clustering.metrics.get("excluded_zero_feature_cell_count", 0),
+    }
     _write_json(output_dir / "descriptive_qc_and_cluster.json", clustering)
 
     for tool_name, params, key in (
-        ("marker_detection", {"group_key": "cluster"}, "markers_by_cluster"),
-        ("cell_neighborhood_enrichment", {"group_key": "cluster"}, "cluster_neighborhood"),
+        (
+            "marker_detection",
+            {"group_key": "cluster", "n_top": 25, "strict_engine": True},
+            "markers_by_cluster",
+        ),
+        (
+            "spatial_variable_genes",
+            {
+                "n_top": 15,
+                "n_neighs": 6,
+                "n_perms": 100,
+                "random_state": 0,
+                "strict_engine": True,
+            },
+            "spatial_genes",
+        ),
+        (
+            "cell_neighborhood_enrichment",
+            {
+                "group_key": "cluster",
+                "n_neighs": 6,
+                "n_perms": 100,
+                "random_state": 0,
+                "strict_engine": True,
+            },
+            "cluster_neighborhood",
+        ),
     ):
         try:
             result = registry.get(tool_name).run(dataset, dict(params))
@@ -435,6 +543,16 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
                 str(group): [str(row.get("gene")) for row in rows[:8] if isinstance(row, dict)]
                 for group, rows in (result.metrics.get("markers_by_group") or {}).items()
             }
+        elif tool_name == "spatial_variable_genes":
+            payload[key] = {
+                "engine": result.metrics.get("engine"),
+                "method": result.metrics.get("method"),
+                "n_perms": result.metrics.get("n_perms"),
+                "multiple_testing": result.metrics.get("multiple_testing"),
+                "significant_gene_count_top_n": result.metrics.get("significant_gene_count_top_n"),
+                "significant_gene_count_all": result.metrics.get("significant_gene_count_all"),
+                "top_genes": result.metrics.get("top_genes", [])[:15],
+            }
         else:
             payload[key] = {
                 "top_pairs": result.metrics.get("top_pairs", [])[:10],
@@ -444,7 +562,150 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
         "Clusters are derived from measured expression, not from cell-type labels. Marker genes "
         "describe what distinguishes each cluster; naming clusters as cell types requires expert review."
     )
+    payload["figures"] = _write_descriptive_figures(dataset, payload, output_dir)
     return payload
+
+
+def _cluster_assignments(dataset: SpatialDataset) -> Dict[str, str]:
+    assignments = dataset.metadata.get(CLUSTER_ASSIGNMENT_KEY)
+    return dict(assignments) if isinstance(assignments, dict) else {}
+
+
+def _write_descriptive_figures(dataset: SpatialDataset, payload: Dict[str, Any], output_dir: Path) -> List[str]:
+    """Cluster spatial map and marker heatmap for the label-free lane."""
+    assignments = _cluster_assignments(dataset)
+    if not assignments:
+        return []
+    figures = []
+    spatial = _render_cluster_spatial_map(dataset, assignments, output_dir / "descriptive_cluster_map.png")
+    if spatial:
+        figures.append(spatial)
+    markers = payload.get("markers_by_cluster")
+    if isinstance(markers, dict) and markers:
+        heatmap = _render_cluster_marker_heatmap(
+            dataset, assignments, markers, output_dir / "descriptive_marker_heatmap.png"
+        )
+        if heatmap:
+            figures.append(heatmap)
+    return figures
+
+
+def _render_cluster_spatial_map(dataset: SpatialDataset, assignments: Dict[str, str], path: Path) -> str:
+    """Cells in tissue coordinates, coloured by data-derived cluster."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return ""
+    clusters = sorted({value for value in assignments.values() if value}, key=_sort_cluster_key)
+    if not clusters:
+        return ""
+    colors = {cluster: PALETTE[index % len(PALETTE)] for index, cluster in enumerate(clusters)}
+    counts = Counter(assignments.get(record.cell_id or str(index), "") for index, record in enumerate(dataset.records))
+    fig = plt.figure(figsize=(11.2, 6.0), dpi=180)
+    ax = fig.add_axes([0.07, 0.10, 0.60, 0.80])
+    legend_ax = fig.add_axes([0.70, 0.10, 0.28, 0.80])
+    legend_ax.axis("off")
+    ax.set_facecolor("#fbfbf7")
+    for cluster in clusters:
+        xs, ys = [], []
+        for index, record in enumerate(dataset.records):
+            if assignments.get(record.cell_id or str(index)) == cluster:
+                xs.append(record.x)
+                ys.append(record.y)
+        ax.scatter(xs, ys, s=4.0, c=colors[cluster], alpha=0.75, linewidths=0)
+    ax.set_title("Expression clusters in tissue space", fontsize=13, pad=8)
+    ax.set_xlabel("spatial1 (microns)")
+    ax.set_ylabel("spatial2 (microns)")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.0)
+        spine.set_color("#222222")
+    for index, cluster in enumerate(clusters):
+        y = 0.96 - index * (0.90 / max(len(clusters), 1))
+        legend_ax.scatter([0.04], [y], s=40, c=colors[cluster], transform=legend_ax.transAxes)
+        legend_ax.text(
+            0.13, y, "cluster %s  (n=%d)" % (cluster, counts.get(cluster, 0)),
+            fontsize=9, va="center", transform=legend_ax.transAxes,
+        )
+    fig.text(
+        0.07, 0.02,
+        "Clusters are data-derived expression groups, not cell-type calls.",
+        fontsize=8.5, color="#5b6770",
+    )
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(path)
+
+
+def _render_cluster_marker_heatmap(
+    dataset: SpatialDataset,
+    assignments: Dict[str, str],
+    markers_by_cluster: Dict[str, Any],
+    path: Path,
+    per_cluster: int = 3,
+) -> str:
+    """Mean expression of each cluster's top markers across all clusters."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:
+        return ""
+    clusters = sorted({value for value in assignments.values() if value}, key=_sort_cluster_key)
+    genes: List[str] = []
+    for cluster in clusters:
+        for gene in (markers_by_cluster.get(cluster) or [])[:per_cluster]:
+            if gene and gene not in genes:
+                genes.append(str(gene))
+    if not clusters or not genes:
+        return ""
+    totals = {cluster: {gene: 0.0 for gene in genes} for cluster in clusters}
+    counts = {cluster: 0 for cluster in clusters}
+    for index, record in enumerate(dataset.records):
+        cluster = assignments.get(record.cell_id or str(index), "")
+        if cluster not in totals:
+            continue
+        counts[cluster] += 1
+        for gene in genes:
+            try:
+                totals[cluster][gene] += float(record.genes.get(gene, 0.0))
+            except (TypeError, ValueError):
+                continue
+    matrix = np.array(
+        [[totals[cluster][gene] / max(counts[cluster], 1) for gene in genes] for cluster in clusters],
+        dtype=float,
+    )
+    # Scale each gene to its own maximum so low-abundance markers stay visible.
+    maxima = matrix.max(axis=0)
+    maxima[maxima <= 0] = 1.0
+    scaled = matrix / maxima
+
+    fig_width = max(8.0, 0.34 * len(genes) + 3.0)
+    fig_height = max(3.2, 0.42 * len(clusters) + 2.0)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=180)
+    image = ax.imshow(scaled, aspect="auto", cmap="viridis", vmin=0.0, vmax=1.0)
+    ax.set_xticks(range(len(genes)))
+    ax.set_xticklabels(genes, rotation=90, fontsize=7)
+    ax.set_yticks(range(len(clusters)))
+    ax.set_yticklabels(["cluster %s" % cluster for cluster in clusters], fontsize=9)
+    ax.set_title("Top marker genes per cluster (mean expression, scaled per gene)", fontsize=11, pad=10)
+    fig.colorbar(image, ax=ax, fraction=0.02, pad=0.02, label="relative mean expression")
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(path)
+
+
+def _sort_cluster_key(value: str) -> Any:
+    try:
+        return (0, int(value))
+    except (TypeError, ValueError):
+        return (1, str(value))
 
 
 def _run_validated_tools(dataset: SpatialDataset, plan: List[Any]) -> List[ToolResult]:
@@ -455,6 +716,25 @@ def _run_validated_tools(dataset: SpatialDataset, plan: List[Any]) -> List[ToolR
         # default, so no arbitrary pairwise group selection is imposed here.
         results.append(registry.get(spec.tool_name).run(dataset, dict(spec.params)))
     return results
+
+
+def _analysis_scope(dataset: SpatialDataset) -> Dict[str, Any]:
+    sampling = dict(dataset.metadata.get("sampling") or {})
+    total = int(sampling.get("total_records") or dataset.metadata.get("n_obs_total") or len(dataset.records))
+    loaded = len(dataset.records)
+    complete = str(dataset.metadata.get("analysis_scope") or "").lower() == "full_section"
+    if total > 0 and loaded < total:
+        complete = False
+    return {
+        "scope": "full_section" if complete else "sampled",
+        "complete_section": complete,
+        "complete_section_requirement_met": complete,
+        "loaded_records": loaded,
+        "total_records": total,
+        "fraction_loaded": round(loaded / float(max(total, 1)), 6),
+        "sampling_method": sampling.get("method", "unknown"),
+        "validated_claims_allowed": False,
+    }
 
 
 def _write_figures(dataset: SpatialDataset, output_dir: Path) -> List[str]:
@@ -788,6 +1068,12 @@ def _render_review_composition_svg(dataset: SpatialDataset, path: Path) -> str:
 
 
 def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[ToolResult]) -> None:
+    scope = payload.get("analysis_scope") or {
+        "scope": "unknown",
+        "loaded_records": payload.get("records_loaded", 0),
+        "total_records": payload.get("records_loaded", 0),
+        "fraction_loaded": 1.0,
+    }
     lines = [
         "# Validated Xenium Pilot Report",
         "",
@@ -799,6 +1085,15 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         "- Dataset: `%s`" % payload["dataset_path"],
         "- Loaded cells: `%d`" % payload["records_loaded"],
         "- Loaded features: `%d`" % payload["features_loaded"],
+        "- Analysis scope: `%s` (%s/%s cells; %.2f%%)"
+        % (
+            scope["scope"],
+            scope["loaded_records"],
+            scope["total_records"],
+            100.0 * float(scope["fraction_loaded"]),
+        ),
+        "- QC expression source: `%s`"
+        % payload.get("expression_layers", {}).get("source", "source layer unavailable"),
         "",
     ]
     lines.extend(_descriptive_markdown(payload))
@@ -1214,6 +1509,22 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         "<tr><td>%s</td><td>%d</td></tr>" % (html.escape(region), count)
         for region, count in sorted(payload["region_counts"].items(), key=lambda item: item[1], reverse=True)
     )
+    descriptive_html = _descriptive_html(payload)
+    scope = payload.get("analysis_scope") or {}
+    scope_html = (
+        "<section><h2>Analysis Scope and Expression Layers</h2>"
+        "<p>Scope: <code>%s</code> (%s/%s cells; %.2f%%). Final validated claims allowed: <code>%s</code>.</p>"
+        "<p>Analysis layer: <code>%s</code><br>Source layer: <code>%s</code></p></section>"
+        % (
+            html.escape(str(scope.get("scope") or "unknown")),
+            html.escape(str(scope.get("loaded_records") or 0)),
+            html.escape(str(scope.get("total_records") or 0)),
+            100.0 * float(scope.get("fraction_loaded") or 0.0),
+            html.escape(str(scope.get("validated_claims_allowed", False)).lower()),
+            html.escape(str(payload.get("expression_layers", {}).get("analysis") or "unknown")),
+            html.escape(str(payload.get("expression_layers", {}).get("source") or "unknown")),
+        )
+    )
     content = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Validated Xenium Pilot</title>
 <style>body{font-family:Arial,sans-serif;margin:32px;line-height:1.45;color:#1f2933}code{background:#f6f8fa;padding:1px 4px}section{margin:24px 0}li{margin:4px 0}.gallery{display:grid;grid-template-columns:minmax(280px,1fr);gap:18px;max-width:1100px}.figure{border:1px solid #d6dde5;padding:12px;background:#fff}.figure img{max-width:100%%;height:auto}table{border-collapse:collapse;min-width:380px}td,th{border:1px solid #d6dde5;padding:6px 8px;text-align:left}</style>
@@ -1221,6 +1532,8 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
 <h1>Validated Xenium Pilot</h1>
 <p>Status: <code>%s</code></p>
 <p>Dataset: <code>%s</code>. Loaded %d cells and %d features.</p>
+%s
+%s
 <section><h2>Blocking Reasons</h2><ul>%s</ul></section>
 <section><h2>Required Next Inputs</h2><ul>%s</ul></section>
 <section><h2>Review Visualizations</h2><p>Generated for QA and expert review from current labels/clusters. These are not validated biological result figures until the gate passes.</p><div class="gallery">%s</div></section>
@@ -1243,6 +1556,8 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         html.escape(payload["dataset_path"]),
         payload["records_loaded"],
         payload["features_loaded"],
+        scope_html,
+        descriptive_html,
         blockers or "<li>None</li>",
         required or "<li>None</li>",
         gallery,
@@ -1322,6 +1637,61 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
         for item in payload.get("review_figures", [])
         if Path(item).suffix.lower() in {".png", ".jpg", ".jpeg"}
     ]
+    descriptive_sections = []
+    descriptive = payload.get("descriptive_analysis") or {}
+    if descriptive.get("status") == "computed":
+        qc = descriptive.get("expression_qc") or {}
+        diagnostics = descriptive.get("clustering_diagnostics") or {}
+        diagnostic_rows = [
+            ("Cells loaded", qc.get("n_cells", "-")),
+            ("Features analyzed", qc.get("n_features", "-")),
+            ("Median counts / cell", qc.get("median_total_counts", "-")),
+            ("Median features / cell", qc.get("median_features_per_cell", "-")),
+            ("Cells analyzed for clustering", diagnostics.get("analyzed_cell_count", "-")),
+            ("Zero-feature cells excluded", diagnostics.get("excluded_zero_feature_cell_count", 0)),
+            ("PCA silhouette", diagnostics.get("silhouette", "not computed")),
+            ("Weighted graph modularity", diagnostics.get("modularity", "not computed")),
+        ]
+        cluster_rows = sorted(
+            (descriptive.get("cluster_counts") or {}).items(), key=lambda item: -int(item[1])
+        )
+        marker_rows = [
+            (str(cluster), ", ".join(str(gene) for gene in genes[:8]))
+            for cluster, genes in sorted((descriptive.get("markers_by_cluster") or {}).items())
+        ]
+        spatial_gene_rows = [
+            (str(item.get("gene")), item.get("morans_i"), item.get("pval_adj", "not available"))
+            for item in (descriptive.get("spatial_genes") or {}).get("top_genes", [])[:12]
+        ]
+        neighborhood_rows = [
+            (str(item.get("pair")), item.get("zscore"))
+            for item in (descriptive.get("cluster_neighborhood") or {}).get("top_pairs", [])[:10]
+        ]
+        descriptive_sections = [
+            PdfSection(
+                title="Descriptive Analysis (no expert labels required)",
+                paragraphs=[
+                    "Cells are grouped by measured-expression clusters. Cluster identities are not cell-type claims.",
+                    str(descriptive.get("interpretation") or ""),
+                ],
+                tables=[
+                    PdfTable(headers=["QC / diagnostic", "Value"], rows=diagnostic_rows, column_widths=[3, 2]),
+                    PdfTable(headers=["Cluster", "Cells"], rows=cluster_rows, column_widths=[2, 1]),
+                ],
+            ),
+            PdfSection(
+                title="Descriptive Cluster Evidence",
+                tables=[
+                    PdfTable(headers=["Cluster", "Top marker genes"], rows=marker_rows, column_widths=[1, 4]),
+                    PdfTable(
+                        headers=["Gene", "Moran's I", "Adjusted p-value"],
+                        rows=spatial_gene_rows,
+                        column_widths=[2, 1, 1.4],
+                    ),
+                    PdfTable(headers=["Cluster pair", "z-score"], rows=neighborhood_rows, column_widths=[3, 1]),
+                ],
+            ),
+        ]
     sections = [
         PdfSection(
             title="Executive Summary",
@@ -1329,6 +1699,7 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
                 "This report records the validation-gated Xenium workflow. Biological interpretation is released only when expert labels and user-provided regions pass coverage and diversity gates."
             ],
         ),
+        *descriptive_sections,
         PdfSection(title="Blocking Reasons", bullets=payload.get("blocking_reasons", []) or ["None"]),
         PdfSection(title="Required Next Inputs", bullets=payload.get("required_next_inputs", []) or ["None"]),
         PdfSection(
@@ -1525,6 +1896,15 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
             ("Created", payload.get("created_at", "")),
             ("Cells loaded", payload.get("records_loaded", 0)),
             ("Features loaded", payload.get("features_loaded", 0)),
+            ("Analysis scope", payload.get("analysis_scope", {}).get("scope", "unknown")),
+            (
+                "Cells represented",
+                "%s/%s"
+                % (
+                    payload.get("analysis_scope", {}).get("loaded_records", 0),
+                    payload.get("analysis_scope", {}).get("total_records", 0),
+                ),
+            ),
             ("Label status", payload.get("label_report", {}).get("status", "unknown")),
             ("Region status", payload.get("region_report", {}).get("status", "unknown")),
         ],
@@ -1773,8 +2153,15 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
         "Neighborhood enrichment reflects spatial adjacency only; it does not establish interaction, signaling, causation, or mechanism.",
         "No deconvolution, trajectory, motif activity, ligand-receptor, pathway, CNV, or causal inference was run.",
     ]
+    if payload.get("analysis_scope", {}).get("scope") != "full_section":
+        items.append(
+            "This run is a deterministic cell sample, not a complete-section analysis; final biological claims require a full-section rerun."
+        )
     if payload.get("status") != "validated_ready":
-        items.append("Analysis tools were not run because validation inputs are incomplete; generated templates are preparation artifacts.")
+        items.append(
+            "Validation-gated biological tools were not run because required inputs are incomplete; "
+            "the reported QC, expression clusters, cluster markers, spatial genes, and cluster neighborhoods are descriptive analyses only."
+        )
     if payload.get("region_stratified_neighborhoods", {}).get("status") == "computed":
         items.append("Region-stratified tests are within-section analyses; biological generalization requires replicate sections or donors.")
     if payload.get("distance_cooccurrence", {}).get("status") == "computed":
@@ -1826,12 +2213,51 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
         for cluster, count in sorted(counts.items(), key=lambda item: -int(item[1])):
             lines.append("| `%s` | %s |" % (cluster, count))
         lines.append("")
+    diagnostics = descriptive.get("clustering_diagnostics") or {}
+    if diagnostics:
+        lines.extend(
+            [
+                "### Clustering diagnostics",
+                "",
+                "| Diagnostic | Value |",
+                "| --- | ---: |",
+                "| Cells analyzed | %s |" % diagnostics.get("analyzed_cell_count", "-"),
+                "| Zero-feature cells excluded | %s |"
+                % diagnostics.get("excluded_zero_feature_cell_count", 0),
+                "| PCA silhouette | %s |" % diagnostics.get("silhouette", "not computed"),
+                "| Weighted graph modularity | %s |" % diagnostics.get("modularity", "not computed"),
+                "",
+            ]
+        )
     markers = descriptive.get("markers_by_cluster")
     if isinstance(markers, dict) and markers:
         lines.extend(["### Top markers per cluster (one-vs-rest)", "",
                       "| Cluster | Marker genes |", "| --- | --- |"])
         for cluster, genes in sorted(markers.items()):
             lines.append("| `%s` | %s |" % (cluster, ", ".join("`%s`" % gene for gene in genes[:6])))
+        lines.append("")
+    spatial_genes = descriptive.get("spatial_genes") or {}
+    if spatial_genes.get("top_genes"):
+        lines.extend(
+            [
+                "### Spatially autocorrelated genes",
+                "",
+                "Method: `%s`; permutations: `%s`; multiple testing: `%s`"
+                % (
+                    spatial_genes.get("method"),
+                    spatial_genes.get("n_perms"),
+                    spatial_genes.get("multiple_testing"),
+                ),
+                "",
+                "| Gene | Moran's I | Adjusted p-value |",
+                "| --- | ---: | ---: |",
+            ]
+        )
+        for item in spatial_genes["top_genes"][:12]:
+            lines.append(
+                "| `%s` | %s | %s |"
+                % (item.get("gene"), item.get("morans_i"), item.get("pval_adj", "not available"))
+            )
         lines.append("")
     neighborhood = descriptive.get("cluster_neighborhood")
     if isinstance(neighborhood, dict) and neighborhood.get("top_pairs"):
@@ -1840,5 +2266,89 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
         for pair in neighborhood["top_pairs"][:8]:
             lines.append("| `%s` | %s |" % (pair.get("pair"), pair.get("zscore")))
         lines.append("")
+    figures = descriptive.get("figures") or []
+    if figures:
+        lines.extend(["### Descriptive figures", ""])
+        lines.extend("- `%s`" % Path(item).name for item in figures)
+        lines.append("")
     lines.extend([descriptive.get("interpretation", ""), ""])
     return lines
+
+
+def _descriptive_html(payload: Dict[str, Any]) -> str:
+    """Render label-free results before validation blockers in the HTML report."""
+    descriptive = payload.get("descriptive_analysis") or {}
+    if descriptive.get("status") != "computed":
+        return ""
+    qc = descriptive.get("expression_qc") or {}
+    diagnostics = descriptive.get("clustering_diagnostics") or {}
+    qc_rows = [
+        ("Cells loaded", qc.get("n_cells", "-")),
+        ("Features analyzed", qc.get("n_features", "-")),
+        ("Median counts / cell", qc.get("median_total_counts", "-")),
+        ("Median features / cell", qc.get("median_features_per_cell", "-")),
+        ("Cells analyzed for clustering", diagnostics.get("analyzed_cell_count", "-")),
+        ("Zero-feature cells excluded", diagnostics.get("excluded_zero_feature_cell_count", 0)),
+        ("PCA silhouette", diagnostics.get("silhouette", "not computed")),
+        ("Weighted graph modularity", diagnostics.get("modularity", "not computed")),
+    ]
+    qc_table = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>" % (html.escape(str(label)), html.escape(str(value)))
+        for label, value in qc_rows
+    )
+    cluster_rows = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>" % (html.escape(str(cluster)), html.escape(str(count)))
+        for cluster, count in sorted(
+            (descriptive.get("cluster_counts") or {}).items(), key=lambda item: -int(item[1])
+        )
+    )
+    marker_rows = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>"
+        % (html.escape(str(cluster)), html.escape(", ".join(str(gene) for gene in genes[:8])))
+        for cluster, genes in sorted((descriptive.get("markers_by_cluster") or {}).items())
+    )
+    spatial_gene_rows = "".join(
+        "<tr><td>%s</td><td>%s</td><td>%s</td></tr>"
+        % (
+            html.escape(str(item.get("gene"))),
+            html.escape(str(item.get("morans_i"))),
+            html.escape(str(item.get("pval_adj", "not available"))),
+        )
+        for item in (descriptive.get("spatial_genes") or {}).get("top_genes", [])[:12]
+    )
+    neighborhood_rows = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>"
+        % (html.escape(str(item.get("pair"))), html.escape(str(item.get("zscore"))))
+        for item in (descriptive.get("cluster_neighborhood") or {}).get("top_pairs", [])[:10]
+    )
+    return (
+        "<section><h2>Descriptive Analysis (no expert labels required)</h2>"
+        "<p>Cells are grouped by measured-expression clusters. Cluster identities are not cell-type claims.</p>"
+        "<h3>QC and clustering diagnostics</h3><table><tr><th>Metric</th><th>Value</th></tr>%s</table>"
+        "<h3>Expression clusters (%s)</h3><table><tr><th>Cluster</th><th>Cells</th></tr>%s</table>"
+        "<h3>Top markers per cluster</h3><table><tr><th>Cluster</th><th>Marker genes</th></tr>%s</table>"
+        "<h3>Spatially autocorrelated genes</h3><table><tr><th>Gene</th><th>Moran's I</th><th>Adjusted p-value</th></tr>%s</table>"
+        "<h3>Cluster spatial co-occurrence</h3><table><tr><th>Pair</th><th>z-score</th></tr>%s</table>"
+        "%s"
+        "<p>%s</p></section>"
+        % (
+            qc_table,
+            html.escape(str(descriptive.get("clustering_method") or "leiden")),
+            cluster_rows,
+            marker_rows,
+            spatial_gene_rows,
+            neighborhood_rows,
+            _descriptive_figures_html(descriptive),
+            html.escape(str(descriptive.get("interpretation") or "")),
+        )
+    )
+
+
+def _descriptive_figures_html(descriptive: Dict[str, Any]) -> str:
+    figures = descriptive.get("figures") or []
+    if not figures:
+        return ""
+    return (
+        "<h3>Descriptive figures</h3><div class=\"gallery\">%s</div>"
+        % "".join(_figure_html(item) for item in figures)
+    )

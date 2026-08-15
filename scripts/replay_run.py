@@ -32,6 +32,9 @@ def main() -> None:
                 min_region_coverage=params["min_region_coverage"],
                 allow_single_region=params["allow_single_region"],
                 report_format=args.report_format,
+                require_complete_section=params["require_complete_section"],
+                review_max_records=params["review_max_records"],
+                query=result["query"],
             )
             result["status"] = "replayed"
             result["replay_status"] = rerun.get("status")

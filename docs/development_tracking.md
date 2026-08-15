@@ -1494,3 +1494,133 @@ Verification:
 - Visually checked all six PDF pages plus both standalone figures; labels, legends, tables, captions, and page transitions are legible with no clipping or overlap.
 - Legacy evaluation passes 15/15 with mean score 1.0000; MVP evaluation passes 10/10 with mean score 1.0000.
 - All three import contracts remain intact, `pip check` reports no broken requirements, bytecode compilation passes, and `git diff --check` reports no whitespace errors.
+
+### Step 41: Full Layer Audit, Reliable Clustering Metrics, and Spatial Gene Statistics
+
+Status: Complete for software and exploratory analysis; biological validation remains blocked by human inputs.
+
+Work completed on 2026-08-11:
+
+- Ran discovery, governance, ingestion, contracts, planning, real Scanpy/Squidpy tools, annotation assistance, grounding, claim reliability, visualization, storage/replay, promotion readiness, behavioral training, and both evaluation suites.
+- Replaced the incorrectly named clustering `modularity` value, which had represented cluster count, with weighted kNN graph modularity; added PCA-space silhouette as a complementary diagnostic.
+- Excluded zero-expression cells from clustering and cluster-dependent analyses while retaining them in ingestion and provenance counts.
+- Normalized and log-transformed unnormalized expression before marker and differential-expression ranking.
+- Promoted spatial-gene analysis from non-spatial Scanpy HVG ranking to seeded Squidpy Moran's I with permutation p-values and Benjamini-Hochberg FDR; retained HVG only as an explicitly non-spatial fallback.
+- Added Moran's I and its graph setting to the shared spatial quality-metric contract.
+- Added descriptive clustering, markers, spatial genes, and cluster co-occurrence to Markdown, HTML, and PDF blocked-pilot reports without presenting clusters as validated cell types.
+- Added `spatial_variable_genes` to the seven-tool MVP surface and taught the MVP planner to recognize spatial-gene requests.
+- Corrected the eval CLI so `--mvp` selects `eval/mvp_cases` by default, while explicit `--cases` still takes precedence.
+- Added an MVP spatial-gene case, increasing current MVP coverage to 11 cases.
+- Refreshed behavioral training after the planner change: 19 records, including 11 MVP query-plan-result records and 4/4 real Xenium exploratory wrapper runs, with mean score 1.0000 and no runtime warnings.
+
+Measured healthy-brain results on a deterministic 3,000-cell sample:
+
+- Loaded 3,000 of 24,406 cells and 374 panel features; 2 cells had no measured expression and 2,998 entered expression analysis.
+- Leiden at resolution 0.5 produced 8 clusters, PCA silhouette 0.10703, and weighted graph modularity 0.74436.
+- Adjacent-resolution stability was ARI 0.86020 for 0.3 versus 0.5 and 0.87271 for 0.5 versus 0.8.
+- Marker programs were biologically plausible for broad neural/glial, vascular, and inhibitory-neuronal structure, but cluster names remain unvalidated.
+- Squidpy Moran's I found 172 panel genes at FDR <= 0.05 with 100 permutations; the strongest was `TESPA1` at I=0.259063 and adjusted p=0.02410109.
+- Cluster-level neighborhood enrichment tested 36 pairs on 2,998 assigned cells. These are exploratory cluster-structure results, not cell-type interaction claims.
+- The blocked biological claim scored reliability 0.00; the asset-readiness claim scored 0.75.
+
+Reference-assist findings:
+
+- Healthy-brain transfer ran across 188 shared features and 4 reference classes for 1,000 cells, with mean neighbor-vote confidence 0.883.
+- The reference was too narrow for biological validation: 256 cells were high review priority, 64 carried lineage evidence absent from the reference, 59 disagreed with marker evidence, and the platform-shift ratio was 2.85.
+- Glioblastoma transfer correctly refused the local mouse reference for the human target and wrote no candidate labels.
+
+Verification:
+
+- Unit tests pass 99/99 in `.venv`.
+- Legacy eval passes 15/15 and MVP eval passes 11/11, both with mean score 1.0000.
+- Real backend validation passes Scanpy differential expression and clustering plus Squidpy Moran's I and neighborhood enrichment.
+- Runtime version checks and `pip check` pass; optional PyTorch models remain isolated.
+- All three import-boundary contracts remain intact.
+- The six-page A4 healthy-brain PDF was rendered page by page and visually checked with no clipping, overlap, or unreadable tables.
+
+Detailed report:
+
+- `outputs/layer_audit_20260811/LAYER_EVALUATION_REPORT.md`
+
+### Step 42: Leakage-Aware Human Brain Expert Benchmark
+
+Status: Engineering complete; awaiting expert labels and reviewed tissue regions.
+
+Work completed on 2026-08-11:
+
+- Added a reusable healthy-brain/glioblastoma benchmark builder and CLI.
+- Ran real Scanpy expression clustering and marker detection on deterministic 10,000-cell pools from both local Xenium sections.
+- Selected 750 review cells per tissue with square-root cluster balancing, round-robin spatial coverage, difficult reference cases, and bounded QC-tail representation.
+- Generated morphology-aware Explorer-lite viewers, spatial maps, marker summaries, cell-label tables, ROI tables, cohort hashes, and split manifests.
+- Froze provisional splits by complete spatial block before expert truth is entered.
+- Added validation for cross-table ID identity, duplicate and blank IDs, reviewer provenance, all-split coverage, spatial-block leakage, and at least 90% joint label-plus-region coverage.
+- Ensured frozen truth outputs contain only jointly reviewed cells and synchronized packet-level validation summaries.
+- Added focused regression tests for deterministic cohort selection, spatial split integrity, QC balancing, joint completion, and frozen truth materialization.
+
+Measured packet results:
+
+- Healthy brain: 24,406 total cells, 10,000-cell pool, 9 clusters, silhouette 0.11455, modularity 0.77452, and 554/79/117 train/validation/test cells.
+- Glioblastoma: 40,887 total cells, 10,000-cell pool, 11 clusters, silhouette 0.16364, modularity 0.77921, and 531/114/105 train/validation/test cells.
+- Both cohorts represent 15 spatial blocks with zero block leakage.
+- Healthy candidate-label evidence covers 116/750 selected cells; glioblastoma has no same-species local candidate reference and remains intentionally unprefilled.
+- Both datasets remain `awaiting_expert_review`: label, region, and joint coverage are all 0%.
+
+Required handoff:
+
+- Complete at least 675 jointly reviewed label/ROI rows per tissue with reviewer IDs.
+- Add a broad healthy human brain reference and a human glioblastoma reference; do not transfer the current mouse reference to the human GBM section.
+- Add independent donors or sections before claiming condition-level generalization.
+- Complete institutional consent/data-use/PHI review even though the official 10x download page identifies the dataset license as CC BY 4.0.
+
+Verification:
+
+- Unit tests pass 104/104 in `.venv`, including five focused brain-benchmark tests.
+- Legacy evaluation passes 15/15 and MVP evaluation passes 11/11, both with mean score 1.0000.
+- Packet revalidation finds matching IDs, zero duplicate or blank IDs, all three splits, and zero spatial-block leakage in both tissues.
+- All three import-boundary contracts remain intact.
+- `pip check`, bytecode compilation, and `git diff --check` pass.
+- Removed the deprecated explicit Pillow image mode; all three morphology-layer tests pass without that warning.
+- Upstream `xarray-datatree` and `xarray-schema` deprecation warnings remain transitive through `spatialdata`; they do not currently break the validated environment but should be revisited during the next dependency upgrade.
+- Automated `file://` browser navigation was blocked by the app security policy, so this pass did not add a new screenshot-level visual check; existing Explorer-lite integration coverage remains green.
+
+Detailed report:
+
+- `outputs/brain_expert_benchmark_20260811/BENCHMARK_PREPARATION_REPORT.md`
+
+### Step 43: Count-Layer Integrity, Strict Backends, And Full-Section Scope
+
+Status: Software complete; human biological validation remains pending.
+
+Work completed on 2026-08-12:
+
+- Added immutable `SpotRecord.raw_genes` source values alongside normalized `genes` analysis values.
+- Made ingestion QC count-aware, preferred H5AD `layers["counts"]`, and preserved Xenium count summaries/morphology features without normalizing them as genes.
+- Published source/count layers into AnnData and made Scanpy QC report the exact matrix source.
+- Added sampled-versus-full-section provenance and blocked final validated inference on sampled sections unless a development override is explicit.
+- Made Scanpy clustering/markers and Squidpy Moran's I/neighborhood analyses strict in Xenium lanes; backend failure now blocks claims instead of producing prototype statistics.
+- Added Squidpy spatial-variable-gene analysis to the fixed validated tool plan.
+- Routed Xenium requests from the general CLI and `POST /runs` API through the validated pilot; exposed scope/review/readiness options and fixed API report-format forwarding.
+- Added scope and expression-layer evidence to reports, validation JSON, and run provenance.
+- Made the brain benchmark candidate importer compatible with older `suggested_label` drafts without converting candidates into truth.
+- Regenerated `outputs/brain_expert_benchmark_20260812/` with deterministic cohort hashes and zero spatial-block leakage.
+
+Measured smoke-run results:
+
+- Healthy brain: 300/24,406 sampled cells, 315 expression genes, five Scanpy Leiden clusters, silhouette 0.09867, modularity 0.58833, and median 165.5 raw transcripts/cell. No Moran's I gene passed FDR <= 0.05 in this small sample.
+- Glioblastoma: 300/40,887 sampled cells, 340 expression genes, six Scanpy Leiden clusters, silhouette 0.12615, modularity 0.68322, and median 216.5 raw transcripts/cell. Moran's I found 136 panel genes at FDR <= 0.05; these are descriptive sampled-section findings, not validated disease claims.
+- Both runs correctly returned `blocked_missing_validation_inputs` because final expert labels and reviewed regions do not exist.
+
+Current expert benchmark:
+
+- Healthy brain: 750 cells, 9 clusters, 552/80/118 train/validation/test, 12.00% candidate evidence, 0% reviewed truth.
+- Glioblastoma: 750 cells, 11 clusters, 534/114/102 train/validation/test, 6.53% candidate evidence, 0% reviewed truth.
+- Both require at least 90% joint expert label/ROI coverage (675 cells), reviewer provenance, and untouched spatial-block splits before truth is materialized.
+
+Verification:
+
+- Final full regression passed 106/106; focused count/scope/plan, report-compatibility, and full-section replay tests also passed.
+- Healthy and glioblastoma unified-CLI runs completed with real Scanpy/Squidpy engines and comprehensive blocked HTML reports.
+- Legacy eval passed 15/15 and MVP eval passed 11/11, both with mean score 1.0000.
+- Real backend validation passed Scanpy differential expression/clustering and Squidpy Moran's I/neighborhood enrichment.
+- `pip check` found no broken requirements; all three import contracts were kept; bytecode compilation and `git diff --check` passed.
+- Detailed implementation report: `outputs/NEXT_MOVE_IMPLEMENTATION_REPORT_20260812.md`.
