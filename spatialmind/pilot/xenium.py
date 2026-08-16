@@ -1,4 +1,5 @@
 import html
+import time
 import json
 import uuid
 from collections import Counter
@@ -483,12 +484,18 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     """
     registry = build_mvp_registry()
     payload: Dict[str, Any] = {"status": "computed", "group_key": "cluster", "tools": []}
+    # Stage timings: a full-section run takes minutes, and without per-stage
+    # numbers there is no way to tell which stage to optimise.
+    timings: Dict[str, float] = {}
+    started = time.time()
+    stage_start = time.time()
     try:
         clustering = registry.get("qc_and_cluster").run(
             dataset, {"resolution": 0.55, "random_state": 0, "strict_engine": True}
         )
     except Exception as exc:
         return {"status": "not_run", "reason": "Clustering failed: %s" % exc}
+    timings["qc_and_cluster"] = round(time.time() - stage_start, 2)
     payload["tools"].append("qc_and_cluster")
     payload["cluster_counts"] = clustering.metrics.get("cluster_counts", {})
     payload["cluster_count"] = len(payload["cluster_counts"])
@@ -531,11 +538,14 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
             "cluster_neighborhood",
         ),
     ):
+        stage_start = time.time()
         try:
             result = registry.get(tool_name).run(dataset, dict(params))
         except Exception as exc:
+            timings[tool_name] = round(time.time() - stage_start, 2)
             payload[key] = {"status": "not_run", "reason": str(exc)}
             continue
+        timings[tool_name] = round(time.time() - stage_start, 2)
         payload["tools"].append(tool_name)
         _write_json(output_dir / ("descriptive_%s.json" % tool_name), result)
         if tool_name == "marker_detection":
@@ -562,7 +572,11 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
         "Clusters are derived from measured expression, not from cell-type labels. Marker genes "
         "describe what distinguishes each cluster; naming clusters as cell types requires expert review."
     )
+    stage_start = time.time()
     payload["figures"] = _write_descriptive_figures(dataset, payload, output_dir)
+    timings["figures"] = round(time.time() - stage_start, 2)
+    timings["total"] = round(time.time() - started, 2)
+    payload["stage_seconds"] = timings
     return payload
 
 
@@ -2265,6 +2279,12 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
                       "| Cluster pair | z-score |", "| --- | ---: |"])
         for pair in neighborhood["top_pairs"][:8]:
             lines.append("| `%s` | %s |" % (pair.get("pair"), pair.get("zscore")))
+        lines.append("")
+    stages = descriptive.get("stage_seconds") or {}
+    if stages:
+        lines.extend(["### Stage timings (seconds)", "", "| Stage | Seconds |", "| --- | ---: |"])
+        for stage, seconds in sorted(stages.items(), key=lambda item: -float(item[1])):
+            lines.append("| `%s` | %s |" % (stage, seconds))
         lines.append("")
     figures = descriptive.get("figures") or []
     if figures:

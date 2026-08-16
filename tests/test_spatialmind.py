@@ -2300,3 +2300,57 @@ class DescriptiveFigureTests(unittest.TestCase):
         source = inspect.getsource(pilot_module.run_pilot)
         # The lane must not be conditioned on the gate being blocked.
         self.assertIn("if not readiness_only:\n        descriptive = _run_descriptive_lane", source)
+
+
+class DisplaySamplingTests(unittest.TestCase):
+    def _records(self, count):
+        return [
+            SpotRecord("S1", float(index % 100), float(index // 100), "Unannotated cell", {"G": 1.0}, cell_id="c%d" % index)
+            for index in range(count)
+        ]
+
+    def test_small_datasets_are_not_capped(self):
+        from spatialmind.viz.display_sampling import downsample_for_display
+
+        records = self._records(500)
+        subset, info = downsample_for_display(records, max_points=20000)
+        self.assertEqual(len(subset), 500)
+        self.assertFalse(info["display_capped"])
+
+    def test_large_datasets_are_capped_and_bounded(self):
+        from spatialmind.viz.display_sampling import display_caption, downsample_for_display
+
+        records = self._records(50000)
+        subset, info = downsample_for_display(records, max_points=5000)
+        self.assertEqual(len(subset), 5000)
+        self.assertTrue(info["display_capped"])
+        self.assertEqual(info["total_records"], 50000)
+        self.assertIn("Showing", display_caption(info))
+        # Spatial coverage must survive the cut rather than collapsing to one
+        # corner. Grid sampling takes cells from within each bin, so the extreme
+        # cell may be missed by up to one bin width -- coverage, not exactness.
+        span_x = max(r.x for r in records) - min(r.x for r in records)
+        span_y = max(r.y for r in records) - min(r.y for r in records)
+        self.assertLessEqual(abs(min(r.x for r in subset) - min(r.x for r in records)), span_x * 0.05)
+        self.assertGreaterEqual(max(r.x for r in subset), min(r.x for r in records) + span_x * 0.95)
+        self.assertGreaterEqual(max(r.y for r in subset), min(r.y for r in records) + span_y * 0.95)
+
+    def test_downsampling_is_deterministic(self):
+        from spatialmind.viz.display_sampling import downsample_for_display
+
+        records = self._records(20000)
+        first = [r.cell_id for r in downsample_for_display(records, max_points=3000)[0]]
+        second = [r.cell_id for r in downsample_for_display(records, max_points=3000)[0]]
+        self.assertEqual(first, second)
+
+    def test_descriptive_lane_records_stage_timings(self):
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
+        from spatialmind.pilot.xenium import run_pilot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_pilot(XENIUM_LYMPH, Path(tmp) / "p", max_records=150)
+            stages = (result["descriptive_analysis"] or {}).get("stage_seconds") or {}
+            self.assertIn("total", stages)
+            self.assertIn("qc_and_cluster", stages)
+            self.assertGreaterEqual(float(stages["total"]), 0.0)
