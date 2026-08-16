@@ -2354,3 +2354,40 @@ class DisplaySamplingTests(unittest.TestCase):
             self.assertIn("total", stages)
             self.assertIn("qc_and_cluster", stages)
             self.assertGreaterEqual(float(stages["total"]), 0.0)
+
+
+class ClusteringPerformanceTests(unittest.TestCase):
+    def test_neighbors_helper_prefers_sklearn_and_falls_back(self):
+        from spatialmind.tools.implementations import _neighbors
+
+        calls = []
+
+        class FakePP:
+            def neighbors(self, adata, **kwargs):
+                calls.append(kwargs)
+                if kwargs.get("transformer") == "sklearn" and adata == "no-sklearn":
+                    raise TypeError("unexpected keyword argument 'transformer'")
+
+        class FakeSC:
+            pp = FakePP()
+
+        self.assertEqual(_neighbors(FakeSC(), "ok", 15, 0), "sklearn")
+        self.assertEqual(calls[-1].get("transformer"), "sklearn")
+        # Older scanpy without the transformer argument must still work.
+        self.assertEqual(_neighbors(FakeSC(), "no-sklearn", 15, 0), "pynndescent")
+        self.assertNotIn("transformer", calls[-1])
+
+    def test_thin_samples_are_flagged(self):
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
+        from spatialmind.pilot.xenium import MIN_CELLS_FOR_STABLE_CLUSTERS, run_pilot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_pilot(XENIUM_LYMPH, Path(tmp) / "p", max_records=200)
+            descriptive = result["descriptive_analysis"]
+            if descriptive.get("status") != "computed":
+                self.skipTest("descriptive lane unavailable")
+            self.assertIn("sampling_warning", descriptive)
+            self.assertIn(str(MIN_CELLS_FOR_STABLE_CLUSTERS), descriptive["sampling_warning"])
+            report = (Path(tmp) / "p" / "validated_xenium_pilot_report.md").read_text()
+            self.assertIn("Sampling note", report)

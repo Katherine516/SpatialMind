@@ -43,6 +43,7 @@ from spatialmind.viz import (
 )
 
 
+MIN_CELLS_FOR_STABLE_CLUSTERS = 6000
 DEFAULT_DATASET = "data/Human_Breast_Biomarkers_S1_Top_outs"
 DEFAULT_OUTPUT = "outputs/xenium_validated_pilot"
 
@@ -568,6 +569,17 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
                 "top_pairs": result.metrics.get("top_pairs", [])[:10],
                 "engine": result.metrics.get("engine"),
             }
+    # Empirically, cluster structure on a Xenium brain section is recovered at
+    # >=6000 sampled cells (all 10 full-section clusters, ARI 0.90); 3000 cells
+    # recovered only 8. Flag runs below that so a thin sample is not mistaken for
+    # a complete picture.
+    analyzed = int((payload.get("clustering_diagnostics") or {}).get("analyzed_cell_count") or len(dataset.records))
+    if analyzed < MIN_CELLS_FOR_STABLE_CLUSTERS:
+        payload["sampling_warning"] = (
+            "Only %d cells were clustered. Cluster structure is typically incomplete below %d cells; "
+            "rare populations may be missing or merged. Increase --max-cells for a fuller picture."
+            % (analyzed, MIN_CELLS_FOR_STABLE_CLUSTERS)
+        )
     payload["interpretation"] = (
         "Clusters are derived from measured expression, not from cell-type labels. Marker genes "
         "describe what distinguishes each cluster; naming clusters as cell types requires expert review."
@@ -2280,6 +2292,9 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
         for pair in neighborhood["top_pairs"][:8]:
             lines.append("| `%s` | %s |" % (pair.get("pair"), pair.get("zscore")))
         lines.append("")
+    warning = descriptive.get("sampling_warning")
+    if warning:
+        lines.extend(["> **Sampling note:** %s" % warning, ""])
     stages = descriptive.get("stage_seconds") or {}
     if stages:
         lines.extend(["### Stage timings (seconds)", "", "| Stage | Seconds |", "| --- | ---: |"])

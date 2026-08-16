@@ -26,7 +26,7 @@ def main() -> None:
         "--max-cells",
         type=int,
         default=20000,
-        help="Cells to analyze. Use --full-section for every cell in the run.",
+        help="Cells to analyze (>=6000 recommended; below that clusters may be incomplete).",
     )
     parser.add_argument("--full-section", action="store_true", help="Analyze every cell (slower).")
     parser.add_argument("--report-format", default="html", choices=["html", "pdf", "both"])
@@ -52,6 +52,9 @@ def main() -> None:
         spatial = descriptive.get("spatial_genes") or {}
         if spatial.get("significant_gene_count_all") is not None:
             print("  spatial genes: %s significant" % spatial.get("significant_gene_count_all"))
+        warning = descriptive.get("sampling_warning")
+        if warning:
+            print("  WARNING      : %s" % warning)
         stages = descriptive.get("stage_seconds") or {}
         if stages.get("total"):
             print("  analysis time: %.0fs" % float(stages["total"]))
