@@ -1724,6 +1724,80 @@ def _expression_qc_metrics(adata: Any) -> Dict[str, object]:
     }
 
 
+
+def _screen_spatial_genes(
+    sq: Any,
+    adata: Any,
+    params: Dict[str, object],
+    n_top: int,
+    random_state: int,
+) -> Dict[str, Any]:
+    """Pick which genes get permutation-tested, and how many permutations to spend.
+
+    Returns the gene list, the permutation budget, and a machine-readable record
+    of the screen so the report can state what was tested and why.
+    """
+    import numpy as np  # type: ignore
+
+    min_cells = int(params.get("min_detected_cells", 0) or 0)
+    min_fraction = float(params.get("min_detected_fraction", 0.01) or 0.0)
+    if min_cells <= 0:
+        min_cells = max(10, int(adata.n_obs * min_fraction))
+    detected = np.asarray((adata.X > 0).sum(axis=0)).reshape(-1)
+    all_genes = [str(name) for name in adata.var_names]
+    detected_genes = [gene for gene, count in zip(all_genes, detected) if int(count) >= min_cells]
+    if len(detected_genes) < 2:
+        detected_genes = all_genes
+
+    # Candidate cap: permute the strongest signals, not the whole panel.
+    candidate_count = max(int(params.get("screen_candidates", 0) or 0), 0) or max(n_top * 2, 50)
+    screened = detected_genes
+    method = "detection_filter_only"
+    if len(detected_genes) > candidate_count:
+        analytic = sq.gr.spatial_autocorr(
+            adata,
+            mode="moran",
+            genes=detected_genes,
+            n_perms=None,          # analytic only: near-free, used purely to rank
+            two_tailed=True,
+            seed=random_state,
+            copy=True,
+            n_jobs=1,
+            show_progress_bar=False,
+        )
+        if analytic is not None and not analytic.empty:
+            screened = [str(gene) for gene in analytic.sort_values("I", ascending=False).head(candidate_count).index]
+            method = "analytic_moran_screen"
+
+    # Keep the permutation budget per gene; the saving comes from testing fewer
+    # genes. Raising it here would spend the saving straight back: 50 genes at 999
+    # permutations is the same work as 491 at 100, which measured no faster.
+    # Callers who want finer resolution near the significance threshold can set
+    # screened_n_perms explicitly, at proportional cost.
+    permutations = max(10, int(params.get("n_perms", 100) or 100))
+    requested = int(params.get("screened_n_perms", 0) or 0)
+    if method == "analytic_moran_screen" and requested > 0:
+        permutations = max(permutations, requested)
+    return {
+        "tested_genes": screened,
+        "permutations": permutations,
+        "report": {
+            "rule": "detected in >= %d cells; %s" % (
+                min_cells,
+                "top %d by analytic Moran's I" % candidate_count
+                if method == "analytic_moran_screen"
+                else "all detected genes tested",
+            ),
+            "method": method,
+            "panel_genes": len(all_genes),
+            "detected_genes": len(detected_genes),
+            "tested_genes": len(screened),
+            "min_detected_cells": min_cells,
+            "permutations": permutations,
+        },
+    }
+
+
 def _squidpy_spatial_variable_genes(
     dataset: SpatialDataset,
     params: Dict[str, object],
@@ -1749,9 +1823,24 @@ def _squidpy_spatial_variable_genes(
         n_perms = max(10, int(params.get("n_perms", 100) or 100))
         random_state = int(params.get("random_state", 0) or 0)
         sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=n_neighs)
+
+        # Permutation testing is ~99% of this tool's cost and scales with the gene
+        # count, so screen before spending it. Two filters, both recorded so the
+        # report can state exactly what was tested:
+        #   C. drop genes detected in too few cells -- they cannot support a
+        #      spatial claim and only inflate the multiple-testing burden;
+        #   B. rank the survivors by the near-free analytic Moran's I and permute
+        #      only the strongest candidates, which buys far more permutations
+        #      per tested gene for the same wall clock.
+        screening = _screen_spatial_genes(sq, adata, params, n_top, random_state)
+        tested_genes = screening["tested_genes"]
+        if not tested_genes:
+            return None
+        n_perms = int(screening.get("permutations", n_perms))
         table = sq.gr.spatial_autocorr(
             adata,
             mode="moran",
+            genes=tested_genes,
             n_perms=n_perms,
             two_tailed=True,
             corr_method="fdr_bh",
@@ -1805,6 +1894,7 @@ def _squidpy_spatial_variable_genes(
                 "n_perms": n_perms,
                 "random_state": random_state,
                 "multiple_testing": adjusted_key or "not_available",
+                "screening": screening["report"],
                 "significant_gene_count_top_n": significant,
                 "significant_gene_count_all": significant_all,
                 "top_genes": rows,
@@ -1812,6 +1902,9 @@ def _squidpy_spatial_variable_genes(
             caveats=[
                 "Moran's I detects global spatial autocorrelation; it does not identify the anatomical region driving a pattern.",
                 "Results depend on the spatial graph, panel composition, segmentation, and field of view.",
+                "Genes were screened before permutation testing (%s); FDR is corrected over the %d screened "
+                "genes, not the full panel, so p-values are conditional on that screen."
+                % (screening["report"]["rule"], len(tested_genes)),
             ]
             + _type_honesty_caveats(dataset),
         )

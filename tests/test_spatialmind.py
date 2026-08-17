@@ -2391,3 +2391,65 @@ class ClusteringPerformanceTests(unittest.TestCase):
             self.assertIn(str(MIN_CELLS_FOR_STABLE_CLUSTERS), descriptive["sampling_warning"])
             report = (Path(tmp) / "p" / "validated_xenium_pilot_report.md").read_text()
             self.assertIn("Sampling note", report)
+
+
+class SpatialGeneScreeningTests(unittest.TestCase):
+    def _adata_stub(self, n_obs, gene_names, detected_counts):
+        import numpy as np
+
+        class Var:
+            def __init__(self, names):
+                self.var_names = names
+
+        class Stub:
+            def __init__(self, n_obs, names, counts):
+                self.n_obs = n_obs
+                self.var_names = names
+                # X only needs to support (X > 0).sum(axis=0)
+                matrix = np.zeros((n_obs, len(names)))
+                for col, count in enumerate(counts):
+                    matrix[:count, col] = 1.0
+                self.X = matrix
+
+        return Stub(n_obs, gene_names, detected_counts)
+
+    def test_detection_filter_drops_rarely_detected_genes(self):
+        from spatialmind.tools.implementations import _screen_spatial_genes
+
+        adata = self._adata_stub(1000, ["A", "B", "C"], [900, 500, 2])
+        screen = _screen_spatial_genes(sq=None, adata=adata, params={"min_detected_cells": 100}, n_top=10, random_state=0)
+        self.assertEqual(sorted(screen["tested_genes"]), ["A", "B"])
+        self.assertEqual(screen["report"]["detected_genes"], 2)
+        self.assertEqual(screen["report"]["panel_genes"], 3)
+        self.assertIn("detected in >=", screen["report"]["rule"])
+
+    def test_permutation_budget_is_not_inflated_by_default(self):
+        from spatialmind.tools.implementations import _screen_spatial_genes
+
+        adata = self._adata_stub(1000, ["A", "B", "C"], [900, 800, 700])
+        screen = _screen_spatial_genes(sq=None, adata=adata, params={"n_perms": 100}, n_top=10, random_state=0)
+        # Spending the saving on more permutations nets zero total work, which is
+        # exactly the mistake this default avoids.
+        self.assertEqual(screen["permutations"], 100)
+
+    def test_screen_falls_back_when_too_few_genes_survive(self):
+        from spatialmind.tools.implementations import _screen_spatial_genes
+
+        adata = self._adata_stub(1000, ["A", "B"], [1, 1])
+        screen = _screen_spatial_genes(sq=None, adata=adata, params={"min_detected_cells": 500}, n_top=5, random_state=0)
+        # Never return an empty test set just because the filter was strict.
+        self.assertEqual(sorted(screen["tested_genes"]), ["A", "B"])
+
+    def test_report_states_the_screen(self):
+        from spatialmind.pilot.xenium import _spatial_screen_note
+
+        note = _spatial_screen_note(
+            {
+                "significant_gene_count_all": 50,
+                "screening": {"rule": "detected in >= 80 cells; top 50", "panel_genes": 424,
+                              "detected_genes": 295, "tested_genes": 50},
+            }
+        )
+        self.assertIn("424", note)
+        self.assertIn("conditional on this screen", note)
+        self.assertEqual(_spatial_screen_note({}), "")

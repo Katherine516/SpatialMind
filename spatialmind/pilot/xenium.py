@@ -562,6 +562,7 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
                 "multiple_testing": result.metrics.get("multiple_testing"),
                 "significant_gene_count_top_n": result.metrics.get("significant_gene_count_top_n"),
                 "significant_gene_count_all": result.metrics.get("significant_gene_count_all"),
+                "screening": result.metrics.get("screening"),
                 "top_genes": result.metrics.get("top_genes", [])[:15],
             }
         else:
@@ -2275,6 +2276,8 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
                     spatial_genes.get("multiple_testing"),
                 ),
                 "",
+                _spatial_screen_note(spatial_genes),
+                "",
                 "| Gene | Moran's I | Adjusted p-value |",
                 "| --- | ---: | ---: |",
             ]
@@ -2386,4 +2389,23 @@ def _descriptive_figures_html(descriptive: Dict[str, Any]) -> str:
     return (
         "<h3>Descriptive figures</h3><div class=\"gallery\">%s</div>"
         % "".join(_figure_html(item) for item in figures)
+    )
+
+
+def _spatial_screen_note(spatial_genes: Dict[str, Any]) -> str:
+    """State the gene screen, so significance counts are not read as whole-panel."""
+    screen = spatial_genes.get("screening") or {}
+    if not screen:
+        return ""
+    return (
+        "Screened before permutation testing: %s. Of %s panel genes, %s were detected and %s were "
+        "tested; %s of the tested genes passed FDR <= 0.05. Adjusted p-values are corrected over the "
+        "tested set and are conditional on this screen."
+        % (
+            screen.get("rule", "unknown rule"),
+            screen.get("panel_genes", "?"),
+            screen.get("detected_genes", "?"),
+            screen.get("tested_genes", "?"),
+            spatial_genes.get("significant_gene_count_all", "?"),
+        )
     )
