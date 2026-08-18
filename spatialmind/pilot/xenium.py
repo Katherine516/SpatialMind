@@ -575,7 +575,9 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     # recovered only 8. Flag runs below that so a thin sample is not mistaken for
     # a complete picture.
     analyzed = int((payload.get("clustering_diagnostics") or {}).get("analyzed_cell_count") or len(dataset.records))
-    if analyzed < MIN_CELLS_FOR_STABLE_CLUSTERS:
+    # Small tolerance: QC legitimately drops a few zero-feature cells, and
+    # 5999 analyzed of 6000 requested is not a meaningfully thinner sample.
+    if analyzed < MIN_CELLS_FOR_STABLE_CLUSTERS * 0.95:
         payload["sampling_warning"] = (
             "Only %d cells were clustered. Cluster structure is typically incomplete below %d cells; "
             "rare populations may be missing or merged. Increase --max-cells for a fuller picture."

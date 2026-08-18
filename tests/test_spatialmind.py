@@ -2453,3 +2453,26 @@ class SpatialGeneScreeningTests(unittest.TestCase):
         self.assertIn("424", note)
         self.assertIn("conditional on this screen", note)
         self.assertEqual(_spatial_screen_note({}), "")
+
+
+class SamplingWarningBoundaryTests(unittest.TestCase):
+    def test_qc_dropping_a_few_cells_does_not_trip_the_warning(self):
+        """Requesting exactly the recommended cell count must not warn.
+
+        QC legitimately excludes zero-feature cells, so a 6000-cell request
+        analyzes 5999. Warning there penalises a correct request.
+        """
+        import inspect
+
+        from spatialmind.pilot import xenium as pilot_module
+
+        source = inspect.getsource(pilot_module._run_descriptive_lane)
+        self.assertIn("MIN_CELLS_FOR_STABLE_CLUSTERS * 0.95", source)
+        threshold = pilot_module.MIN_CELLS_FOR_STABLE_CLUSTERS
+        cutoff = threshold * 0.95
+        # A 6000-cell request that analyzes 5999 after QC must stay silent.
+        self.assertGreaterEqual(threshold - 1, cutoff)
+        # A genuinely thin sample must still be flagged.
+        self.assertLess(threshold // 2, cutoff)
+        # And the cutoff must remain below the recommended target.
+        self.assertLess(cutoff, threshold)

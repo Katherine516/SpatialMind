@@ -4,7 +4,7 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-08-12. Unit tests 106/106; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
+Last verified: 2026-08-18. Unit tests 119/119; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
 
 ## The one-sentence version
 
@@ -96,15 +96,43 @@ reports a valid plan instead of duplicating the gate's blockers as fake plan err
 
 | Tool | Backend | What it does |
 | --- | --- | --- |
-| `qc_and_cluster` | Scanpy | Per-cell QC, then normalize → log1p → PCA → neighbours → Leiden on **expression**. `cluster_on="spatial"` opts into spatial-domain clustering. |
+| `qc_and_cluster` | Scanpy | Per-cell QC, then normalize → log1p → PCA → neighbours → Leiden on **expression**. Uses scanpy's exact sklearn kNN backend, falling back to the default when unsupported. `cluster_on="spatial"` opts into spatial-domain clustering. |
 | `annotation` | — | Summarises applied expert labels |
 | `marker_detection` | Scanpy | **One-vs-rest** markers for every cell type by default; explicit `group1`+`group2` gives a pairwise contrast |
-| `spatial_variable_genes` | Squidpy | Moran's I over a spatial kNN graph with seeded permutations and FDR correction; Scanpy HVG is an explicit development fallback only |
+| `spatial_variable_genes` | Squidpy | Moran's I over a spatial kNN graph. Genes are **screened before permutation testing** (see below), so FDR is corrected over the tested subset, not the whole panel; Scanpy HVG is an explicit development fallback only |
 | `region_summary` | — | Cell-type composition and feature means per user region |
 | `cell_neighborhood_enrichment` | Squidpy | Permutation z-scores for cell-type adjacency |
 | `feature_overlay` | — | Single-feature spatial values, with panel-absence guarding |
 
 `qc_and_cluster`, cluster-group marker detection, `spatial_variable_genes`, and cluster-group neighborhood enrichment can run in the descriptive lane before expert labels exist. Annotation, reviewed-region summaries, and cell-type relationship claims remain validation-gated.
+
+### Gene screening before permutation testing
+
+Permutation testing dominates `spatial_variable_genes`: measured at 43s for
+`n_perms=100` across 491 genes, against 0.5s for the analytic Moran's I. Running
+`n_jobs=4` measured *slower* than `n_jobs=1`, so the lever is testing fewer genes
+rather than testing them faster. Two screens run first, and both are recorded:
+
+1. **Detection filter.** Genes detected in too few cells are dropped. They cannot
+   support a spatial claim and only enlarge the multiple-testing burden.
+2. **Analytic pre-rank.** Survivors are ranked by the near-free analytic Moran's I,
+   and only the strongest candidates are permuted.
+
+On a 24,406-cell section this took the stage from 60.6s to 17.1s and the whole
+descriptive lane from 114.8s to 72.0s, with the top genes and their order
+unchanged.
+
+**This changes what the p-values mean, so the report says so.** Every run states
+the screening rule, the panel/detected/tested gene counts, and that FDR is
+corrected over the tested set. Reporting "50 significant" without that context
+would read as 50 of 491 rather than 50 of 50 tested.
+
+The permutation budget stays at `n_perms` *per gene*. Raising it to spend the
+saving back is a measured mistake: 50 genes at 999 permutations is the same total
+work as 491 at 100, and it ran no faster. `screened_n_perms` raises it explicitly
+at proportional cost. Note also that the strongest genes tie at the p-value floor
+regardless of budget — they sit at p ≈ 0, and effect size is what separates them,
+which is already the ranking used.
 
 All statistical tools in the validated plan carry `strict_engine=True`. If Scanpy,
 Leiden, or Squidpy is absent or fails, the run records a backend blocker; it cannot
@@ -136,6 +164,43 @@ reliability = min(S_statistical, A_annotation, P_panel, R_spatial_robustness)
 `R` = the measured robustness sweep. Weakest-link keeps a claim at 0.0 whenever any
 required evidence class is missing. The calibrated logistic combiner stays `not_fit`
 until expert-reviewed claim truth exists.
+
+## Stage 8b: Running it — scope, sampling, and cost
+
+`scripts/analyze.py` is the entry point for someone who has just produced a Xenium
+run and wants a report:
+
+```bash
+python scripts/analyze.py <xenium_folder> --out outputs/analysis
+```
+
+It runs the descriptive lane and prints where the report, viewer, and JSON landed,
+plus what expert review would add. No labels required.
+
+**How many cells to analyze.** Clustering was compared against full-section labels
+on shared cells for a healthy-brain section:
+
+| Sample | Clusters found | ARI vs full section |
+| --- | ---: | ---: |
+| 3,000 | 8 | 0.79 |
+| 6,000 | 10 | 0.90 |
+| 20,000 | 10 | 0.94 |
+| full (24,406) | 10 | — |
+
+Cluster structure is recovered from roughly 6,000 cells; 3,000 merges or drops
+populations. Runs below that carry an explicit `sampling_warning` in the payload,
+the report, and the CLI. The default cap is 20,000.
+
+**Display is capped separately from analysis.** The viewer draws one DOM node per
+cell, so a full section would otherwise produce a file no browser opens usefully.
+`spatialmind/viz/display_sampling.py` subsamples on a spatial grid — deterministic,
+coverage-preserving — for the viewer, the SVG, and the interactive HTML only.
+Analysis still uses every loaded cell, and the cap is stated in the artifact.
+Measured on the 377,985-cell lymph node section: viewer 7.35 MB against roughly
+131 MB projected uncapped. Output is bounded by the cap rather than by input size.
+
+**Stage timings** are recorded for every descriptive run (`stage_seconds`) and
+rendered in the report, so slow stages are identifiable rather than guessed at.
 
 ## Stage 9: Explorer-lite viewer
 

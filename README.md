@@ -273,6 +273,44 @@ MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spati
 
 The validated pilot also writes `explorer_lite_viewer.html` into its output folder as a review artifact.
 
+## Analyze A Xenium Run
+
+The entry point if you have just produced a Xenium run and want a report:
+
+```bash
+python scripts/analyze.py "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs"
+```
+
+```text
+SpatialMind analysis
+  cells        : 6000 of 24406 (sampled)
+  features     : 408
+  clusters     : 9
+  spatial genes: 50 significant
+  analysis time: 33s
+
+Report   : outputs/analysis/validated_xenium_pilot_report.html
+Viewer   : outputs/analysis/explorer_lite_viewer.html
+Full JSON: outputs/analysis/pilot_validation.json
+```
+
+**No expert labels are required.** You get per-cell QC, expression clusters,
+per-cluster marker genes, spatially autocorrelated genes, cluster co-occurrence,
+a cluster spatial map, a marker heatmap, and a browser viewer with the morphology
+image and segmentation boundaries.
+
+Clusters are described, never named as cell types. Naming them, and any claim about
+named cell types, needs expert review — see
+[docs/getting_cell_labels.md](docs/getting_cell_labels.md).
+
+Useful flags:
+
+- `--max-cells N` — cells to analyze (default 20000; below ~6000 cluster structure
+  is typically incomplete and the run says so).
+- `--full-section` — analyze every cell. Slower; a 24k-cell section takes roughly
+  72s of analysis.
+- `--report-format pdf|both` — PDF alongside the auditable HTML.
+
 ## Try It
 
 ```bash
