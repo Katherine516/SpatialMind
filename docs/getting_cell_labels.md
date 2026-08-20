@@ -66,9 +66,11 @@ requirements.
 
 3. Save the completed files into the Xenium output folder and re-run the pilot.
 
-**Scope tip.** You do not need to label all 40,887 cells. The gate needs ≥70%
-coverage *of the loaded sample*, ≥2 cell classes, and ≥2 regions. Running with
-`--max-records 500` means ~350 labelled cells clears the gate for a first real pass.
+**Scope tip.** You do not need to label all 40,887 cells — but see the sizing
+table above. `--max-records 500` clears the coverage gate at ~350 labelled cells
+and then fails on backend requirements; plan for ~1,600 cells at
+`--max-records 2000`, which is the smallest configuration measured to reach
+`validated_ready`.
 
 Use the broad Cell Ontology vocabulary in
 [`cell_ontology_labeling_guide.md`](cell_ontology_labeling_guide.md) — `astrocyte`
