@@ -2575,3 +2575,28 @@ class ToolCapabilityTests(unittest.TestCase):
                 input_schema={}, output_schema={}, preconditions=[], estimated_runtime="fast",
                 callable=lambda dataset, params: None, capability="totally_fine",
             )
+
+
+class ReviewPlanAlignmentTests(unittest.TestCase):
+    def test_pilot_template_is_aligned_to_the_run_it_came_from(self):
+        """Labels only count if their cell_ids are in the cells the run loads.
+
+        A review file built from a different selection can be labelled perfectly
+        and still leave the gate shut, so the template a run emits must contain
+        exactly that run's cells.
+        """
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
+        from spatialmind.ingestion import load_xenium, write_expert_label_template
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset = load_xenium(XENIUM_LYMPH, max_records=120)
+            path = write_expert_label_template(
+                dataset, str(Path(tmp) / "t.csv"), max_rows=120, dataset_path=XENIUM_LYMPH
+            )
+            with open(path, newline="", encoding="utf-8") as handle:
+                template_ids = [row["cell_id"] for row in csv.DictReader(handle)]
+            loaded_ids = {record.cell_id for record in dataset.records}
+            self.assertTrue(template_ids)
+            self.assertTrue(set(template_ids) <= loaded_ids)
+            self.assertEqual(len(template_ids), len(loaded_ids))
