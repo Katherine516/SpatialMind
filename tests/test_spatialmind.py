@@ -438,9 +438,15 @@ class ToolRegistryTests(unittest.TestCase):
     def test_default_registry_keeps_full_scaffold_and_anthropic_schema(self):
         registry = build_default_registry()
         self.assertGreaterEqual(len(registry.list_all()), 22)
+        # Scaffolds stay registered for provenance, but are not advertised to a
+        # planner: a model must not be able to pick a tool that does no work.
         anthropic_tools = registry.to_anthropic_tools()
         self.assertTrue(any(tool["name"] == "neighborhood_enrichment" for tool in anthropic_tools))
-        self.assertTrue(any(tool["name"] == "cnv_inference" for tool in anthropic_tools))
+        self.assertFalse(any(tool["name"] == "cnv_inference" for tool in anthropic_tools))
+        self.assertTrue(any(tool.name == "cnv_inference" for tool in registry.list_all()))
+        self.assertTrue(
+            any(tool["name"] == "cnv_inference" for tool in registry.to_anthropic_tools(plannable_only=False))
+        )
 
     def test_registry_exposes_resource_profiles_and_method_citations(self):
         registry = build_default_registry()
@@ -2476,3 +2482,96 @@ class SamplingWarningBoundaryTests(unittest.TestCase):
         self.assertLess(threshold // 2, cutoff)
         # And the cutoff must remain below the recommended target.
         self.assertLess(cutoff, threshold)
+
+
+class BiologicalReplicationTests(unittest.TestCase):
+    def test_one_section_per_condition_is_pseudoreplicated(self):
+        from spatialmind.methods.replication import assess_condition_replication
+
+        result = assess_condition_replication({
+            "healthy": [{"section_id": "s1", "cell_count": 24406}],
+            "glioblastoma": [{"section_id": "s2", "cell_count": 40887}],
+        })
+        self.assertFalse(result["supports_condition_inference"])
+        self.assertEqual(result["status"], "pseudoreplicated")
+        # Cell count must not rescue the design.
+        self.assertEqual(result["conditions"]["healthy"]["cell_count"], 24406)
+        self.assertEqual(result["conditions"]["healthy"]["section_count"], 1)
+        self.assertIn("not independent biological replicates", result["allowed_interpretation"])
+
+    def test_replicated_design_is_supported(self):
+        from spatialmind.methods.replication import assess_condition_replication
+
+        result = assess_condition_replication({
+            "healthy": [{"section_id": "h1", "donor_id": "d1"}, {"section_id": "h2", "donor_id": "d2"}],
+            "glioblastoma": [{"section_id": "g1", "donor_id": "d3"}, {"section_id": "g2", "donor_id": "d4"}],
+        })
+        self.assertTrue(result["supports_condition_inference"])
+        self.assertEqual(result["status"], "replicated")
+        self.assertEqual(result["unit_of_analysis"], "section")
+        self.assertIn("pseudobulk", result["recommended_statistics"])
+
+    def test_single_condition_cannot_be_compared(self):
+        from spatialmind.methods.replication import assess_condition_replication
+
+        result = assess_condition_replication({"healthy": [{"section_id": "a"}, {"section_id": "b"}]})
+        self.assertFalse(result["supports_condition_inference"])
+        self.assertTrue(any("two conditions" in b for b in result["blockers"]))
+
+    def test_labelled_sections_still_block_condition_deltas(self):
+        """The review sprint must not by itself unlock an n=1 vs n=1 comparison."""
+        from unittest.mock import patch
+
+        from spatialmind.review import glioblastoma as module
+
+        class Intake:
+            ready_for_validated_pilot = True
+            loaded_cells = 750
+
+            def to_dict(self):
+                return {"status": "validated_ready"}
+
+        class Dataset:
+            def __init__(self, n):
+                self.records = [type("R", (), {"cell_type": "astrocyte"})() for _ in range(n)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(module, "validate_xenium_label_intake", return_value=Intake()), \
+                 patch.object(module, "_load_validated_dataset", side_effect=[Dataset(700), Dataset(650)]):
+                out = module.build_brain_comparison_report(output_dir=tmp, max_records=750)
+        self.assertEqual(out["status"], "blocked_insufficient_biological_replication")
+        self.assertNotIn("glioblastoma_minus_healthy_label_fraction", out.get("comparison") or {})
+        self.assertIn("per_section_summary", out)
+
+
+class ToolCapabilityTests(unittest.TestCase):
+    def test_scaffolds_are_marked_unavailable_and_hidden_from_planning(self):
+        registry = build_default_registry()
+        summary = registry.capability_summary()
+        self.assertGreater(summary.get("unavailable", 0), 0)
+        self.assertEqual(len(registry.list_plannable()) + summary["unavailable"], len(registry.list_all()))
+        plannable = {tool.name for tool in registry.list_plannable()}
+        self.assertNotIn("cnv_inference", plannable)
+        self.assertNotIn("pathway_activity", plannable)
+        self.assertIn("marker_detection", plannable)
+
+    def test_llm_tool_schemas_exclude_scaffolds_by_default(self):
+        registry = build_default_registry()
+        shown = {tool["name"] for tool in registry.to_anthropic_tools()}
+        every = {tool["name"] for tool in registry.to_anthropic_tools(plannable_only=False)}
+        self.assertLess(len(shown), len(every))
+        self.assertNotIn("cnv_inference", shown)
+        self.assertIn("cnv_inference", every)
+
+    def test_mvp_registry_exposes_no_unavailable_tools(self):
+        self.assertEqual(build_mvp_registry().capability_summary().get("unavailable", 0), 0)
+
+    def test_unknown_capability_is_rejected(self):
+        from spatialmind.tools.registry import SpatialTool
+
+        with self.assertRaises(ValueError):
+            SpatialTool(
+                name="x", description="d", when_to_use="w", when_not_to_use="n",
+                input_schema={}, output_schema={}, preconditions=[], estimated_runtime="fast",
+                callable=lambda dataset, params: None, capability="totally_fine",
+            )

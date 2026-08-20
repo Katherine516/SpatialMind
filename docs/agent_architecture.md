@@ -4,7 +4,7 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-08-18. Unit tests 119/119; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
+Last verified: 2026-08-20. Unit tests 128/128; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
 
 ## The one-sentence version
 
@@ -83,6 +83,23 @@ analysis. It requires:
 6. Complete-section scope for final validated inference
 
 Missing review evidence yields `blocked_missing_validation_inputs`; a passing review gate on a sample yields `blocked_sampled_inference`; a failed required backend yields `blocked_analysis_backend`. A label-free descriptive lane still runs strict Scanpy/Squidpy QC, expression clustering, per-cluster markers, Moran's I, and cluster neighborhoods. Those outputs describe data-derived groups only and never name them as cell types.
+
+## Stage 4b: Tool capability states
+
+Every registered tool carries a capability:
+
+| State | Meaning |
+| --- | --- |
+| `validated` | Real backend; may support biological claims once gated inputs exist |
+| `descriptive` | Real backend; describes data-derived groups only |
+| `experimental` | Real method, not yet trusted for claims |
+| `unavailable` | Registered scaffold that returns a placeholder and does no work |
+
+Scaffolds are detected automatically from the implementation, so the registry
+stays honest even if a caller forgets to set the field. `list_plannable()` and
+`to_anthropic_tools()` exclude them by default: of 30 registered tools, 16 are
+plannable and 14 are hidden, so a model cannot select a tool that does nothing.
+They remain in `list_all()` for provenance.
 
 ## Stage 5: Typed plan validation
 
@@ -164,6 +181,25 @@ reliability = min(S_statistical, A_annotation, P_panel, R_spatial_robustness)
 `R` = the measured robustness sweep. Weakest-link keeps a claim at 0.0 whenever any
 required evidence class is missing. The calibrated logistic combiner stays `not_fit`
 until expert-reviewed claim truth exists.
+
+## Stage 7b: Biological replication
+
+Cells within one section are not independent biological replicates. A
+healthy-versus-disease difference computed from one section per condition is
+pseudoreplication: the apparent sample size is the cell count, but the real
+sample size is one donor per group, so the difference cannot be attributed to the
+conditions however many cells were measured.
+
+`assess_condition_replication` reports the design — sections and donors per
+condition — and `build_brain_comparison_report` refuses condition-level output
+when it is not met, returning `blocked_insufficient_biological_replication`. It
+still emits a per-section descriptive summary; it never subtracts one condition
+from the other.
+
+This matters most *after* expert labels arrive. Labels alone would otherwise flip
+the comparison to `ready` and produce condition deltas from n=1 versus n=1, so the
+guard exists ahead of the review sprint rather than after it. Once replicates
+exist, condition-level statistics should be section-aware or pseudobulk.
 
 ## Stage 8b: Running it — scope, sampling, and cost
 
