@@ -30,6 +30,8 @@ def main() -> None:
     )
     parser.add_argument("--full-section", action="store_true", help="Analyze every cell (slower).")
     parser.add_argument("--report-format", default="html", choices=["html", "pdf", "both"])
+    parser.add_argument("--review-templates", action="store_true",
+                        help="Also write expert label/region templates (~1.5 MB). Off by default.")
     args = parser.parse_args()
 
     max_records = 10_000_000 if args.full_section else args.max_cells
@@ -38,6 +40,7 @@ def main() -> None:
         output_dir=Path(args.out),
         max_records=max_records,
         report_format=args.report_format,
+        review_artifacts=args.review_templates,
     )
 
     descriptive = result.get("descriptive_analysis") or {}
@@ -47,6 +50,20 @@ def main() -> None:
     print("  cells        : %s of %s (%s)" % (
         result.get("records_loaded"), scope.get("total_records", "?"), scope.get("scope", "?")))
     print("  features     : %s" % result.get("features_loaded"))
+    run_qc = {row["key"]: row for row in (result.get("run_qc") or {}).get("metrics", [])}
+    if run_qc:
+        decoded = run_qc.get("fraction_transcripts_decoded_q20")
+        assigned = run_qc.get("fraction_transcripts_assigned")
+        negctl = run_qc.get("negative_control_probe_rate")
+        parts = []
+        if decoded: parts.append("decoded Q20 %.3f" % decoded["value"])
+        if assigned: parts.append("assigned %.3f" % assigned["value"])
+        if negctl: parts.append("neg-control %.4f" % negctl["value"])
+        if parts:
+            print("  run QC       : %s" % ", ".join(parts))
+        flagged = [r["label"] for r in run_qc.values() if r.get("status") == "attention"]
+        if flagged:
+            print("  QC ATTENTION : %s" % ", ".join(flagged))
     if descriptive.get("status") == "computed":
         print("  clusters     : %s" % descriptive.get("cluster_count"))
         spatial = descriptive.get("spatial_genes") or {}

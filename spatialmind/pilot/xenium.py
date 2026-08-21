@@ -57,6 +57,7 @@ def run_pilot(
     allow_single_region: bool = False,
     report_format: str = "html",
     readiness_only: bool = False,
+    review_artifacts: bool = True,
     require_complete_section: bool = True,
     review_max_records: int = 5000,
     query: str = "Validated Xenium pilot: annotate cells, summarize user regions, and test spatial relationships.",
@@ -116,13 +117,13 @@ def run_pilot(
         review_figures: List[str] = []
         figures: List[str] = []
     else:
-        label_template = write_expert_label_template(
+        label_template = "" if not review_artifacts else write_expert_label_template(
             dataset,
             str(output_dir / "expert_label_template.csv"),
             max_rows=review_max_records if review_max_records > 0 else len(dataset.records),
             dataset_path=dataset_path,
         )
-        region_template = write_region_label_template(
+        region_template = "" if not review_artifacts else write_region_label_template(
             dataset,
             str(output_dir / "region_label_template.csv"),
             max_rows=review_max_records if review_max_records > 0 else len(dataset.records),
@@ -305,6 +306,7 @@ def run_pilot(
             "review_figures": "Generated from current loader labels/clusters for expert review and QA only.",
             "validated_figures": "Generated only after expert labels and user regions pass the pilot gate.",
         },
+        "run_qc": _run_qc(dataset),
         "descriptive_analysis": descriptive,
         "spatial_robustness": spatial_robustness,
         "spatial_relationships": spatial_relationships,
@@ -476,6 +478,60 @@ def pilot_gate(
         "region_coverage": round(region_coverage, 4),
     }
 
+
+
+# Instrument-level QC from metrics_summary.csv. These are the first numbers a
+# wet-lab scientist checks, and they were parsed at ingestion but never reported.
+RUN_QC_FIELDS = (
+    ("fraction_transcripts_decoded_q20", "Transcripts decoded (Q20)", "fraction", 0.80, "higher is better"),
+    ("fraction_transcripts_assigned", "Transcripts assigned to cells", "fraction", 0.50, "higher is better"),
+    ("negative_control_probe_rate", "Negative control probe rate", "rate", None, "lower is better"),
+    ("negative_control_codeword_rate", "Negative control codeword rate", "rate", None, "lower is better"),
+    ("fraction_empty_cells", "Empty cells", "fraction", None, "lower is better"),
+    ("median_genes_per_cell", "Median genes per cell", "count", None, ""),
+    ("median_transcripts_per_cell", "Median transcripts per cell", "count", None, ""),
+    ("num_cells_detected", "Cells detected in run", "count", None, ""),
+    ("region_area", "Imaged region area (um^2)", "count", None, ""),
+)
+
+
+def _run_qc(dataset: SpatialDataset) -> Dict[str, Any]:
+    """Instrument run QC, with a pass/attention flag where a threshold is meaningful."""
+    metadata = dataset.metadata or {}
+    rows = []
+    for key, label, kind, floor, direction in RUN_QC_FIELDS:
+        if key not in metadata:
+            continue
+        try:
+            value = float(metadata[key])
+        except (TypeError, ValueError):
+            continue
+        row = {"key": key, "label": label, "value": value, "kind": kind, "direction": direction}
+        if floor is not None:
+            row["status"] = "ok" if value >= floor else "attention"
+            row["threshold"] = floor
+        rows.append(row)
+    return {"status": "reported" if rows else "unavailable", "metrics": rows,
+            "source": "metrics_summary.csv"}
+
+
+def _run_qc_markdown(payload: Dict[str, Any]) -> List[str]:
+    run_qc = payload.get("run_qc") or {}
+    rows = run_qc.get("metrics") or []
+    if not rows:
+        return []
+    lines = ["### Instrument run QC", "", "| Metric | Value | Note |", "| --- | ---: | --- |"]
+    for row in rows:
+        value = row["value"]
+        shown = ("%.4f" % value) if row["kind"] in {"fraction", "rate"} else ("%.0f" % value)
+        note = row.get("direction", "")
+        if row.get("status") == "attention":
+            note = "below %.2f - check run quality" % row["threshold"]
+        elif row.get("status") == "ok":
+            note = "above %.2f" % row["threshold"]
+        lines.append("| %s | %s | %s |" % (row["label"], shown, note))
+    lines.extend(["", "Source: `%s` (instrument output, not recomputed here)." % run_qc.get("source", ""), ""])
+    return lines
 
 def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str, Any]:
     """Label-free analysis: QC, clusters, per-cluster markers, cluster neighbourhoods.
@@ -1103,14 +1159,25 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         "total_records": payload.get("records_loaded", 0),
         "fraction_loaded": 1.0,
     }
+    descriptive_ok = (payload.get("descriptive_analysis") or {}).get("status") == "computed"
+    validated = payload["status"] == "validated_ready"
+    if validated:
+        headline, outcome = "Validated Xenium Pilot Report", "validated analysis complete"
+    elif descriptive_ok:
+        # The descriptive deliverable succeeded; only the extra validated tier is
+        # gated. Leading with the gate code reads as a failed run when it is not.
+        headline, outcome = "Xenium Analysis Report", "descriptive analysis complete"
+    else:
+        headline, outcome = "Xenium Analysis Report", "no analysis produced"
     lines = [
-        "# Validated Xenium Pilot Report",
+        "# %s" % headline,
         "",
         "Created: `%s`" % payload["created_at"],
         "",
         "## Status",
         "",
-        "- Status: `%s`" % payload["status"],
+        "- Outcome: **%s**" % outcome,
+        "- Validation gate: `%s`" % payload["status"],
         "- Dataset: `%s`" % payload["dataset_path"],
         "- Loaded cells: `%d`" % payload["records_loaded"],
         "- Loaded features: `%d`" % payload["features_loaded"],
@@ -2224,6 +2291,7 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
         "without expert annotation. Cluster identities are not cell-type claims.",
         "",
     ]
+    lines.extend(_run_qc_markdown(payload))
     qc = descriptive.get("expression_qc") or {}
     if qc:
         lines.extend([
@@ -2256,6 +2324,10 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
                 "| PCA silhouette | %s |" % diagnostics.get("silhouette", "not computed"),
                 "| Weighted graph modularity | %s |" % diagnostics.get("modularity", "not computed"),
                 "",
+                "Reading these: silhouette is routinely low for single-cell and spatial data because "
+                "populations grade into one another, so modularity is the more informative number here - "
+                "values near 0.7 and above indicate well-separated groups in the expression graph.",
+                "",
             ]
         )
     markers = descriptive.get("markers_by_cluster")
@@ -2284,6 +2356,12 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
                 "| --- | ---: | ---: |",
             ]
         )
+        lines.extend([
+            "Adjusted p-values commonly tie at the permutation floor here: these genes are all far beyond "
+            "the resolution %s permutations can distinguish, so they are ranked by Moran's I effect size "
+            "rather than by p-value." % spatial_genes.get("n_perms", "the"),
+            "",
+        ])
         for item in spatial_genes["top_genes"][:12]:
             lines.append(
                 "| `%s` | %s | %s |"

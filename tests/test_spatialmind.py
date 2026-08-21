@@ -2600,3 +2600,64 @@ class ReviewPlanAlignmentTests(unittest.TestCase):
             self.assertTrue(template_ids)
             self.assertTrue(set(template_ids) <= loaded_ids)
             self.assertEqual(len(template_ids), len(loaded_ids))
+
+
+class DescriptiveReportPackagingTests(unittest.TestCase):
+    def test_run_qc_is_surfaced_from_instrument_metrics(self):
+        from spatialmind.pilot.xenium import _run_qc, _run_qc_markdown
+
+        dataset = SpatialDataset(
+            sample_id="X", source_path="x", modality="xenium_spatial_rna",
+            records=[SpotRecord("X", 0.0, 0.0, "c", {"A": 1.0}, cell_id="c1")],
+            metadata={
+                "fraction_transcripts_decoded_q20": 0.8798,
+                "fraction_transcripts_assigned": 0.7876,
+                "negative_control_probe_rate": 0.0013,
+                "median_genes_per_cell": 69,
+            },
+        )
+        qc = _run_qc(dataset)
+        self.assertEqual(qc["status"], "reported")
+        by_key = {row["key"]: row for row in qc["metrics"]}
+        self.assertEqual(by_key["fraction_transcripts_decoded_q20"]["status"], "ok")
+        markdown = "\n".join(_run_qc_markdown({"run_qc": qc}))
+        self.assertIn("Instrument run QC", markdown)
+        self.assertIn("0.8798", markdown)
+
+    def test_poor_decode_rate_is_flagged_for_attention(self):
+        from spatialmind.pilot.xenium import _run_qc
+
+        dataset = SpatialDataset(
+            sample_id="X", source_path="x", modality="xenium_spatial_rna",
+            records=[SpotRecord("X", 0.0, 0.0, "c", {"A": 1.0}, cell_id="c1")],
+            metadata={"fraction_transcripts_decoded_q20": 0.42},
+        )
+        row = _run_qc(dataset)["metrics"][0]
+        self.assertEqual(row["status"], "attention")
+
+    def test_missing_metrics_degrade_quietly(self):
+        from spatialmind.pilot.xenium import _run_qc, _run_qc_markdown
+
+        dataset = SpatialDataset(
+            sample_id="X", source_path="x", modality="xenium_spatial_rna",
+            records=[SpotRecord("X", 0.0, 0.0, "c", {"A": 1.0}, cell_id="c1")], metadata={},
+        )
+        self.assertEqual(_run_qc(dataset)["status"], "unavailable")
+        self.assertEqual(_run_qc_markdown({"run_qc": _run_qc(dataset)}), [])
+
+    def test_successful_descriptive_run_is_not_headlined_as_blocked(self):
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
+        from spatialmind.pilot.xenium import run_pilot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "p"
+            result = run_pilot(XENIUM_LYMPH, out, max_records=200, review_artifacts=False)
+            report = (out / "validated_xenium_pilot_report.md").read_text()
+            # The gate code is still reported, but it is not the headline.
+            self.assertIn("Xenium Analysis Report", report)
+            self.assertIn("Outcome:", report)
+            self.assertTrue(result["status"].startswith("blocked"))
+            # Review templates are skipped when not doing a review.
+            self.assertEqual(result["expert_label_template"], "")
+            self.assertFalse((out / "expert_label_template.csv").exists())
