@@ -2352,16 +2352,14 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
                 "",
                 _spatial_screen_note(spatial_genes),
                 "",
+                "Adjusted p-values commonly tie at the permutation floor here: these genes are all far "
+                "beyond the resolution %s permutations can distinguish, so they are ranked by Moran's I "
+                "effect size rather than by p-value." % spatial_genes.get("n_perms", "the"),
+                "",
                 "| Gene | Moran's I | Adjusted p-value |",
                 "| --- | ---: | ---: |",
             ]
         )
-        lines.extend([
-            "Adjusted p-values commonly tie at the permutation floor here: these genes are all far beyond "
-            "the resolution %s permutations can distinguish, so they are ranked by Moran's I effect size "
-            "rather than by p-value." % spatial_genes.get("n_perms", "the"),
-            "",
-        ])
         for item in spatial_genes["top_genes"][:12]:
             lines.append(
                 "| `%s` | %s | %s |"
