@@ -1152,6 +1152,69 @@ def _render_review_composition_svg(dataset: SpatialDataset, path: Path) -> str:
     return str(path)
 
 
+
+# Sections that only make sense once the validated tier is in play. On a
+# descriptive run they are either empty, internal, or about claims that were
+# never attempted, so they bury the results the reader asked for.
+VALIDATION_ONLY_SECTIONS = (
+    "Typed Tool Plan",
+    "Generated Review Templates",
+    "Current Label Summary",
+    "Current Region Summary",
+    "Tool Results",
+    "Spatial Relationships",
+    "Region-Stratified Neighborhood Testing",
+    "Distance-Dependent Co-Occurrence",
+    "Claim Ledger",
+    "Claim Reliability",
+    "Spatial Robustness Sweep",
+    "Claim Policy",
+    "Label and Region Readiness",
+    "Required Next Inputs",
+    "What Is Still Needed To Go Further",
+)
+
+
+def _filter_descriptive_sections(lines: List[str], payload: Dict[str, Any]) -> List[str]:
+    """Drop validated-tier sections from a descriptive report.
+
+    Kept verbatim for validated runs, where every one of them carries content.
+    """
+    if payload.get("status") == "validated_ready":
+        return lines
+    if (payload.get("descriptive_analysis") or {}).get("status") != "computed":
+        return lines
+    kept: List[str] = []
+    skipping = False
+    for line in lines:
+        if line.startswith("## "):
+            title = line[3:].strip()
+            skipping = any(title.startswith(name) for name in VALIDATION_ONLY_SECTIONS)
+        if not skipping:
+            kept.append(line)
+    return kept
+
+
+def _expert_review_note(payload: Dict[str, Any]) -> List[str]:
+    """One compact block replacing the dropped validation scaffolding."""
+    required = payload.get("required_next_inputs") or []
+    lines = [
+        "## What Expert Review Would Add",
+        "",
+        "The results above describe data-derived expression clusters and stand on their own. "
+        "Naming those clusters as cell types, summarising user-defined tissue regions, and making "
+        "scored biological claims all require reviewed inputs:",
+        "",
+    ]
+    lines.extend("- %s" % item for item in (required or ["Expert cell labels and user-defined regions."]))
+    lines.extend([
+        "",
+        "Run `scripts/plan_expert_review.py <dataset> --max-cells N` to generate review files aligned "
+        "to the run you intend, and see `docs/getting_cell_labels.md` for how many cells to label.",
+        "",
+    ])
+    return lines
+
 def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[ToolResult]) -> None:
     scope = payload.get("analysis_scope") or {
         "scope": "unknown",
@@ -1412,6 +1475,11 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
             "",
         ]
     )
+    lines = _filter_descriptive_sections(lines, payload)
+    if payload.get("status") != "validated_ready" and (payload.get("descriptive_analysis") or {}).get("status") == "computed":
+        # Replace the dropped scaffolding with one honest pointer.
+        anchor = next((i for i, line in enumerate(lines) if line.startswith("## Limitations")), len(lines))
+        lines = lines[:anchor] + _expert_review_note(payload) + lines[anchor:]
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -2279,6 +2347,34 @@ def _figure_html(path: str) -> str:
     return '<div class="figure"><p><code>%s</code></p></div>' % escaped_name
 
 
+
+def _cluster_marker_hints(markers_by_cluster: Dict[str, Any]) -> Dict[str, str]:
+    """Which broad lineage a cluster's markers point at, from canonical markers.
+
+    This is marker evidence, not a cell-type call. It names what the genes are
+    known for and leaves the identification to a reviewer, which is why the
+    report labels the column "marker evidence suggests" rather than "cell type".
+    """
+    from spatialmind.tools.implementations import LINEAGE_MARKERS
+
+    hints: Dict[str, str] = {}
+    for cluster, genes in (markers_by_cluster or {}).items():
+        upper = {str(gene).upper() for gene in genes}
+        scored = []
+        for lineage, markers in LINEAGE_MARKERS.items():
+            overlap = len(upper & {marker.upper() for marker in markers})
+            if overlap:
+                scored.append((overlap, lineage))
+        if not scored:
+            continue
+        scored.sort(reverse=True)
+        best, lineage = scored[0]
+        runner_up = scored[1][0] if len(scored) > 1 else 0
+        # Only hint when one lineage clearly leads; ties stay silent.
+        if best >= 2 and best > runner_up:
+            hints[str(cluster)] = "%s markers (%d of top genes)" % (lineage, best)
+    return hints
+
 def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
     """Label-free results, rendered before any refusal text."""
     descriptive = payload.get("descriptive_analysis") or {}
@@ -2332,11 +2428,21 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
         )
     markers = descriptive.get("markers_by_cluster")
     if isinstance(markers, dict) and markers:
+        hints = _cluster_marker_hints(markers)
         lines.extend(["### Top markers per cluster (one-vs-rest)", "",
-                      "| Cluster | Marker genes |", "| --- | --- |"])
+                      "| Cluster | Marker genes | Marker evidence suggests |", "| --- | --- | --- |"])
         for cluster, genes in sorted(markers.items()):
-            lines.append("| `%s` | %s |" % (cluster, ", ".join("`%s`" % gene for gene in genes[:6])))
-        lines.append("")
+            lines.append("| `%s` | %s | %s |" % (
+                cluster,
+                ", ".join("`%s`" % gene for gene in genes[:6]),
+                hints.get(str(cluster), "no clear lineage match"),
+            ))
+        lines.extend([
+            "",
+            "The final column reports which canonical marker family these genes belong to. It is marker "
+            "evidence, not a cell-type assignment: confirming an identity is an expert judgement.",
+            "",
+        ])
     spatial_genes = descriptive.get("spatial_genes") or {}
     if spatial_genes.get("top_genes"):
         lines.extend(

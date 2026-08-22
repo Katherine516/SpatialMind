@@ -2249,10 +2249,13 @@ class DescriptiveLaneTests(unittest.TestCase):
             report = (out / "validated_xenium_pilot_report.md").read_text()
             self.assertIn("Descriptive Analysis (no expert labels required)", report)
             self.assertIn("Spatially autocorrelated genes", report)
+            # Results come before the note about what review would add, and the
+            # validated-tier scaffolding is not present on a descriptive report.
             self.assertLess(
                 report.index("Descriptive Analysis"),
-                report.index("What Is Still Needed To Go Further"),
+                report.index("What Expert Review Would Add"),
             )
+            self.assertNotIn("## Claim Ledger", report)
             html_report = (out / "validated_xenium_pilot_report.html").read_text()
             self.assertIn("Descriptive Analysis (no expert labels required)", html_report)
             self.assertIn("Spatially autocorrelated genes", html_report)
@@ -2661,3 +2664,65 @@ class DescriptiveReportPackagingTests(unittest.TestCase):
             # Review templates are skipped when not doing a review.
             self.assertEqual(result["expert_label_template"], "")
             self.assertFalse((out / "expert_label_template.csv").exists())
+
+
+class DescriptiveReportSplitTests(unittest.TestCase):
+    def test_validation_sections_are_dropped_only_from_descriptive_reports(self):
+        from spatialmind.pilot.xenium import _filter_descriptive_sections
+
+        lines = [
+            "# Report", "", "## Status", "- ok",
+            "## Descriptive Analysis (no expert labels required)", "content",
+            "## Claim Ledger", "refused",
+            "## Typed Tool Plan", "plan",
+            "## Limitations", "limits",
+        ]
+        descriptive = {"status": "blocked_missing_validation_inputs",
+                       "descriptive_analysis": {"status": "computed"}}
+        kept = _filter_descriptive_sections(lines, descriptive)
+        self.assertIn("## Descriptive Analysis (no expert labels required)", kept)
+        self.assertIn("## Limitations", kept)
+        self.assertNotIn("## Claim Ledger", kept)
+        self.assertNotIn("## Typed Tool Plan", kept)
+
+        # Validated runs keep everything: those sections carry real content there.
+        validated = {"status": "validated_ready", "descriptive_analysis": {"status": "computed"}}
+        self.assertEqual(_filter_descriptive_sections(lines, validated), lines)
+
+        # A run with no descriptive results is left alone too.
+        nothing = {"status": "blocked_analysis_backend", "descriptive_analysis": {"status": "not_run"}}
+        self.assertEqual(_filter_descriptive_sections(lines, nothing), lines)
+
+    def test_marker_hints_name_the_family_not_the_cell_type(self):
+        from spatialmind.pilot.xenium import _cluster_marker_hints
+
+        hints = _cluster_marker_hints({
+            "0": ["CD68", "AIF1", "C1QA", "CD74"],
+            "1": ["MOG", "MOBP", "CLDN11", "PLP1"],
+            "2": ["PDGFRA", "CSPG4", "VCAN", "BCAN"],
+            "3": ["SOMEGENE", "ANOTHER"],
+        })
+        self.assertIn("myeloid", hints["0"])
+        self.assertIn("oligodendrocyte", hints["1"])
+        self.assertIn("opc", hints["2"])
+        # No match stays silent rather than guessing.
+        self.assertNotIn("3", hints)
+        # Wording must not assert an identity.
+        self.assertNotIn("cell type", " ".join(hints.values()).lower())
+
+    def test_every_label_lineage_is_marker_detectable(self):
+        """A lineage a reference label maps to must be reachable from markers.
+
+        Otherwise cells of that lineage can never be flagged as absent from a
+        reference, which is what the coverage check exists to catch.
+        """
+        from spatialmind.tools.implementations import LABEL_LINEAGE_KEYWORDS, LINEAGE_MARKERS
+
+        label_lineages = {lineage for _keyword, lineage in LABEL_LINEAGE_KEYWORDS}
+        self.assertEqual(label_lineages - set(LINEAGE_MARKERS), set())
+
+    def test_opc_and_oligodendrocyte_stay_distinguishable(self):
+        from spatialmind.tools.implementations import marker_lineage
+
+        self.assertEqual(marker_lineage({"PDGFRA": 6.0, "CSPG4": 5.0, "VCAN": 4.0})[0], "opc")
+        self.assertEqual(marker_lineage({"MOG": 8.0, "MOBP": 7.0, "CLDN11": 6.0, "OPALIN": 5.0})[0], "oligodendrocyte")

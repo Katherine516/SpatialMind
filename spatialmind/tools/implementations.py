@@ -840,6 +840,11 @@ LINEAGE_MARKERS = {
     "epithelial": ("EPCAM", "KRT8", "KRT18", "KRT19", "KRT15"),
     "neuronal": ("SNAP25", "RBFOX3", "SYT1", "NRGN", "SLC17A7", "GAD1", "GAD2", "ENC1"),
     "oligodendrocyte": ("MBP", "MOG", "MOBP", "PLP1", "CLDN11", "OPALIN", "ERMN", "CNDP1"),
+    # OPC was reachable from a reference label but undetectable from markers, so an
+    # OPC cell could never be flagged as absent from a reference. PDGFRA and CSPG4
+    # are the discriminating markers; OLIG2/SOX10 are shared with the mature
+    # oligodendrocyte lineage, which COMPATIBLE_LINEAGES already treats as non-conflicting.
+    "opc": ("PDGFRA", "CSPG4", "BCAN", "VCAN", "PTPRZ1", "OLIG1", "OLIG2", "SOX10"),
     "astrocyte": ("GFAP", "AQP4", "SLC1A3", "GJA1", "SOX9"),
 }
 
