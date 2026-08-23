@@ -2726,3 +2726,91 @@ class DescriptiveReportSplitTests(unittest.TestCase):
 
         self.assertEqual(marker_lineage({"PDGFRA": 6.0, "CSPG4": 5.0, "VCAN": 4.0})[0], "opc")
         self.assertEqual(marker_lineage({"MOG": 8.0, "MOBP": 7.0, "CLDN11": 6.0, "OPALIN": 5.0})[0], "oligodendrocyte")
+
+
+class TimingQualityTests(unittest.TestCase):
+    def test_contended_run_is_flagged(self):
+        """Reproduces the observed case: a stage that takes ~150s idle measured
+        2032s while the test suite ran concurrently. Wall time alone made a
+        healthy dataset look pathological."""
+        from spatialmind.pilot.xenium import _timing_quality
+
+        quality = _timing_quality(wall_seconds=2032.0, cpu_seconds=150.0)
+        self.assertEqual(quality["status"], "contended")
+        self.assertGreater(quality["wall_to_cpu_ratio"], 10)
+        self.assertIn("should not be compared", quality["note"])
+
+    def test_parallel_run_is_not_mistaken_for_contention(self):
+        """Multi-threaded work spends more CPU than wall time; that is healthy."""
+        from spatialmind.pilot.xenium import _timing_quality
+
+        quality = _timing_quality(wall_seconds=129.9, cpu_seconds=218.8)
+        self.assertEqual(quality["status"], "clean")
+        self.assertLess(quality["wall_to_cpu_ratio"], 1.0)
+
+    def test_short_runs_are_not_flagged(self):
+        """A brief run can show a high ratio from startup noise alone."""
+        from spatialmind.pilot.xenium import _timing_quality
+
+        self.assertEqual(_timing_quality(wall_seconds=5.0, cpu_seconds=1.0)["status"], "clean")
+
+    def test_zero_cpu_time_does_not_divide_by_zero(self):
+        from spatialmind.pilot.xenium import _timing_quality
+
+        self.assertEqual(_timing_quality(wall_seconds=10.0, cpu_seconds=0.0)["wall_to_cpu_ratio"], 0.0)
+
+
+class ControlProbeExclusionTests(unittest.TestCase):
+    def test_xenium_control_families_are_recognised(self):
+        from spatialmind.tools.implementations import is_control_feature
+
+        for name in ("UnassignedCodeword_0045", "NegControlProbe_00042", "NegControlCodeword_0500",
+                     "BLANK_0006", "antisense_PROK2", "DeprecatedCodeword_123", "NegControlProbe"):
+            self.assertTrue(is_control_feature(name), name)
+
+    def test_real_genes_sharing_a_prefix_are_not_excluded(self):
+        """Prefix matching alone would drop real genes; the convention requires a
+        separator or digits after the prefix."""
+        from spatialmind.tools.implementations import is_control_feature
+
+        for name in ("AQP4", "CD3D", "KRT6B", "NEGR1", "BLANKET_GENE", "ANTISENSEGENE"):
+            self.assertFalse(is_control_feature(name), name)
+
+    def test_control_probes_are_kept_out_of_the_expression_matrix(self):
+        from spatialmind.tools.implementations import expression_feature_names
+
+        dataset = SpatialDataset(
+            sample_id="X", source_path="x", modality="xenium_spatial_rna",
+            records=[SpotRecord("X", 0.0, 0.0, "c", {
+                "AQP4": 5.0, "CD3D": 3.0, "GJA1": 2.0,
+                "UnassignedCodeword_0045": 9.0, "NegControlProbe_00042": 8.0, "BLANK_0006": 7.0,
+                "CELL_AREA": 400.0,
+            }, cell_id="c1")],
+        )
+        kept = expression_feature_names(dataset)
+        self.assertEqual(sorted(kept), ["AQP4", "CD3D", "GJA1"])
+
+    def test_fixtures_of_only_control_features_still_return_something(self):
+        from spatialmind.tools.implementations import expression_feature_names
+
+        dataset = SpatialDataset(
+            sample_id="X", source_path="x", modality="xenium_spatial_rna",
+            records=[SpotRecord("X", 0.0, 0.0, "c", {"BLANK_0001": 1.0, "BLANK_0002": 2.0}, cell_id="c1")],
+        )
+        self.assertEqual(len(expression_feature_names(dataset)), 2)
+
+    def test_real_panels_lose_only_control_features(self):
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
+        from spatialmind.ingestion import load_xenium
+        from spatialmind.tools.implementations import expression_feature_names, is_control_feature
+
+        dataset = load_xenium(XENIUM_LYMPH, max_records=200)
+        kept = set(expression_feature_names(dataset))
+        dropped = set(dataset.genes) - kept
+        self.assertTrue(dropped, "expected control probes in a real Xenium panel")
+        for gene in dropped:
+            self.assertTrue(
+                is_control_feature(gene) or gene.upper() in {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"},
+                "dropped a biological gene: %s" % gene,
+            )

@@ -533,6 +533,25 @@ def _run_qc_markdown(payload: Dict[str, Any]) -> List[str]:
     lines.extend(["", "Source: `%s` (instrument output, not recomputed here)." % run_qc.get("source", ""), ""])
     return lines
 
+
+def _timing_quality(wall_seconds: float, cpu_seconds: float) -> Dict[str, Any]:
+    """Flag stage timings measured while the machine was contended."""
+    ratio = (wall_seconds / cpu_seconds) if cpu_seconds > 0 else 0.0
+    contended = ratio > 2.0 and wall_seconds > 30.0
+    return {
+        "wall_seconds": round(wall_seconds, 2),
+        "cpu_seconds": round(cpu_seconds, 2),
+        "wall_to_cpu_ratio": round(ratio, 2),
+        "status": "contended" if contended else "clean",
+        "note": (
+            "Wall time is %.1fx CPU time, so this machine was running other work. "
+            "Stage seconds are inflated and should not be compared against other runs."
+            % ratio
+        )
+        if contended
+        else "Wall and CPU time agree; stage timings are comparable across runs.",
+    }
+
 def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str, Any]:
     """Label-free analysis: QC, clusters, per-cluster markers, cluster neighbourhoods.
 
@@ -545,6 +564,7 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     # numbers there is no way to tell which stage to optimise.
     timings: Dict[str, float] = {}
     started = time.time()
+    cpu_started = time.process_time()
     stage_start = time.time()
     try:
         clustering = registry.get("qc_and_cluster").run(
@@ -646,8 +666,15 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     stage_start = time.time()
     payload["figures"] = _write_descriptive_figures(dataset, payload, output_dir)
     timings["figures"] = round(time.time() - stage_start, 2)
-    timings["total"] = round(time.time() - started, 2)
+    wall_total = time.time() - started
+    cpu_total = time.process_time() - cpu_started
+    timings["total"] = round(wall_total, 2)
     payload["stage_seconds"] = timings
+    # Wall clock alone misleads on a busy machine: the Squidpy permutation stages
+    # are the first to be starved, and their wall time can inflate more than
+    # tenfold while CPU time barely moves. Reporting both makes a contended run
+    # identifiable instead of being mistaken for a slow dataset.
+    payload["timing_quality"] = _timing_quality(wall_total, cpu_total)
     return payload
 
 
@@ -2482,12 +2509,16 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
     warning = descriptive.get("sampling_warning")
     if warning:
         lines.extend(["> **Sampling note:** %s" % warning, ""])
+    quality = descriptive.get("timing_quality") or {}
     stages = descriptive.get("stage_seconds") or {}
     if stages:
         lines.extend(["### Stage timings (seconds)", "", "| Stage | Seconds |", "| --- | ---: |"])
         for stage, seconds in sorted(stages.items(), key=lambda item: -float(item[1])):
             lines.append("| `%s` | %s |" % (stage, seconds))
         lines.append("")
+        if quality.get("note"):
+            prefix = "**Timing warning:** " if quality.get("status") == "contended" else ""
+            lines.extend([prefix + quality["note"], ""])
     figures = descriptive.get("figures") or []
     if figures:
         lines.extend(["### Descriptive figures", ""])

@@ -75,6 +75,10 @@ def main() -> None:
         stages = descriptive.get("stage_seconds") or {}
         if stages.get("total"):
             print("  analysis time: %.0fs" % float(stages["total"]))
+        quality = descriptive.get("timing_quality") or {}
+        if quality.get("status") == "contended":
+            print("  TIMING       : machine was busy; stage seconds are inflated (%.1fx CPU)"
+                  % quality.get("wall_to_cpu_ratio", 0))
     else:
         print("  descriptive  : %s (%s)" % (descriptive.get("status"), descriptive.get("reason", "")))
     print()
@@ -84,7 +88,7 @@ def main() -> None:
     if result.get("status") != "validated_ready":
         print()
         print("Cluster naming and cell-type claims need expert review; see the report's")
-        print("'What Is Still Needed To Go Further' section.")
+        print("'What Expert Review Would Add' section.")
 
 
 if __name__ == "__main__":
