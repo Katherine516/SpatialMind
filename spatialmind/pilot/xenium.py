@@ -1,6 +1,8 @@
+import base64
 import html
 import time
 import json
+import os
 import uuid
 from collections import Counter
 from dataclasses import asdict, is_dataclass
@@ -2423,12 +2425,40 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
     return items
 
 
+# Cap on what gets inlined, so one very large SVG cannot make the report itself
+# unopenable. Anything larger stays a relative link.
+MAX_INLINE_FIGURE_BYTES = 6 * 1024 * 1024
+
+
+def _figure_data_uri(path: str) -> str:
+    """Base64 data URI for a figure, or "" when it cannot or should not be inlined.
+
+    The HTML report is the artifact a reviewer is sent. Referencing figures by
+    relative filename means every image breaks the moment the file is emailed
+    apart from its directory, which is exactly how it would reach a domain expert.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return ""
+    if size <= 0 or size > MAX_INLINE_FIGURE_BYTES:
+        return ""
+    mime = "image/svg+xml" if path.lower().endswith(".svg") else "image/png"
+    try:
+        with open(path, "rb") as handle:
+            encoded = base64.b64encode(handle.read()).decode("ascii")
+    except OSError:
+        return ""
+    return "data:%s;base64,%s" % (mime, encoded)
+
+
 def _figure_html(path: str) -> str:
     name = Path(path).name
     escaped_name = html.escape(name)
     if name.lower().endswith((".png", ".svg")):
+        source = _figure_data_uri(path) or escaped_name
         return '<div class="figure"><img src="%s" alt="%s"><p><code>%s</code></p></div>' % (
-            escaped_name,
+            source,
             escaped_name,
             escaped_name,
         )

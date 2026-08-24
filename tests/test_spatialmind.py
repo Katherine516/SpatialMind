@@ -2859,3 +2859,58 @@ class ClusterConfidenceTests(unittest.TestCase):
         # Distinct readings, and a missing value stays silent rather than guessing.
         self.assertEqual(len({poor, typical, good}), 3)
         self.assertEqual(_silhouette_reading(None, 0.7), "")
+
+
+class SelfContainedReportTests(unittest.TestCase):
+    def test_figures_are_embedded_so_the_report_survives_being_emailed(self):
+        """The HTML report is what a reviewer is sent.
+
+        Referencing figures by relative filename means every image breaks the
+        moment the file leaves its directory, which is exactly what happens when
+        it reaches a domain expert.
+        """
+        from spatialmind.pilot.xenium import _figure_html
+
+        with tempfile.TemporaryDirectory() as tmp:
+            png = Path(tmp) / "fig.png"
+            # Minimal valid PNG.
+            png.write_bytes(bytes.fromhex(
+                "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+                "890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+            ))
+            markup = _figure_html(str(png))
+            self.assertIn('src="data:image/png;base64,', markup)
+            self.assertNotIn('src="fig.png"', markup)
+
+    def test_svg_uses_the_right_mime_type(self):
+        from spatialmind.pilot.xenium import _figure_html
+
+        with tempfile.TemporaryDirectory() as tmp:
+            svg = Path(tmp) / "fig.svg"
+            svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>')
+            self.assertIn("data:image/svg+xml;base64,", _figure_html(str(svg)))
+
+    def test_oversized_and_missing_figures_fall_back_to_a_link(self):
+        """A single huge figure must not make the report itself unopenable."""
+        from spatialmind.pilot import xenium as module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "big.png"
+            big.write_bytes(b"\x00" * 1024)
+            original = module.MAX_INLINE_FIGURE_BYTES
+            try:
+                module.MAX_INLINE_FIGURE_BYTES = 100  # force the cap
+                self.assertEqual(module._figure_data_uri(str(big)), "")
+                self.assertIn('src="big.png"', module._figure_html(str(big)))
+            finally:
+                module.MAX_INLINE_FIGURE_BYTES = original
+        # A path that does not exist degrades to the filename rather than raising.
+        self.assertEqual(module._figure_data_uri("/nonexistent/none.png"), "")
+
+    def test_interactive_html_stays_a_link(self):
+        """Only images inline; the viewer is a separate multi-megabyte artifact."""
+        from spatialmind.pilot.xenium import _figure_html
+
+        markup = _figure_html("explorer_lite_viewer.html")
+        self.assertIn("<a href=", markup)
+        self.assertNotIn("data:image", markup)
