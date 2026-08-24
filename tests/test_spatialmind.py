@@ -2814,3 +2814,48 @@ class ControlProbeExclusionTests(unittest.TestCase):
                 is_control_feature(gene) or gene.upper() in {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"},
                 "dropped a biological gene: %s" % gene,
             )
+
+
+class ClusterConfidenceTests(unittest.TestCase):
+    def test_micro_clusters_are_flagged(self):
+        """A 34-cell cluster is not a peer of a 51,929-cell one.
+
+        Reproduces the observed breast full-section result, where five of
+        fourteen clusters held between 34 and 186 of 209,467 cells and carried
+        degenerate overlapping markers.
+        """
+        from spatialmind.pilot.xenium import _cluster_confidence
+
+        counts = {"6": 51929, "0": 42351, "7": 31835, "1": 23469, "9": 20804,
+                  "4": 16798, "5": 15685, "3": 3787, "2": 1083,
+                  "13": 186, "10": 116, "11": 88, "12": 80, "8": 34}
+        result = _cluster_confidence(counts)
+        self.assertEqual(result["status"], "computed")
+        self.assertEqual(set(result["low_confidence_clusters"]), {"13", "10", "11", "12", "8"})
+        self.assertNotIn("2", result["low_confidence_clusters"])  # 1083 cells clears both floors
+        self.assertGreater(result["fraction_cells_in_well_populated"], 0.97)
+
+    def test_balanced_clustering_flags_nothing(self):
+        from spatialmind.pilot.xenium import _cluster_confidence
+
+        result = _cluster_confidence({"0": 5000, "1": 4000, "2": 3000, "3": 2000})
+        self.assertEqual(result["low_confidence_clusters"], [])
+        self.assertEqual(result["fraction_cells_in_well_populated"], 1.0)
+
+    def test_empty_counts_do_not_crash(self):
+        from spatialmind.pilot.xenium import _cluster_confidence
+
+        self.assertEqual(_cluster_confidence({})["status"], "unavailable")
+
+    def test_silhouette_reading_distinguishes_separation_quality(self):
+        from spatialmind.pilot.xenium import _silhouette_reading
+
+        poor = _silhouette_reading(-0.0013, 0.7384)
+        typical = _silhouette_reading(0.05, 0.72)
+        good = _silhouette_reading(0.141, 0.786)
+        self.assertIn("overlap almost completely", poor)
+        self.assertIn("routine", typical)
+        self.assertIn("reasonably separated", good)
+        # Distinct readings, and a missing value stays silent rather than guessing.
+        self.assertEqual(len({poor, typical, good}), 3)
+        self.assertEqual(_silhouette_reading(None, 0.7), "")

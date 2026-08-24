@@ -552,6 +552,68 @@ def _timing_quality(wall_seconds: float, cpu_seconds: float) -> Dict[str, Any]:
         else "Wall and CPU time agree; stage timings are comparable across runs.",
     }
 
+
+# A cluster far below the others is not a peer of them: marker statistics on a
+# few dozen cells against two hundred thousand are threadbare, and such clusters
+# are frequently doublets or noise rather than a rare population. Reporting them
+# in the same table, same format, as a fifty-thousand-cell cluster overstates them.
+LOW_CONFIDENCE_CLUSTER_FRACTION = 0.005
+LOW_CONFIDENCE_CLUSTER_CELLS = 100
+
+
+def _cluster_confidence(cluster_counts: Dict[str, Any]) -> Dict[str, Any]:
+    """Separate well-populated clusters from ones too small to support markers."""
+    counts = {str(key): int(value) for key, value in (cluster_counts or {}).items()}
+    total = sum(counts.values())
+    if not counts or total <= 0:
+        return {"status": "unavailable", "low_confidence_clusters": [], "well_populated_clusters": []}
+    low, well = [], []
+    for cluster, count in counts.items():
+        if count < LOW_CONFIDENCE_CLUSTER_CELLS or (count / total) < LOW_CONFIDENCE_CLUSTER_FRACTION:
+            low.append(cluster)
+        else:
+            well.append(cluster)
+    well_cells = sum(counts[cluster] for cluster in well)
+    return {
+        "status": "computed",
+        "total_cells": total,
+        "low_confidence_clusters": sorted(low, key=_sort_cluster_key),
+        "well_populated_clusters": sorted(well, key=_sort_cluster_key),
+        "fraction_cells_in_well_populated": round(well_cells / total, 4),
+        "min_cells_threshold": LOW_CONFIDENCE_CLUSTER_CELLS,
+        "min_fraction_threshold": LOW_CONFIDENCE_CLUSTER_FRACTION,
+    }
+
+
+def _silhouette_reading(silhouette: Any, modularity: Any) -> str:
+    """Plain reading of the separation diagnostics for this run."""
+    try:
+        value = float(silhouette)
+    except (TypeError, ValueError):
+        return ""
+    if value < 0.02:
+        strength = (
+            "Silhouette is at or below zero, so clusters overlap almost completely in PCA space. "
+            "The grouping is driven by graph structure rather than clear separation; treat cluster "
+            "boundaries as soft and rely on marker evidence rather than on the partition itself."
+        )
+    elif value < 0.10:
+        strength = (
+            "Silhouette is low, which is routine for single-cell and spatial data because populations "
+            "grade into one another."
+        )
+    else:
+        strength = "Silhouette indicates clusters are reasonably separated for this data type."
+    try:
+        mod = float(modularity)
+        strength += " Weighted graph modularity is %.2f%s." % (
+            mod,
+            ", which supports well-separated groups in the expression graph" if mod >= 0.7 else "",
+        )
+    except (TypeError, ValueError):
+        pass
+    return strength
+
 def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str, Any]:
     """Label-free analysis: QC, clusters, per-cluster markers, cluster neighbourhoods.
 
@@ -578,6 +640,7 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     payload["cluster_count"] = len(payload["cluster_counts"])
     payload["expression_qc"] = clustering.metrics.get("expression_qc", {})
     payload["clustering_method"] = clustering.metrics.get("method")
+    payload["cluster_confidence"] = _cluster_confidence(payload["cluster_counts"])
     payload["clustering_diagnostics"] = {
         "silhouette": clustering.metrics.get("silhouette"),
         "modularity": clustering.metrics.get("modularity"),
@@ -2427,12 +2490,31 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
             "",
         ])
     counts = descriptive.get("cluster_counts") or {}
+    confidence = descriptive.get("cluster_confidence") or {}
+    low_confidence = set(confidence.get("low_confidence_clusters") or [])
     if counts:
+        total_cells = sum(int(value) for value in counts.values()) or 1
         lines.extend(["### Expression clusters (%s)" % (descriptive.get("clustering_method") or "leiden"), "",
-                      "| Cluster | Cells |", "| --- | ---: |"])
+                      "| Cluster | Cells | Share | Confidence |", "| --- | ---: | ---: | --- |"])
         for cluster, count in sorted(counts.items(), key=lambda item: -int(item[1])):
-            lines.append("| `%s` | %s |" % (cluster, count))
+            flag = "low - too few cells for reliable markers" if str(cluster) in low_confidence else "ok"
+            lines.append("| `%s` | %s | %.2f%% | %s |" % (cluster, count, 100.0 * int(count) / total_cells, flag))
         lines.append("")
+        if low_confidence:
+            lines.extend([
+                "%d of %d clusters hold fewer than %d cells or under %.1f%% of the section and are marked "
+                "low confidence. Differential statistics on so few cells are unreliable, and such clusters "
+                "are often doublets or noise rather than rare populations. The remaining %d clusters carry "
+                "%.1f%% of all cells."
+                % (
+                    len(low_confidence), len(counts),
+                    confidence.get("min_cells_threshold", 100),
+                    100.0 * float(confidence.get("min_fraction_threshold", 0.005)),
+                    len(confidence.get("well_populated_clusters") or []),
+                    100.0 * float(confidence.get("fraction_cells_in_well_populated") or 0.0),
+                ),
+                "",
+            ])
     diagnostics = descriptive.get("clustering_diagnostics") or {}
     if diagnostics:
         lines.extend(
@@ -2447,9 +2529,7 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
                 "| PCA silhouette | %s |" % diagnostics.get("silhouette", "not computed"),
                 "| Weighted graph modularity | %s |" % diagnostics.get("modularity", "not computed"),
                 "",
-                "Reading these: silhouette is routinely low for single-cell and spatial data because "
-                "populations grade into one another, so modularity is the more informative number here - "
-                "values near 0.7 and above indicate well-separated groups in the expression graph.",
+                _silhouette_reading(diagnostics.get("silhouette"), diagnostics.get("modularity")),
                 "",
             ]
         )
@@ -2459,10 +2539,13 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
         lines.extend(["### Top markers per cluster (one-vs-rest)", "",
                       "| Cluster | Marker genes | Marker evidence suggests |", "| --- | --- | --- |"])
         for cluster, genes in sorted(markers.items()):
+            hint = hints.get(str(cluster), "no clear lineage match")
+            if str(cluster) in low_confidence:
+                hint = "%s (low-confidence cluster)" % hint
             lines.append("| `%s` | %s | %s |" % (
                 cluster,
                 ", ".join("`%s`" % gene for gene in genes[:6]),
-                hints.get(str(cluster), "no clear lineage match"),
+                hint,
             ))
         lines.extend([
             "",
