@@ -16,6 +16,39 @@ expert judgements; a tool that invented them would defeat the gate that makes th
 rest of the system trustworthy. What the agent *can* do is make the review as small
 and well-informed as possible.
 
+
+## Plan the review before labelling anything
+
+Labels only count when their `cell_id`s are among the cells the run loads, and
+runs load a deterministic subsample. A review file built from a different
+selection can be labelled perfectly and still leave the gate shut. The stratified
+benchmark packets in `outputs/brain_expert_benchmark_*/` are one such file: they
+exist for train/validation/test evaluation, and only 11 of their 750 cells appear
+in a 500-cell run.
+
+Plan first:
+
+```bash
+python scripts/plan_expert_review.py <xenium_folder> --max-cells 2000 \
+  --check outputs/brain_expert_benchmark_20260812/healthy_brain/expert_cell_labels_for_review.csv
+```
+
+It writes templates containing exactly the cells that run will load, says how many
+must be labelled, and tests any file you already have against that run.
+
+**How many cells.** The gate needs 70% coverage of the loaded cells, but the
+statistical backends need enough cells per class on top of that. Measured on the
+healthy brain section with labels and regions supplied:
+
+| Run size | Outcome |
+| --- | --- |
+| 500 cells | `blocked_analysis_backend` — a cell class had too few cells for marker statistics |
+| 2,000 cells | `validated_ready` — all six MVP tools ran |
+
+So plan for roughly **1,600 labelled cells at `--max-cells 2000`**, not a few
+hundred. Smaller runs clear the coverage gate and then fail on backend
+requirements.
+
 ## Route A — expert annotation (authoritative)
 
 1. Build the review packet and viewer:
@@ -33,9 +66,11 @@ and well-informed as possible.
 
 3. Save the completed files into the Xenium output folder and re-run the pilot.
 
-**Scope tip.** You do not need to label all 40,887 cells. The gate needs ≥70%
-coverage *of the loaded sample*, ≥2 cell classes, and ≥2 regions. Running with
-`--max-records 500` means ~350 labelled cells clears the gate for a first real pass.
+**Scope tip.** You do not need to label all 40,887 cells — but see the sizing
+table above. `--max-records 500` clears the coverage gate at ~350 labelled cells
+and then fails on backend requirements; plan for ~1,600 cells at
+`--max-records 2000`, which is the smallest configuration measured to reach
+`validated_ready`.
 
 Use the broad Cell Ontology vocabulary in
 [`cell_ontology_labeling_guide.md`](cell_ontology_labeling_guide.md) — `astrocyte`

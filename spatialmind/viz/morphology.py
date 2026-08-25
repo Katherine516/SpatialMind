@@ -148,7 +148,7 @@ def _to_display_uint8(array: Any, np: Any, max_dimension: int, Image: Any) -> An
     else:
         scaled = np.clip((data - low) / (high - low), 0.0, 1.0)
         scaled = (scaled * 255.0).astype("uint8")
-    image = Image.fromarray(scaled, mode="L")
+    image = Image.fromarray(scaled)
     if max(image.width, image.height) > max_dimension:
         scale = max_dimension / float(max(image.width, image.height))
         image = image.resize(

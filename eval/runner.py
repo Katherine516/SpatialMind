@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from spatialmind.agent_loop import SpatialAgent
 
@@ -107,14 +107,18 @@ class EvalRunner:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run SpatialMind eval cases.")
-    parser.add_argument("--cases", default="eval/test_cases")
+    parser.add_argument(
+        "--cases",
+        default=None,
+        help="Case directory. Defaults to eval/mvp_cases with --mvp, otherwise eval/test_cases.",
+    )
     parser.add_argument("--data", default="data/demo_manifest.json")
     parser.add_argument("--out", default="outputs/eval_report.json")
     parser.add_argument("--mvp", action="store_true", help="Run against the current MVP agent/tool policy.")
     args = parser.parse_args()
 
     runner = EvalRunner(SpatialAgent(mvp_mode=args.mvp))
-    cases = runner.load_cases(args.cases)
+    cases = runner.load_cases(_case_directory(args.cases, args.mvp))
     for case in cases:
         if not case.dataset:
             case.dataset = args.data
@@ -125,6 +129,12 @@ def main() -> None:
     print("Eval cases: %d" % report["summary"]["case_count"])
     print("Passed: %d" % report["summary"]["pass_count"])
     print("Mean score: %.4f" % report["summary"]["mean_score"])
+
+
+def _case_directory(requested: Optional[str], mvp_mode: bool) -> str:
+    if requested:
+        return requested
+    return "eval/mvp_cases" if mvp_mode else "eval/test_cases"
 
 
 def _infer_modality(dataset: str) -> str:

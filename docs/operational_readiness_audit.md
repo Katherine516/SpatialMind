@@ -124,3 +124,14 @@ Add an LLM API only after keeping the current validation gates intact. The best 
 6. Use the benchmark to evaluate LLM-assisted planning, annotation support, and refusal behavior.
 
 With only an LLM API and no reviewed labels/regions, SpatialMind is usable as a local workflow and review assistant. With reviewed labels/regions and a curated reference, it becomes a genuine validated Xenium pilot agent.
+
+## 2026-08-12 Correctness Update
+
+- Source counts and normalized expression are now separate data layers, and Xenium QC uses preserved counts.
+- Validated statistical wrappers fail closed instead of silently using prototype fallbacks.
+- Xenium CLI and API requests share one validated pilot execution path.
+- Sampled review runs are explicitly ineligible for final biological claims; final runs require complete-section scope.
+- The current healthy-brain and glioblastoma smoke reports used real backends but remain blocked by missing human labels and regions.
+- The current leakage-aware review packet is `outputs/brain_expert_benchmark_20260812/`; both 750-cell cohorts have 0% reviewed joint label/ROI coverage and zero spatial-block leakage.
+
+These changes reduce software and statistical risk, but do not remove the remaining human-validation, independent-replicate, governance-approval, or multi-user deployment requirements listed above.

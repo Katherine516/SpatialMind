@@ -14,7 +14,7 @@ The base path remains dependency-light for fast testing, while the core workstat
 ## Architecture
 
 **New here? Read [docs/agent_architecture.md](docs/agent_architecture.md)** — the single end-to-end
-explanation of how the agent works: every stage from the `.xenium` bundle through the gate, the six
+explanation of how the agent works: every stage from the `.xenium` bundle through the gate, the seven
 MVP tools, robustness, claim reliability, and the Explorer-lite viewer. The rest of this README is a
 command reference.
 
@@ -22,11 +22,11 @@ command reference.
 flowchart TB
     WetLab["Wet-lab output\nXenium folders, H5AD, CSV/manifest,\ncell tables, feature matrices, morphology metadata,\nboundaries, panel metadata"]
     Governance["Governance intake\nsource, license, consent class,\nPHI risk, allowed use"]
-    Ingestion["Ingestion layer\nformat detection, QC, normalization,\ncell_id preservation, Xenium H5 loading,\nAnnData/H5AD loading, readiness reports"]
+    Ingestion["Ingestion layer\nformat detection, count-aware QC,\nimmutable source counts + normalized expression,\nXenium/H5AD loading, scope tracking"]
     Contract["Shared data contracts\nSpatialDataset, SpotRecord,\nCellByFeatureContract, ToolResult,\nclaim and metric contracts"]
     Review["Expert review layer\nlabel templates, ROI templates,\nCell Ontology guidance, astrocyte prefill,\nvalidated label/region intake gates"]
     Planner["Agent planning layer\ndeterministic planner or hosted LLM JSON plan,\ntool registry validation, dependency checks,\nclarification/refusal behavior"]
-    Tools["Analysis tools\nScanpy DE/clustering/HVG,\nSquidpy neighborhood enrichment,\nannotation, marker detection,\nfeature overlay, region summary"]
+    Tools["Analysis tools\nScanpy clustering and marker DE,\nSquidpy Moran's I and neighborhoods,\nannotation, feature overlay,\nregion summary"]
     Claims["Grounding and claim ledger\npreconditions, caveats,\nunsupported-claim refusal,\ntargeted-panel warnings"]
     Viz["Visualization and reports\nreview maps, cluster maps,\ncomposition charts, static SVG/PNG,\ninteractive HTML, markdown/HTML reports"]
     Storage["Storage and replay\nrun records, hashes,\nSQLite index, replay checks,\nprovenance metadata"]
@@ -53,11 +53,11 @@ Layer responsibilities:
 
 - **Wet-lab input layer** receives instrument/software outputs, not primary sequencing basecalls. Today this means Xenium output folders, H5AD/AnnData files, tidy CSV tables, and manifest JSON.
 - **Governance layer** records dataset source, license, consent/PHI status, and allowed use before data becomes reusable.
-- **Ingestion layer** converts raw platform outputs into one internal `SpatialDataset` with cell IDs, coordinates, features, labels if present, QC metrics, and processing notes.
+- **Ingestion layer** converts raw platform outputs into one internal `SpatialDataset`. Each cell keeps immutable source values in `raw_genes` and normalized/log-transformed analysis values in `genes`; count-aware QC uses the source layer. Cell IDs, coordinates, labels, scope, metrics, and processing notes remain attached.
 - **Contract layer** keeps all downstream tools honest by carrying assay subtype, targeted-panel status, segmentation references, coordinates, feature metadata, metrics, and caveats.
 - **Expert review layer** creates label/ROI templates and ontology-guided prefill files, then blocks validated biological analysis until `expert_cell_labels.csv` and `cell_regions.csv` pass coverage and diversity gates.
 - **Planning layer** turns user intent into a typed tool plan. Hosted LLMs can propose JSON plans, but local validators decide what can run.
-- **Tool layer** runs real wrappers where available: Scanpy for differential expression, clustering, and variable genes; Squidpy for neighborhood enrichment; local fallbacks only for development/debugging.
+- **Tool layer** runs Scanpy for differential expression and clustering and Squidpy for Moran's I, neighborhood enrichment, and distance co-occurrence. Validated runs use `strict_engine=True` and fail closed; prototype fallbacks are development-only.
 - **Grounding layer** separates supported non-biological readiness statements from validated biological claims and refuses unsupported interpretations.
 - **Visualization/report layer** generates review figures, static/interactive spatial maps, machine-readable outputs, and selectable HTML/PDF reports.
 - **Storage/replay layer** writes run records, hashes, SQLite indexes, and replay metadata so analyses can be audited.
@@ -88,7 +88,7 @@ Current capability status:
 | Explorer-lite review UI | Ready for local review prep | Generates a browser-based cell map with filters, selection, cell inspection, ROI/label editing, and CSV export. |
 | Expert cell labels | Blocked until human review | Use `expert_cell_labels.csv`; review templates are generated. |
 | User ROI/tissue regions | Blocked until human review | Use `cell_regions.csv`; region templates are generated. |
-| Validated biological report | Conditionally ready | Runs only when label and region gates pass. Otherwise produces a comprehensive blocked/readiness/review report. |
+| Validated biological report | Conditionally ready | Requires label/region gates, successful strict backends, and a complete-section run. Otherwise produces a comprehensive blocked/readiness/review report. |
 | Claim-level reliability scoring | Ready as conservative v12 baseline | Every report claim receives S/A/P/R component scores and a weakest-link reliability score. Calibrated reliability is blocked until expert-reviewed claim truth exists. |
 | LLM planning | Ready but optional | OpenAI/Anthropic adapters exist; LLM output remains locally validated before execution. |
 | Production multi-user deployment | Partial | API, batch scaffolding, and storage exist; auth, dataset allowlists, job queue hardening, and audit logs are still needed. |
@@ -115,11 +115,13 @@ Validated Xenium example:
 .venv/bin/python scripts/run_validated_xenium_pilot.py \
   --data "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Glioblastoma_With_Addon_outs" \
   --out outputs/xenium_brain_glioblastoma_report \
-  --max-records 2500 \
+  --full-section \
   --report-format both
 ```
 
-The REST API exposes the same `report_format` field on `POST /runs` and `POST /pilot/xenium/run` with accepted values `html`, `pdf`, and `both`.
+`--max-records` is for deterministic review/development samples. Final validated biological inference requires `--full-section`; `--allow-sampled-validation` exists only as an explicit development override. Review-template size is controlled independently with `--review-max-records`.
+
+The main `spatialmind.cli` command and `POST /runs` now detect Xenium folders/`.xenium` descriptors and route them through this same validated pilot core. The REST API exposes `report_format`, `full_section`, `review_max_records`, `readiness_only`, and the validation thresholds on both `POST /runs` and `POST /pilot/xenium/run`.
 
 For a quick gate/status check without generating review packets or reports, use readiness-only mode:
 
@@ -270,6 +272,44 @@ MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spati
 ```
 
 The validated pilot also writes `explorer_lite_viewer.html` into its output folder as a review artifact.
+
+## Analyze A Xenium Run
+
+The entry point if you have just produced a Xenium run and want a report:
+
+```bash
+python scripts/analyze.py "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs"
+```
+
+```text
+SpatialMind analysis
+  cells        : 6000 of 24406 (sampled)
+  features     : 408
+  clusters     : 9
+  spatial genes: 50 significant
+  analysis time: 33s
+
+Report   : outputs/analysis/validated_xenium_pilot_report.html
+Viewer   : outputs/analysis/explorer_lite_viewer.html
+Full JSON: outputs/analysis/pilot_validation.json
+```
+
+**No expert labels are required.** You get per-cell QC, expression clusters,
+per-cluster marker genes, spatially autocorrelated genes, cluster co-occurrence,
+a cluster spatial map, a marker heatmap, and a browser viewer with the morphology
+image and segmentation boundaries.
+
+Clusters are described, never named as cell types. Naming them, and any claim about
+named cell types, needs expert review — see
+[docs/getting_cell_labels.md](docs/getting_cell_labels.md).
+
+Useful flags:
+
+- `--max-cells N` — cells to analyze (default 20000; below ~6000 cluster structure
+  is typically incomplete and the run says so).
+- `--full-section` — analyze every cell. Slower; a 24k-cell section takes roughly
+  72s of analysis.
+- `--report-format pdf|both` — PDF alongside the auditable HTML.
 
 ## Try It
 
@@ -479,6 +519,34 @@ MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spati
 
 Current result: `0/4` local Xenium datasets are validated-ready. All four have the raw assets needed for a pilot, but all four still need `expert_cell_labels.csv` and `cell_regions.csv`.
 
+## Brain Expert Benchmark
+
+SpatialMind now has a leakage-aware expert-review benchmark path for the local healthy-brain and glioblastoma Xenium sections. It analyzes a larger expression pool, balances the review cohort across expression clusters and spatial blocks, retains difficult reference/QC cases, and freezes whole spatial blocks into provisional train, validation, and test splits before a reviewer sees any truth labels.
+
+Generate a new packet:
+
+```bash
+MPLCONFIGDIR=/private/tmp/spatialmind_mpl PYTHONPYCACHEPREFIX=/private/tmp/spatialmind_pycache .venv/bin/python scripts/prepare_brain_expert_benchmark.py \
+  --out outputs/brain_expert_benchmark_20260812 \
+  --cohort-size 750 \
+  --pool-size 10000 \
+  --healthy-candidates outputs/candidate_labels_healthy/expert_cell_labels_candidate.csv \
+  --glioblastoma-candidates outputs/glioblastoma_expert_review_packet_latest/expert_cell_labels_draft_for_review.csv
+```
+
+The current packet is under `outputs/brain_expert_benchmark_20260812/`. It contains 750 healthy-brain and 750 glioblastoma cells, interactive review viewers, cluster marker summaries, label/ROI review tables, frozen split manifests, cohort hashes, and a machine-readable validation result. Older `suggested_label` drafts are accepted as candidate evidence, but no candidate is copied into an expert-truth field.
+
+After review, validate and materialize the benchmark:
+
+```bash
+.venv/bin/python scripts/prepare_brain_expert_benchmark.py \
+  --validate-existing outputs/brain_expert_benchmark_20260812
+```
+
+The gate requires matching non-duplicate IDs, no blank IDs, no spatial-block leakage, all three splits, reviewer provenance, and both a reviewed label and reviewed region on at least 90% of the same cells in each tissue. Only jointly reviewed rows are written into `reviewed_benchmark_truth.csv` and `frozen_splits/{train,validation,test}.csv`.
+
+This benchmark packet is not a replacement for full-population `expert_cell_labels.csv` and `cell_regions.csv` in a Xenium folder. Use reviewed benchmark cells to measure and calibrate an annotation procedure, then obtain/approve full-section labels and regions before the final run. See `outputs/brain_expert_benchmark_20260812/brain_benchmark_packet_summary.json` and `docs/expert_review_workflow.md`.
+
 ## Glioblastoma Expert Review
 
 The glioblastoma pilot now has a dedicated expert-review packet and downstream gates:
@@ -620,9 +688,9 @@ SpatialMind is not yet fine-tuned on expert-labeled examples. The current "train
 Current gates:
 
 - Legacy eval: 15/15 passing, mean score 1.0000.
-- MVP eval: 10/10 passing, mean score 1.0000.
-- Unit tests: 61/61 passing in the full environment.
-- Local training records: 18 records generated from demo MVP cases, four real-wrapper Xenium runs, and four Xenium readiness records.
+- MVP eval: 11/11 passing, mean score 1.0000, including spatial-gene intent routing.
+- Unit tests: see the latest verified count in `docs/agent_architecture.md` and `docs/development_tracking.md`.
+- Local training records: 19 records generated from 11 MVP cases, four real-wrapper Xenium runs, and four Xenium readiness records.
 - Region-label templates: generated for all four local Xenium datasets.
 - Validated pilot scorecard: 4 local Xenium datasets scanned, 0 validated-ready because expert labels and user regions are still missing.
 
@@ -687,7 +755,7 @@ spatialmind/
 
 ### v7 MVP Mode
 
-The v7 MVP makes Xenium the primary workflow and keeps scRNA/scATAC in standalone-lite or reference-assist roles. Use `SpatialAgent(mvp_mode=True)` to expose the six active MVP tools: `qc_and_cluster`, `annotation`, `marker_detection`, `feature_overlay`, `region_summary`, and `cell_neighborhood_enrichment`.
+The v7 MVP makes Xenium the primary workflow and keeps scRNA/scATAC in standalone-lite or reference-assist roles. Use `SpatialAgent(mvp_mode=True)` to expose seven active MVP tools: `qc_and_cluster`, `annotation`, `marker_detection`, `spatial_variable_genes`, `feature_overlay`, `region_summary`, and `cell_neighborhood_enrichment`.
 
 The full/default registry still contains earlier broad scaffolds for future development, but MVP mode defers trajectory, motif/chromVAR, ligand-receptor, deconvolution, pathway, CNV, and full label-transfer workflows until validated backends and datasets are available.
 
@@ -723,7 +791,7 @@ Several tools now use optional real backends automatically:
 - `differential_expression`: uses Scanpy `rank_genes_groups` when available.
 - `marker_detection`: wraps adjusted-p-value marker ranking for the v7 MVP and labels scATAC outputs as gene-activity, not measured expression.
 - `spatial_clustering`: uses Scanpy neighbors plus Leiden when available.
-- `spatial_variable_genes`: uses Scanpy highly variable gene ranking when available.
+- `spatial_variable_genes`: uses Squidpy Moran's I with seeded permutations and FDR correction; Scanpy highly variable gene ranking is retained only as an explicitly non-spatial fallback.
 - `neighborhood_enrichment`: uses Squidpy spatial neighbors plus neighborhood enrichment when available.
 
 If those packages are not installed, the tools fall back to lightweight prototype behavior. Pass `engine="prototype"` in tool params to force fallback behavior during debugging.

@@ -13,6 +13,7 @@ from spatialmind.ingestion import (
     load_xenium,
     validate_xenium_label_intake,
 )
+from spatialmind.methods.replication import assess_condition_replication
 from spatialmind.ingestion.labels import MARKER_EVIDENCE_FEATURES, NON_BIOLOGICAL_FEATURES, load_xenium_analysis_clusters
 from spatialmind.schemas import SpatialDataset
 from spatialmind.tools.implementations import annotation, marker_detection, neighborhood_enrichment, reference_label_transfer, region_summary
@@ -178,17 +179,47 @@ def build_brain_comparison_report(
     out.mkdir(parents=True, exist_ok=True)
     healthy = validate_xenium_label_intake(healthy_path, max_records=max_records)
     glioblastoma = validate_xenium_label_intake(glioblastoma_path, max_records=max_records)
+    # One section per condition cannot support a condition-level claim: cells
+    # within a section are not independent biological replicates. Labels alone
+    # must not unlock healthy-versus-disease inference.
+    replication = assess_condition_replication(
+        {
+            "healthy": [{"section_id": healthy_path, "cell_count": getattr(healthy, "loaded_cells", 0)}],
+            "glioblastoma": [{"section_id": glioblastoma_path, "cell_count": getattr(glioblastoma, "loaded_cells", 0)}],
+        }
+    )
+    labels_ready = healthy.ready_for_validated_pilot and glioblastoma.ready_for_validated_pilot
+    if not labels_ready:
+        status = "blocked_missing_validated_inputs"
+    elif not replication["supports_condition_inference"]:
+        status = "blocked_insufficient_biological_replication"
+    else:
+        status = "ready"
     payload: Dict[str, Any] = {
         "created_at": _now(),
-        "status": "ready" if healthy.ready_for_validated_pilot and glioblastoma.ready_for_validated_pilot else "blocked_missing_validated_inputs",
+        "status": status,
+        "replication": replication,
         "healthy": healthy.to_dict(),
         "glioblastoma": glioblastoma.to_dict(),
         "comparison": {},
     }
-    if healthy.ready_for_validated_pilot and glioblastoma.ready_for_validated_pilot:
+    if not replication["supports_condition_inference"]:
+        payload["blockers"] = list(replication["blockers"])
+        payload["required_next_inputs"] = list(replication["required_next_inputs"])
+    if labels_ready and replication["supports_condition_inference"]:
         healthy_dataset = _load_validated_dataset(healthy_path, max_records=max_records)
         glioblastoma_dataset = _load_validated_dataset(glioblastoma_path, max_records=max_records)
         payload["comparison"] = _compare_validated_brain_datasets(healthy_dataset, glioblastoma_dataset)
+    elif labels_ready:
+        # Labels exist but the design is n=1 per condition. Describe each section
+        # separately; never subtract one condition from the other.
+        healthy_dataset = _load_validated_dataset(healthy_path, max_records=max_records)
+        glioblastoma_dataset = _load_validated_dataset(glioblastoma_path, max_records=max_records)
+        payload["per_section_summary"] = {
+            "healthy": dict(Counter(record.cell_type for record in healthy_dataset.records)),
+            "glioblastoma": dict(Counter(record.cell_type for record in glioblastoma_dataset.records)),
+            "note": replication["allowed_interpretation"],
+        }
     _write_json(out / "brain_comparison_report.json", payload)
     _write_comparison_markdown(out / "brain_comparison_report.md", payload)
     return payload

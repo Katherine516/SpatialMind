@@ -112,9 +112,20 @@ def spatial_deconvolution(dataset: SpatialDataset, params: Dict[str, object]) ->
 
 def spatial_variable_genes(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
     require_records(dataset)
+    spatial_result = _squidpy_spatial_variable_genes(dataset, params)
+    if spatial_result:
+        return spatial_result
+    if params.get("strict_engine") and params.get("engine") != "scanpy":
+        raise MissingPreconditionError(
+            "spatial_variable_genes requires a successful Squidpy Moran's I backend in strict mode."
+        )
     scanpy_result = _scanpy_spatial_variable_genes(dataset, params)
     if scanpy_result:
         return scanpy_result
+    if params.get("strict_engine"):
+        raise MissingPreconditionError(
+            "spatial_variable_genes requires a successful requested backend in strict mode."
+        )
     n_top = int(params.get("n_top", 50))
     if n_top <= 0:
         raise InvalidParameterError("n_top must be positive.")
@@ -138,6 +149,10 @@ def neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, object]) 
     squidpy_result = _squidpy_neighborhood_enrichment(dataset, params)
     if squidpy_result:
         return squidpy_result
+    if params.get("strict_engine"):
+        raise MissingPreconditionError(
+            "neighborhood_enrichment requires a successful Squidpy permutation backend in strict mode."
+        )
     radius = float(params.get("radius", 18.0))
     pairs = Counter()
     for left in dataset.records:
@@ -256,7 +271,13 @@ def run_neighborhood_robustness(
             continue
         result = cell_neighborhood_enrichment(
             dataset,
-            {"n_neighs": n_neighs, "n_perms": n_perms, "random_state": seed, "include_all_pairs": True},
+            {
+                "n_neighs": n_neighs,
+                "n_perms": n_perms,
+                "random_state": seed,
+                "include_all_pairs": True,
+                "strict_engine": True,
+            },
         )
         pairs = result.metrics.get("all_pairs") or result.metrics.get("top_pairs") or []
         per_setting.append({"n_neighs": n_neighs, "engine": result.metrics.get("engine"), "pairs": pairs})
@@ -448,6 +469,7 @@ def run_region_stratified_neighborhoods(
                 "n_perms": n_perms,
                 "random_state": random_state,
                 "include_all_pairs": True,
+                "strict_engine": bool(params.get("strict_engine")),
             },
         )
         metrics = result.metrics or {}
@@ -586,6 +608,10 @@ def run_distance_dependent_cooccurrence(
         import squidpy as sq  # type: ignore
         from scipy.spatial import cKDTree  # type: ignore
     except ImportError as exc:
+        if params.get("strict_engine"):
+            raise MissingPreconditionError(
+                "Distance-dependent co-occurrence requires NumPy, SciPy, and Squidpy in strict mode."
+            ) from exc
         return {
             "status": "not_computed",
             "reason": "Distance-dependent co-occurrence requires NumPy, SciPy, and Squidpy: %s" % exc,
@@ -764,6 +790,45 @@ def reference_label_transfer(dataset: SpatialDataset, params: Dict[str, object])
     return _knn_reference_label_transfer(dataset, reference_dataset, shared, params)
 
 
+CLUSTER_ASSIGNMENT_KEY = "cluster_assignments"
+
+
+def store_cluster_assignments(dataset: SpatialDataset, labels: List[str]) -> None:
+    """Record per-cell cluster ids on the dataset, keyed by cell_id."""
+    if len(labels) != len(dataset.records):
+        return
+    dataset.metadata[CLUSTER_ASSIGNMENT_KEY] = {
+        (record.cell_id or str(index)): str(label)
+        for index, (record, label) in enumerate(zip(dataset.records, labels))
+    }
+
+
+def resolve_group_labels(dataset: SpatialDataset, params: Dict[str, object]) -> Tuple[List[str], str]:
+    """Per-record grouping labels for a tool, plus the resolved group key.
+
+    ``cell_type`` uses the applied labels. ``cluster`` uses data-derived clusters
+    -- from params, from a previous clustering run, or from the platform's own
+    graph clusters -- which is what makes descriptive analysis possible before any
+    expert annotation exists.
+    """
+    group_key = str(params.get("group_key", "cell_type") or "cell_type")
+    if group_key != "cluster":
+        return [record.cell_type or "" for record in dataset.records], "cell_type"
+    assignments = params.get(CLUSTER_ASSIGNMENT_KEY) or dataset.metadata.get(CLUSTER_ASSIGNMENT_KEY) or {}
+    if not isinstance(assignments, dict) or not assignments:
+        raise MissingPreconditionError(
+            "group_key='cluster' requires cluster assignments; run qc_and_cluster first or pass "
+            "cluster_assignments={cell_id: cluster}."
+        )
+    labels = []
+    for index, record in enumerate(dataset.records):
+        key = record.cell_id or str(index)
+        labels.append(str(assignments.get(key, "")))
+    if len({label for label in labels if label}) < 2:
+        raise MissingPreconditionError("group_key='cluster' needs at least two populated clusters.")
+    return labels, "cluster"
+
+
 # Broad lineages with canonical markers, used to sanity-check transferred labels
 # against the target's own measured expression. Deliberately coarse: the point is
 # to catch a myeloid cell labelled as a neuron, not to arbitrate subtypes.
@@ -775,6 +840,11 @@ LINEAGE_MARKERS = {
     "epithelial": ("EPCAM", "KRT8", "KRT18", "KRT19", "KRT15"),
     "neuronal": ("SNAP25", "RBFOX3", "SYT1", "NRGN", "SLC17A7", "GAD1", "GAD2", "ENC1"),
     "oligodendrocyte": ("MBP", "MOG", "MOBP", "PLP1", "CLDN11", "OPALIN", "ERMN", "CNDP1"),
+    # OPC was reachable from a reference label but undetectable from markers, so an
+    # OPC cell could never be flagged as absent from a reference. PDGFRA and CSPG4
+    # are the discriminating markers; OLIG2/SOX10 are shared with the mature
+    # oligodendrocyte lineage, which COMPATIBLE_LINEAGES already treats as non-conflicting.
+    "opc": ("PDGFRA", "CSPG4", "BCAN", "VCAN", "PTPRZ1", "OLIG1", "OLIG2", "SOX10"),
     "astrocyte": ("GFAP", "AQP4", "SLC1A3", "GJA1", "SOX9"),
 }
 
@@ -1073,6 +1143,8 @@ def spatial_clustering(dataset: SpatialDataset, params: Dict[str, object]) -> To
     scanpy_result = _scanpy_spatial_clustering(dataset, params)
     if scanpy_result:
         return scanpy_result
+    if params.get("strict_engine"):
+        raise MissingPreconditionError("spatial_clustering requires a successful Scanpy/Leiden backend in strict mode.")
     resolution = float(params.get("resolution", 0.5))
     bin_size = max(10.0, 30.0 / max(resolution, 0.1))
     clusters = Counter()
@@ -1092,6 +1164,10 @@ def differential_expression(dataset: SpatialDataset, params: Dict[str, object]) 
     scanpy_result = _scanpy_differential_expression(dataset, params)
     if scanpy_result:
         return scanpy_result
+    if params.get("strict_engine"):
+        raise MissingPreconditionError(
+            "differential_expression requires a successful Scanpy rank_genes_groups backend in strict mode."
+        )
     group_key = str(params.get("group_key", "cell_type"))
     group1 = str(params.get("group1", "CD8+ T cell"))
     group2 = str(params.get("group2", "Tumor cell"))
@@ -1123,9 +1199,12 @@ def marker_detection(dataset: SpatialDataset, params: Dict[str, object]) -> Tool
         result.summary = result.summary.replace("Ranked", "Detected marker candidates among")
         result.metrics["mode"] = "pairwise"
     else:
-        result = _scanpy_marker_detection_one_vs_rest(dataset, params) or _prototype_marker_detection_one_vs_rest(
-            dataset, params
-        )
+        result = _scanpy_marker_detection_one_vs_rest(dataset, params)
+        if result is None and params.get("strict_engine"):
+            raise MissingPreconditionError(
+                "marker_detection requires a successful Scanpy rank_genes_groups backend in strict mode."
+            )
+        result = result or _prototype_marker_detection_one_vs_rest(dataset, params)
     result.tool_name = "marker_detection"
     result.metrics["adjusted_p_values_only"] = True
     feature_type = str(dataset.metadata.get("feature_type", "gene_counts"))
@@ -1142,21 +1221,34 @@ def _marker_groups(dataset: SpatialDataset) -> List[str]:
 def _scanpy_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[str, object]) -> Optional[ToolResult]:
     if params.get("engine") == "prototype":
         return None
-    group_key = str(params.get("group_key", "cell_type"))
-    if group_key != "cell_type":
-        return None
-    if len(_marker_groups(dataset)) < 2:
+    try:
+        group_labels, group_key = resolve_group_labels(dataset, params)
+    except MissingPreconditionError:
+        raise
+    if len({label for label in group_labels if label}) < 2:
         return None
     try:
         import scanpy as sc  # type: ignore
-    except ImportError:
+    except ImportError as exc:
+        if params.get("strict_engine"):
+            raise MissingPreconditionError("Scanpy is required for strict marker detection.") from exc
         return None
     try:
         adata = _dataset_to_anndata(dataset)
+        keep = [bool(label) for label in group_labels]
+        if sum(keep) < 3:
+            raise MissingPreconditionError("marker_detection needs at least three cells with populated group assignments.")
+        adata = adata[keep].copy()
+        retained_labels = [label for label, include in zip(group_labels, keep) if include]
+        adata.obs["spatialmind_group"] = retained_labels
+        adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
+        if not dataset.normalized:
+            sc.pp.normalize_total(adata, target_sum=1e4)
+            sc.pp.log1p(adata)
         method = str(params.get("method", "wilcoxon"))
         n_top = int(params.get("n_top", 25) or 25)
-        sc.tl.rank_genes_groups(adata, groupby="cell_type", method=method)
-        groups = [str(value) for value in adata.obs["cell_type"].cat.categories]
+        sc.tl.rank_genes_groups(adata, groupby="spatialmind_group", method=method)
+        groups = [str(value) for value in adata.obs["spatialmind_group"].cat.categories]
         markers_by_group: Dict[str, object] = {}
         flattened: List[Dict[str, object]] = []
         for group in groups:
@@ -1172,6 +1264,8 @@ def _scanpy_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[s
                 "mode": "one_vs_rest",
                 "group_key": group_key,
                 "groups": groups,
+                "analyzed_cell_count": int(adata.n_obs),
+                "excluded_unassigned_cell_count": len(group_labels) - int(adata.n_obs),
                 "markers_by_group": markers_by_group,
                 "ranked_genes": flattened,
             },
@@ -1185,10 +1279,8 @@ def _scanpy_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[s
 
 def _prototype_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
     require_records(dataset)
-    group_key = str(params.get("group_key", "cell_type"))
-    if group_key != "cell_type":
-        raise InvalidParameterError("Prototype marker_detection only supports group_key='cell_type'.")
-    groups = _marker_groups(dataset)
+    group_labels, group_key = resolve_group_labels(dataset, params)
+    groups = sorted({label for label in group_labels if label})
     if len(groups) < 2:
         raise MissingPreconditionError("marker_detection requires at least two cell groups.")
     genes = expression_feature_names(dataset)
@@ -1196,8 +1288,8 @@ def _prototype_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dic
     markers_by_group: Dict[str, object] = {}
     flattened: List[Dict[str, object]] = []
     for group in groups:
-        in_group = [record for record in dataset.records if record.cell_type == group]
-        rest = [record for record in dataset.records if record.cell_type != group]
+        in_group = [record for record, label in zip(dataset.records, group_labels) if label == group]
+        rest = [record for record, label in zip(dataset.records, group_labels) if label != group]
         rows = []
         for gene in genes:
             first = [record.genes.get(gene, 0.0) for record in in_group]
@@ -1394,11 +1486,16 @@ def _scanpy_differential_expression(dataset: SpatialDataset, params: Dict[str, o
         return None
     try:
         import scanpy as sc  # type: ignore
-    except ImportError:
+    except ImportError as exc:
+        if params.get("strict_engine"):
+            raise MissingPreconditionError("Scanpy is required for strict differential expression.") from exc
         return None
     try:
         adata = _dataset_to_anndata(dataset)
         method = str(params.get("method", "wilcoxon"))
+        if not dataset.normalized:
+            sc.pp.normalize_total(adata, target_sum=1e4)
+            sc.pp.log1p(adata)
         sc.tl.rank_genes_groups(adata, groupby="cell_type", groups=[group1], reference=group2, method=method)
         table = _rank_genes_groups_table(adata, group1, limit=int(params.get("n_top", 50) or 50))
         return ToolResult(
@@ -1418,41 +1515,76 @@ def _scanpy_differential_expression(dataset: SpatialDataset, params: Dict[str, o
         )
 
 
+
+def _neighbors(sc: Any, adata: Any, n_neighbors: int, random_state: int, **kwargs: Any) -> str:
+    """sc.pp.neighbors preferring an exact sklearn kNN backend.
+
+    Scanpy's default approximate backend (pynndescent) pays a large one-time
+    numba JIT compile: measured at 58.5s versus 21.9s with sklearn on a 24k-cell
+    section, for clustering that agrees at ARI 0.95 with the same cluster count.
+    The cost is per process and independent of dataset size, so it dominates
+    ordinary runs. Falls back to the default when the transformer argument is
+    unsupported.
+    """
+    try:
+        sc.pp.neighbors(adata, n_neighbors=n_neighbors, random_state=random_state, transformer="sklearn", **kwargs)
+        return "sklearn"
+    except Exception:
+        sc.pp.neighbors(adata, n_neighbors=n_neighbors, random_state=random_state, **kwargs)
+        return "pynndescent"
+
+
 def _scanpy_spatial_clustering(dataset: SpatialDataset, params: Dict[str, object]) -> Optional[ToolResult]:
     if params.get("engine") == "prototype":
         return None
     try:
         import scanpy as sc  # type: ignore
-    except ImportError:
+    except ImportError as exc:
+        if params.get("strict_engine"):
+            raise MissingPreconditionError("Scanpy and Leiden dependencies are required for strict clustering.") from exc
         return None
     try:
+        import numpy as np  # type: ignore
+
         adata = _dataset_to_anndata(dataset)
         cluster_on = str(params.get("cluster_on", "expression") or "expression")
         n_neighbors = int(params.get("n_neighbors", min(15, max(2, len(dataset.records) - 1))) or 10)
         resolution = float(params.get("resolution", 0.5))
         random_state = int(params.get("random_state", 0) or 0)
-        # Per-cell QC is computed on raw counts before any normalization.
+        # Per-cell QC uses preserved counts when available and reports its source.
         expression_qc = _expression_qc_metrics(adata)
+        analysis_adata = adata
+        keep_mask = np.ones(adata.n_obs, dtype=bool)
         if cluster_on == "spatial":
-            sc.pp.neighbors(adata, n_neighbors=max(2, n_neighbors), use_rep="spatial", random_state=random_state)
+            neighbors_backend = _neighbors(sc, analysis_adata, max(2, n_neighbors), random_state, use_rep="spatial")
             method = "spatial_neighbors_leiden"
             representation = "spatial"
         else:
+            # Cells without any measured expression cannot be positioned
+            # meaningfully in PCA space. Keep them in the dataset for provenance,
+            # but exclude them from clustering and downstream cluster-group tests.
+            feature_counts = np.asarray((adata.X > 0).sum(axis=1)).reshape(-1)
+            keep_mask = feature_counts > 0
+            if int(keep_mask.sum()) < 3:
+                raise InsufficientDataError("Expression clustering requires at least three cells with measured features.")
+            analysis_adata = adata[keep_mask].copy()
             # Transcriptomic clustering: normalize -> log1p -> PCA -> expression graph -> Leiden.
             if not dataset.normalized:
-                sc.pp.normalize_total(adata, target_sum=1e4)
-                sc.pp.log1p(adata)
-            n_comps = min(50, adata.n_vars - 1, adata.n_obs - 1)
-            if n_comps >= 2 and adata.n_vars > 2:
-                sc.pp.pca(adata, n_comps=n_comps, random_state=random_state)
-                sc.pp.neighbors(adata, n_neighbors=max(2, n_neighbors), use_rep="X_pca", random_state=random_state)
+                sc.pp.normalize_total(analysis_adata, target_sum=1e4)
+                sc.pp.log1p(analysis_adata)
+            n_comps = min(50, analysis_adata.n_vars - 1, analysis_adata.n_obs - 1)
+            if n_comps >= 2 and analysis_adata.n_vars > 2:
+                sc.pp.pca(analysis_adata, n_comps=n_comps, random_state=random_state)
+                neighbors_backend = _neighbors(
+                    sc, analysis_adata, max(2, n_neighbors), random_state, use_rep="X_pca"
+                )
                 representation = "X_pca(%d)" % n_comps
             else:
-                sc.pp.neighbors(adata, n_neighbors=max(2, n_neighbors), random_state=random_state)
+                neighbors_backend = _neighbors(sc, analysis_adata, max(2, n_neighbors), random_state)
                 representation = "X"
             method = "pca_neighbors_leiden"
         sc.tl.leiden(
-            adata,
+            analysis_adata,
             resolution=resolution,
             random_state=random_state,
             key_added="spatialmind_cluster",
@@ -1460,12 +1592,27 @@ def _scanpy_spatial_clustering(dataset: SpatialDataset, params: Dict[str, object
             n_iterations=2,
             directed=False,
         )
-        labels = [str(value) for value in adata.obs["spatialmind_cluster"].tolist()]
-        counts = dict(Counter(labels))
+        analyzed_labels = [str(value) for value in analysis_adata.obs["spatialmind_cluster"].tolist()]
+        labels = [""] * int(adata.n_obs)
+        analyzed_index = 0
+        for index, include in enumerate(keep_mask):
+            if bool(include):
+                labels[index] = analyzed_labels[analyzed_index]
+                analyzed_index += 1
+        counts = dict(Counter(analyzed_labels))
+        # Publish assignments so marker and neighbourhood tools can group by these
+        # data-derived clusters instead of requiring expert cell-type labels.
+        store_cluster_assignments(dataset, labels)
+        diagnostics = _clustering_diagnostics(analysis_adata, analyzed_labels, representation, random_state)
+        excluded_count = int(adata.n_obs - analysis_adata.n_obs)
         cluster_style = "spatial-domain" if cluster_on == "spatial" else "expression"
+        exclusion_text = " Excluded %d zero-feature cells." % excluded_count if excluded_count else ""
         return ToolResult(
             tool_name="spatial_clustering",
-            summary="Assigned observations to %d %s clusters with Scanpy neighbors + Leiden." % (len(counts), cluster_style),
+            summary=(
+                "Assigned %d observations to %d %s clusters with Scanpy neighbors + Leiden.%s"
+                % (analysis_adata.n_obs, len(counts), cluster_style, exclusion_text)
+            ),
             metrics={
                 "engine": "scanpy",
                 "method": method,
@@ -1475,9 +1622,16 @@ def _scanpy_spatial_clustering(dataset: SpatialDataset, params: Dict[str, object
                 "n_neighbors": n_neighbors,
                 "random_state": random_state,
                 "cluster_counts": counts,
+                "neighbors_backend": neighbors_backend,
+                "total_cell_count": int(adata.n_obs),
+                "analyzed_cell_count": int(analysis_adata.n_obs),
+                "excluded_zero_feature_cell_count": excluded_count,
+                "silhouette": diagnostics["silhouette"],
+                "modularity": diagnostics["modularity"],
                 "expression_qc": expression_qc,
             },
-            caveats=list(dataset.notes),
+            caveats=list(dataset.notes)
+            + (["Excluded %d cells with zero measured expression features from clustering." % excluded_count] if excluded_count else []),
         )
     except Exception as exc:
         if params.get("strict_engine"):
@@ -1485,15 +1639,86 @@ def _scanpy_spatial_clustering(dataset: SpatialDataset, params: Dict[str, object
         return None
 
 
+def _clustering_diagnostics(
+    adata: Any,
+    labels: List[str],
+    representation: str,
+    random_state: int,
+) -> Dict[str, Optional[float]]:
+    """Compute real diagnostic scores for the exact graph and embedding used."""
+    if len(labels) < 3 or len(set(labels)) < 2:
+        return {"silhouette": None, "modularity": None}
+    silhouette: Optional[float] = None
+    modularity: Optional[float] = None
+    try:
+        import numpy as np  # type: ignore
+        from sklearn.metrics import silhouette_score  # type: ignore
+
+        if representation == "spatial":
+            values = np.asarray(adata.obsm["spatial"], dtype=float)
+        elif representation.startswith("X_pca"):
+            values = np.asarray(adata.obsm["X_pca"], dtype=float)
+        else:
+            values = np.asarray(adata.X, dtype=float)
+        sample_size = min(5000, len(labels))
+        silhouette = float(
+            silhouette_score(
+                values,
+                labels,
+                sample_size=sample_size if sample_size < len(labels) else None,
+                random_state=random_state,
+            )
+        )
+    except Exception:
+        silhouette = None
+    try:
+        import igraph as ig  # type: ignore
+        from scipy.sparse import triu  # type: ignore
+
+        connectivities = triu(adata.obsp["connectivities"], k=1).tocoo()
+        graph = ig.Graph(
+            n=len(labels),
+            edges=list(zip(connectivities.row.tolist(), connectivities.col.tolist())),
+            directed=False,
+        )
+        weights = [float(value) for value in connectivities.data]
+        graph.es["weight"] = weights
+        label_index = {label: index for index, label in enumerate(sorted(set(labels)))}
+        membership = [label_index[label] for label in labels]
+        modularity = float(graph.modularity(membership, weights=weights))
+    except Exception:
+        modularity = None
+    return {
+        "silhouette": round(silhouette, 5) if silhouette is not None and math.isfinite(silhouette) else None,
+        "modularity": round(modularity, 5) if modularity is not None and math.isfinite(modularity) else None,
+    }
+
+
 def _expression_qc_metrics(adata: Any) -> Dict[str, object]:
     import numpy as np  # type: ignore
 
-    matrix = np.asarray(adata.X, dtype=float)
+    if "counts" in adata.layers:
+        source = "raw_counts"
+        matrix = adata.layers["counts"]
+    elif "source_values" in adata.layers:
+        source = "source_values"
+        matrix = adata.layers["source_values"]
+    else:
+        source = "analysis_values_fallback"
+        matrix = adata.X
+    if hasattr(matrix, "toarray"):
+        matrix = matrix.toarray()
+    matrix = np.asarray(matrix, dtype=float)
     if matrix.size == 0:
-        return {"n_cells": int(matrix.shape[0]), "n_features": int(matrix.shape[1] if matrix.ndim > 1 else 0)}
+        return {
+            "source": source,
+            "n_cells": int(matrix.shape[0]),
+            "n_features": int(matrix.shape[1] if matrix.ndim > 1 else 0),
+        }
     total_counts = matrix.sum(axis=1)
     features_per_cell = (matrix > 0).sum(axis=1)
     return {
+        "source": source,
         "n_cells": int(matrix.shape[0]),
         "n_features": int(matrix.shape[1]),
         "mean_total_counts": round(float(np.mean(total_counts)), 4),
@@ -1504,12 +1729,204 @@ def _expression_qc_metrics(adata: Any) -> Dict[str, object]:
     }
 
 
+
+def _screen_spatial_genes(
+    sq: Any,
+    adata: Any,
+    params: Dict[str, object],
+    n_top: int,
+    random_state: int,
+) -> Dict[str, Any]:
+    """Pick which genes get permutation-tested, and how many permutations to spend.
+
+    Returns the gene list, the permutation budget, and a machine-readable record
+    of the screen so the report can state what was tested and why.
+    """
+    import numpy as np  # type: ignore
+
+    min_cells = int(params.get("min_detected_cells", 0) or 0)
+    min_fraction = float(params.get("min_detected_fraction", 0.01) or 0.0)
+    if min_cells <= 0:
+        min_cells = max(10, int(adata.n_obs * min_fraction))
+    detected = np.asarray((adata.X > 0).sum(axis=0)).reshape(-1)
+    all_genes = [str(name) for name in adata.var_names]
+    detected_genes = [gene for gene, count in zip(all_genes, detected) if int(count) >= min_cells]
+    if len(detected_genes) < 2:
+        detected_genes = all_genes
+
+    # Candidate cap: permute the strongest signals, not the whole panel.
+    candidate_count = max(int(params.get("screen_candidates", 0) or 0), 0) or max(n_top * 2, 50)
+    screened = detected_genes
+    method = "detection_filter_only"
+    if len(detected_genes) > candidate_count:
+        analytic = sq.gr.spatial_autocorr(
+            adata,
+            mode="moran",
+            genes=detected_genes,
+            n_perms=None,          # analytic only: near-free, used purely to rank
+            two_tailed=True,
+            seed=random_state,
+            copy=True,
+            n_jobs=1,
+            show_progress_bar=False,
+        )
+        if analytic is not None and not analytic.empty:
+            screened = [str(gene) for gene in analytic.sort_values("I", ascending=False).head(candidate_count).index]
+            method = "analytic_moran_screen"
+
+    # Keep the permutation budget per gene; the saving comes from testing fewer
+    # genes. Raising it here would spend the saving straight back: 50 genes at 999
+    # permutations is the same work as 491 at 100, which measured no faster.
+    # Callers who want finer resolution near the significance threshold can set
+    # screened_n_perms explicitly, at proportional cost.
+    permutations = max(10, int(params.get("n_perms", 100) or 100))
+    requested = int(params.get("screened_n_perms", 0) or 0)
+    if method == "analytic_moran_screen" and requested > 0:
+        permutations = max(permutations, requested)
+    return {
+        "tested_genes": screened,
+        "permutations": permutations,
+        "report": {
+            "rule": "detected in >= %d cells; %s" % (
+                min_cells,
+                "top %d by analytic Moran's I" % candidate_count
+                if method == "analytic_moran_screen"
+                else "all detected genes tested",
+            ),
+            "method": method,
+            "panel_genes": len(all_genes),
+            "detected_genes": len(detected_genes),
+            "tested_genes": len(screened),
+            "min_detected_cells": min_cells,
+            "permutations": permutations,
+        },
+    }
+
+
+def _squidpy_spatial_variable_genes(
+    dataset: SpatialDataset,
+    params: Dict[str, object],
+) -> Optional[ToolResult]:
+    """Rank genes by genuine spatial autocorrelation with permutation support."""
+    if params.get("engine") == "scanpy" or params.get("engine") == "prototype":
+        return None
+    try:
+        import squidpy as sq  # type: ignore
+    except ImportError as exc:
+        if params.get("strict_engine"):
+            raise MissingPreconditionError("Squidpy is required for strict spatial autocorrelation.") from exc
+        return None
+    try:
+        adata = _dataset_to_anndata(dataset)
+        if not dataset.normalized:
+            import scanpy as sc  # type: ignore
+
+            sc.pp.normalize_total(adata, target_sum=1e4)
+            sc.pp.log1p(adata)
+        n_top = max(1, int(params.get("n_top", 50) or 50))
+        n_neighs = max(2, int(params.get("n_neighs", 6) or 6))
+        n_perms = max(10, int(params.get("n_perms", 100) or 100))
+        random_state = int(params.get("random_state", 0) or 0)
+        sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=n_neighs)
+
+        # Permutation testing is ~99% of this tool's cost and scales with the gene
+        # count, so screen before spending it. Two filters, both recorded so the
+        # report can state exactly what was tested:
+        #   C. drop genes detected in too few cells -- they cannot support a
+        #      spatial claim and only inflate the multiple-testing burden;
+        #   B. rank the survivors by the near-free analytic Moran's I and permute
+        #      only the strongest candidates, which buys far more permutations
+        #      per tested gene for the same wall clock.
+        screening = _screen_spatial_genes(sq, adata, params, n_top, random_state)
+        tested_genes = screening["tested_genes"]
+        if not tested_genes:
+            return None
+        n_perms = int(screening.get("permutations", n_perms))
+        table = sq.gr.spatial_autocorr(
+            adata,
+            mode="moran",
+            genes=tested_genes,
+            n_perms=n_perms,
+            two_tailed=True,
+            corr_method="fdr_bh",
+            seed=random_state,
+            copy=True,
+            n_jobs=1,
+            backend="threading",
+            show_progress_bar=False,
+        )
+        if table is None or table.empty:
+            return None
+        score_key = "I"
+        adjusted_candidates = [
+            key
+            for key in ("pval_sim_fdr_bh", "pval_z_sim_fdr_bh", "pval_norm_fdr_bh")
+            if key in table.columns
+        ]
+        adjusted_key = adjusted_candidates[0] if adjusted_candidates else ""
+        rows = []
+        ranked = table.sort_values(score_key, ascending=False)
+        for gene, row in ranked.head(n_top).iterrows():
+            item: Dict[str, object] = {
+                "gene": str(gene),
+                "morans_i": round(float(row.get(score_key, 0.0)), 6),
+            }
+            for source, target in (
+                ("pval_sim", "pval_permutation"),
+                ("pval_z_sim", "pval_permutation_z"),
+                ("pval_norm", "pval_normality"),
+            ):
+                if source in table.columns and math.isfinite(float(row.get(source, math.nan))):
+                    item[target] = round(float(row[source]), 8)
+            if adjusted_key and math.isfinite(float(row.get(adjusted_key, math.nan))):
+                item["pval_adj"] = round(float(row[adjusted_key]), 8)
+                item["pval_adj_source"] = adjusted_key
+            rows.append(item)
+        significant = sum(1 for row in rows if float(row.get("pval_adj", 1.0)) <= 0.05)
+        significant_all = (
+            int((table[adjusted_key] <= 0.05).sum()) if adjusted_key and adjusted_key in table.columns else 0
+        )
+        return ToolResult(
+            tool_name="spatial_variable_genes",
+            summary=(
+                "Ranked %d genes by Squidpy Moran's I spatial autocorrelation; %d passed FDR <= 0.05."
+                % (len(rows), significant)
+            ),
+            metrics={
+                "engine": "squidpy",
+                "method": "moranI",
+                "n_neighs": n_neighs,
+                "n_perms": n_perms,
+                "random_state": random_state,
+                "multiple_testing": adjusted_key or "not_available",
+                "screening": screening["report"],
+                "significant_gene_count_top_n": significant,
+                "significant_gene_count_all": significant_all,
+                "top_genes": rows,
+            },
+            caveats=[
+                "Moran's I detects global spatial autocorrelation; it does not identify the anatomical region driving a pattern.",
+                "Results depend on the spatial graph, panel composition, segmentation, and field of view.",
+                "Genes were screened before permutation testing (%s); FDR is corrected over the %d screened "
+                "genes, not the full panel, so p-values are conditional on that screen."
+                % (screening["report"]["rule"], len(tested_genes)),
+            ]
+            + _type_honesty_caveats(dataset),
+        )
+    except Exception:
+        if params.get("strict_engine"):
+            raise
+        return None
+
+
 def _scanpy_spatial_variable_genes(dataset: SpatialDataset, params: Dict[str, object]) -> Optional[ToolResult]:
     if params.get("engine") == "prototype":
         return None
     try:
         import scanpy as sc  # type: ignore
-    except ImportError:
+    except ImportError as exc:
+        if params.get("strict_engine"):
+            raise MissingPreconditionError("Scanpy is required for variable-gene fallback analysis.") from exc
         return None
     try:
         adata = _dataset_to_anndata(dataset)
@@ -1529,8 +1946,10 @@ def _scanpy_spatial_variable_genes(dataset: SpatialDataset, params: Dict[str, ob
         return ToolResult(
             tool_name="spatial_variable_genes",
             summary="Ranked %d variable genes with Scanpy highly_variable_genes." % len(rows),
-            metrics={"engine": "scanpy", "method": "highly_variable_genes", "top_genes": rows},
-            caveats=["Scanpy HVG ranks expression variability; spatial autocorrelation wrappers should be added next for Moran/SpatialDE-style statistics."],
+            metrics={"engine": "scanpy", "method": "highly_variable_genes_fallback", "top_genes": rows},
+            caveats=[
+                "This is an expression-variability fallback, not a spatial autocorrelation test; install Squidpy or inspect the spatial backend error."
+            ],
         )
     except Exception as exc:
         if params.get("strict_engine"):
@@ -1543,10 +1962,22 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         return None
     try:
         import squidpy as sq  # type: ignore
-    except ImportError:
+    except ImportError as exc:
+        if params.get("strict_engine"):
+            raise MissingPreconditionError("Squidpy is required for strict neighborhood enrichment.") from exc
         return None
     try:
         adata = _dataset_to_anndata(dataset)
+        group_labels, group_key = resolve_group_labels(dataset, params)
+        keep = [bool(label) for label in group_labels]
+        if sum(keep) < 3:
+            raise MissingPreconditionError(
+                "neighborhood_enrichment needs at least three cells with populated group assignments."
+            )
+        adata = adata[keep].copy()
+        retained_labels = [label for label, include in zip(group_labels, keep) if include]
+        adata.obs["spatialmind_group"] = retained_labels
+        adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
         n_neighs = int(params.get("n_neighs", min(6, max(2, len(dataset.records) - 1))) or 6)
         n_perms = int(params.get("n_perms", 100) or 100)
         n_jobs = int(params.get("n_jobs", 1) or 1)
@@ -1557,7 +1988,7 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
             warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
             sq.gr.nhood_enrichment(
                 adata,
-                cluster_key="cell_type",
+                cluster_key="spatialmind_group",
                 n_perms=n_perms,
                 seed=random_state,
                 n_jobs=n_jobs,
@@ -1565,8 +1996,8 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
                 numba_parallel=False,
                 show_progress_bar=False,
             )
-        result = adata.uns.get("cell_type_nhood_enrichment", {})
-        clusters = [str(value) for value in adata.obs["cell_type"].cat.categories]
+        result = adata.uns.get("spatialmind_group_nhood_enrichment", {})
+        clusters = [str(value) for value in adata.obs["spatialmind_group"].cat.categories]
         all_pairs = _nhood_enrichment_pairs(result.get("zscore"), result.get("pvalue"), clusters, limit=None)
         expected_pair_count = len(clusters) * (len(clusters) + 1) // 2
         nonfinite_pair_count = max(expected_pair_count - len(all_pairs), 0)
@@ -1574,11 +2005,14 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         metrics = {
             "engine": "squidpy",
             "method": "nhood_enrichment",
+            "group_key": group_key,
             "n_neighs": n_neighs,
             "n_perms": n_perms,
             "n_jobs": n_jobs,
             "backend": backend,
             "random_state": random_state,
+            "analyzed_cell_count": int(adata.n_obs),
+            "excluded_unassigned_cell_count": len(group_labels) - int(adata.n_obs),
             "top_pairs": top_pairs,
             "tested_pair_count": len(all_pairs),
             "undefined_pair_count": nonfinite_pair_count,
@@ -1608,11 +2042,54 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
 # rank as spurious markers. Mirrors ingestion.labels.NON_BIOLOGICAL_FEATURES.
 EXPRESSION_EXCLUDED_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
 
+# Xenium panels ship control probes alongside real targets: negative controls,
+# unassigned and deprecated codewords, blanks, and antisense probes. They exist to
+# measure background and misassignment, and they are a large share of the panel --
+# 41% of the breast panel and 38% of the glioblastoma panel in local data. Left in
+# the expression matrix they drive PCA, appear as cluster markers, and can define
+# entire clusters out of technical noise. They stay available for QC, which reads
+# them from the instrument metrics rather than from this matrix.
+CONTROL_FEATURE_PREFIXES = (
+    "UNASSIGNEDCODEWORD",
+    "NEGCONTROLCODEWORD",
+    "NEGCONTROLPROBE",
+    "DEPRECATEDCODEWORD",
+    "BLANK",
+    "ANTISENSE",
+    "NEGPROBE",
+    "NEGCONTROL",
+)
+
+
+def is_control_feature(name: str) -> bool:
+    """True for Xenium control/background probes rather than measured genes.
+
+    Control probes follow ``Prefix_0123`` / ``Prefix0123``, so the prefix must be
+    followed by a separator or digits. Matching on the prefix alone would catch
+    real genes that merely start with the same letters.
+    """
+    upper = str(name).upper()
+    for prefix in CONTROL_FEATURE_PREFIXES:
+        if not upper.startswith(prefix):
+            continue
+        remainder = upper[len(prefix):]
+        if not remainder or remainder[0] in "_-." or remainder[0].isdigit():
+            return True
+    return False
+
 
 def expression_feature_names(dataset: SpatialDataset) -> List[str]:
-    """Genes used for expression analysis, excluding QC/morphology pseudo-features."""
-    biological = [gene for gene in dataset.genes if gene.upper() not in EXPRESSION_EXCLUDED_FEATURES]
-    # Only drop the pseudo-features when real genes remain (keeps tiny fixtures usable).
+    """Genes used for expression analysis.
+
+    Excludes QC/morphology pseudo-features and Xenium control probes, both of
+    which are technical rather than biological signal.
+    """
+    biological = [
+        gene
+        for gene in dataset.genes
+        if gene.upper() not in EXPRESSION_EXCLUDED_FEATURES and not is_control_feature(gene)
+    ]
+    # Only drop them when real genes remain, so tiny fixtures stay usable.
     return biological if len(biological) >= 2 else list(dataset.genes)
 
 
@@ -1625,6 +2102,10 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     if not genes:
         raise MissingPreconditionError("Scanpy/Squidpy wrappers require numeric features.")
     matrix = np.array([[record.genes.get(gene, 0.0) for gene in genes] for record in dataset.records], dtype=float)
+    source_matrix = np.array(
+        [[record.raw_genes.get(gene, record.genes.get(gene, 0.0)) for gene in genes] for record in dataset.records],
+        dtype=float,
+    )
     obs = pd.DataFrame(
         {
             "sample_id": [record.sample_id for record in dataset.records],
@@ -1638,8 +2119,16 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     obs["cell_type"] = obs["cell_type"].astype("category")
     adata = ad.AnnData(X=matrix, obs=obs)
     adata.var_names = genes
+    adata.layers["source_values"] = source_matrix
+    if dataset.metadata.get("raw_counts_available"):
+        adata.layers["counts"] = source_matrix.copy()
     adata.obsm["spatial"] = np.array([[record.x, record.y] for record in dataset.records], dtype=float)
-    adata.uns["spatialmind"] = {"sample_id": dataset.sample_id, "normalized": dataset.normalized}
+    adata.uns["spatialmind"] = {
+        "sample_id": dataset.sample_id,
+        "normalized": dataset.normalized,
+        "source_value_semantics": dataset.metadata.get("source_value_semantics", "unspecified"),
+        "raw_counts_available": bool(dataset.metadata.get("raw_counts_available")),
+    }
     return adata
 
 
@@ -1752,23 +2241,24 @@ def _quality_metrics_for_result(result: ToolResult, dataset: SpatialDataset, par
     )
     quality = QualityMetrics(qc=qc)
     if result.tool_name in {"qc_and_cluster", "spatial_clustering"}:
-        cluster_count = len(result.metrics.get("cluster_counts", {}))
+        silhouette = result.metrics.get("silhouette")
+        modularity = result.metrics.get("modularity")
         quality.clustering = ClusteringMetrics(
             silhouette=metric(
-                None,
-                "not_applicable",
+                float(silhouette) if silhouette is not None else None,
+                "computed" if silhouette is not None else "not_applicable",
                 "diagnostic",
-                "silhouette",
+                "silhouette on clustering representation",
                 dict(params),
                 caveat="Silhouette is diagnostic only and can understate continuous tissue gradients.",
             ),
             modularity=metric(
-                float(cluster_count) if cluster_count else None,
-                "computed" if cluster_count else "insufficient_data",
+                float(modularity) if modularity is not None else None,
+                "computed" if modularity is not None else "not_applicable",
                 "diagnostic",
-                "prototype cluster count diagnostic",
+                "weighted kNN graph modularity",
                 dict(params),
-                caveat="Prototype cluster count is a diagnostic, not evidence of biological separation.",
+                caveat="Graph modularity is a diagnostic of this graph partition, not proof of biological identity.",
             ),
         )
     if result.tool_name in {"annotation", "cell_type_annotation", "reference_label_transfer"}:
@@ -1832,6 +2322,37 @@ def _quality_metrics_for_result(result: ToolResult, dataset: SpatialDataset, par
                 "neighbor graph diagnostic",
                 dict(params),
                 caveat="Mean-neighbor diagnostics inform graph quality but do not ground a biological claim.",
+            ),
+        )
+    if result.tool_name == "spatial_variable_genes":
+        top_genes = result.metrics.get("top_genes", [])
+        top_morans_i = None
+        if isinstance(top_genes, list) and top_genes:
+            top_morans_i = top_genes[0].get("morans_i")
+        n_neighs = result.metrics.get("n_neighs")
+        quality.spatial = SpatialMetrics(
+            morans_i=metric(
+                float(top_morans_i) if top_morans_i is not None else None,
+                "computed" if top_morans_i is not None else "insufficient_data",
+                "statistical_evidence",
+                "Squidpy Moran's I spatial autocorrelation",
+                dict(params),
+                caveat="Moran's I identifies spatial autocorrelation, not a causal spatial mechanism.",
+            ),
+            cooccurrence_z=metric(
+                None,
+                "not_applicable",
+                "statistical_evidence",
+                "neighborhood co-occurrence",
+                dict(params),
+            ),
+            mean_neighbors=metric(
+                float(n_neighs) if n_neighs is not None else None,
+                "computed" if n_neighs is not None else "not_applicable",
+                "diagnostic",
+                "spatial-neighbor graph setting",
+                dict(params),
+                caveat="This is the requested graph degree, not a measured biological interaction count.",
             ),
         )
     return quality

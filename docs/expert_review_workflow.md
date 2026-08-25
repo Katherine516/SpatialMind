@@ -19,6 +19,32 @@ These files cannot be downloaded as generic replacements for review. The first t
 
 For a pilot, one domain expert plus one computational reviewer is acceptable. For a publication-grade benchmark, use at least two independent reviewers and adjudicate disagreements without exposing the held-out test labels to model development.
 
+## Frozen Brain Benchmark Packet
+
+The current leakage-aware packet is:
+
+`outputs/brain_expert_benchmark_20260812/`
+
+It contains two 750-cell cohorts selected from 10,000-cell expression-analysis pools. Selection balances expression clusters and spatial blocks, retains high-priority reference disagreements and QC exceptions, and caps QC-tail dominance. Provisional train/validation/test assignments keep each spatial block wholly inside one split.
+
+For each tissue, review these files together:
+
+- `expert_review_viewer.html`: morphology, boundaries, cluster context, and cell inspection.
+- `spatial_distribution.svg`: compact cohort map.
+- `cluster_marker_summary.csv`: cluster-level marker evidence.
+- `expert_cell_labels_for_review.csv`: cell-label decisions and reviewer provenance.
+- `cell_regions_for_review.csv`: biological/pathology ROI decisions and reviewer provenance.
+- `benchmark_split_manifest.csv`: frozen pre-review split assignment; do not move individual cells across splits.
+
+The validator requires at least 675 of 750 cells per tissue to have both a reviewed label and a reviewed region on the same cell. Every completed label needs `reviewer_id`, every completed region needs `region_reviewer_id`, and jointly reviewed cells must still represent train, validation, and test. Run:
+
+```bash
+.venv/bin/python scripts/prepare_brain_expert_benchmark.py \
+  --validate-existing outputs/brain_expert_benchmark_20260812
+```
+
+When the gate passes, the validator writes only jointly reviewed records to `reviewed_benchmark_truth.csv` and `frozen_splits/train.csv`, `validation.csv`, and `test.csv`. These benchmark drafts cover a selected cohort. Do not rename them to the full Xenium folder's `expert_cell_labels.csv` or `cell_regions.csv`.
+
 ## 1. Expert Cell Labels
 
 ### Starting file
@@ -146,6 +172,21 @@ Fit the claim-reliability calibration after validation passes:
   --claim-truth /path/to/completed_spatial_claim_truth.csv
 ```
 
+## Tissue-Matched References And Provenance
+
+Recommended evidence sources for this review are:
+
+- [10x Xenium human brain preview dataset](https://www.10xgenomics.com/datasets/xenium-human-brain-preview-data-1-standard): official source for the current local healthy-brain and glioblastoma Xenium outputs; the download page states CC BY 4.0. Record the exact download date and source URL in the governance manifest.
+- [Allen Brain Cell Atlas whole human brain 10x v3 reference](https://alleninstitute.github.io/abc_atlas_access/descriptions/WHB-10Xv3.html): broad healthy adult human brain reference with public AWS access. Its CC BY-NC 4.0 terms require a use-case review before commercial reuse.
+- [GEO GSE138794](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE138794): human glioma single-cell/single-nucleus RNA and ATAC data with processed cell-type files; a practical first same-species GBM reference candidate.
+- [GEO GSE174554](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE174554): larger primary/recurrent IDH-wild-type GBM cohort. Subset human cells and verify sample/assay metadata before transfer.
+- [Neftel GBM study in the Broad Single Cell Portal](https://singlecell.broadinstitute.org/single_cell/study/SCP393/single-cell-rna-seq-of-adult-and-pediatric-glioblastoma): useful malignant-state evidence, not a complete normal-brain cell atlas.
+- [Cell Ontology in EBI OLS](https://www.ebi.ac.uk/ols4/ontologies/cl): canonical cell-type names and stable CL identifiers.
+
+Reference-assisted suggestions remain review evidence, not benchmark truth. Before use, document species, tissue, disease state, donor count, assay, preprocessing, feature overlap, label provenance, license, consent/data-use restrictions, and any commercial-use limitation.
+
+The public download page resolves the source and license for the local 10x dataset. It does not by itself complete institutional consent, IRB, data-use, or PHI review; an authorized data steward must record those decisions in the project governance metadata.
+
 ## Acceptance Checklist
 
 - Cell IDs match the target Xenium section with no accidental cross-dataset mixing.
@@ -156,4 +197,3 @@ Fit the claim-reliability calibration after validation passes:
 - Reviewer identity, date, evidence, and disagreements are auditable.
 - Claim truth contains supported and unsupported examples and a held-out test split.
 - Dataset license, consent/data-use terms, and PHI status are recorded before use.
-

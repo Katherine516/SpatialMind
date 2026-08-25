@@ -9,6 +9,7 @@ MVP_TOOL_OUTPUTS: Dict[str, List[str]] = {
     "qc_and_cluster": ["clustering", "qc"],
     "annotation": ["annotation"],
     "marker_detection": ["markers", "differential_evidence"],
+    "spatial_variable_genes": ["spatial_genes", "spatial_evidence"],
     "feature_overlay": ["figure"],
     "region_summary": ["region_summary"],
     "cell_neighborhood_enrichment": ["neighborhood_test", "spatial_evidence"],
@@ -75,19 +76,34 @@ class RunContext:
 
 def build_xenium_mvp_plan(include_marker_detection: bool = True) -> List[ToolCallSpec]:
     steps = [
-        ToolCallSpec("qc_and_cluster", {"resolution": 0.55}, requires=["normalized_counts"]),
+        ToolCallSpec(
+            "qc_and_cluster",
+            {"resolution": 0.55, "random_state": 0, "strict_engine": True},
+            requires=["normalized_counts"],
+        ),
         ToolCallSpec("annotation", {"method": "expert_label_table"}, requires=["clustering", "expert_labels"]),
     ]
     if include_marker_detection:
         steps.append(
             ToolCallSpec(
                 "marker_detection",
-                {"group_key": "cell_type", "n_top": 25},
+                {"group_key": "cell_type", "n_top": 25, "strict_engine": True},
                 requires=["annotation"],
             )
         )
     steps.extend(
         [
+            ToolCallSpec(
+                "spatial_variable_genes",
+                {
+                    "n_top": 50,
+                    "n_neighs": 6,
+                    "n_perms": 250,
+                    "random_state": 0,
+                    "strict_engine": True,
+                },
+                requires=["normalized_counts", "spatial_coords"],
+            ),
             ToolCallSpec("region_summary", {"top_n_features": 10}, requires=["annotation", "user_regions"]),
             ToolCallSpec(
                 "cell_neighborhood_enrichment",
@@ -96,6 +112,7 @@ def build_xenium_mvp_plan(include_marker_detection: bool = True) -> List[ToolCal
                     "n_perms": 250,
                     "random_state": 0,
                     "include_all_pairs": True,
+                    "strict_engine": True,
                 },
                 requires=["annotation", "spatial_coords"],
             ),

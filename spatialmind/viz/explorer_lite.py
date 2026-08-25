@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from spatialmind.ingestion.labels import load_xenium_analysis_clusters
 from spatialmind.schemas import SpatialDataset
+from spatialmind.viz.display_sampling import DEFAULT_DISPLAY_CAP, display_caption, downsample_for_display
 from spatialmind.viz.morphology import load_cell_boundaries, load_morphology_thumbnail
 from spatialmind.viz.renderers import PALETTE
 
@@ -22,6 +23,7 @@ class XeniumExplorerLiteViewer:
         filename: str = "explorer_lite_viewer.html",
         include_morphology: bool = True,
         include_boundaries: bool = True,
+        max_display_points: int = DEFAULT_DISPLAY_CAP,
     ) -> str:
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, filename)
@@ -30,6 +32,7 @@ class XeniumExplorerLiteViewer:
             dataset_path,
             include_morphology=include_morphology,
             include_boundaries=include_boundaries,
+            max_display_points=max_display_points,
         )
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(_html_document(payload))
@@ -41,6 +44,7 @@ class XeniumExplorerLiteViewer:
         dataset_path: Optional[str],
         include_morphology: bool = True,
         include_boundaries: bool = True,
+        max_display_points: int = DEFAULT_DISPLAY_CAP,
     ) -> Dict[str, Any]:
         bounds = dataset.bounds()
         clusters = load_xenium_analysis_clusters(dataset_path) if dataset_path else {}
@@ -58,8 +62,11 @@ class XeniumExplorerLiteViewer:
             }
             for key, value in sorted(assets.items())
         ]
+        # Cap what is drawn: one DOM node per cell makes a full-section viewer
+        # unopenable. Analysis is unaffected; only the display is subsampled.
+        display_records, display_info = downsample_for_display(dataset.records, max_points=max_display_points)
         records = []
-        for index, record in enumerate(dataset.records):
+        for index, record in enumerate(display_records):
             cell_id = record.cell_id or str(index)
             records.append(
                 {
@@ -84,6 +91,8 @@ class XeniumExplorerLiteViewer:
                     cell_ids=[item["cell_id"] for item in records],
                 )
         return {
+            "display": display_info,
+            "display_caption": display_caption(display_info),
             "sample_id": dataset.sample_id,
             "dataset_path": dataset_path or dataset.source_path,
             "morphology": morphology,

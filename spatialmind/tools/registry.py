@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from spatialmind.contracts import MethodCitation, ResourceProfile
 from spatialmind.schemas import SpatialDataset, ToolResult
@@ -12,10 +12,27 @@ MVP_TOOL_NAMES = [
     "qc_and_cluster",
     "annotation",
     "marker_detection",
+    "spatial_variable_genes",
     "feature_overlay",
     "region_summary",
     "cell_neighborhood_enrichment",
 ]
+
+
+CAPABILITY_STATES = ("validated", "descriptive", "experimental", "unavailable")
+# Capabilities a planner may select from; scaffolds are excluded.
+PLANNABLE_CAPABILITIES = ("validated", "descriptive", "experimental")
+
+
+def _is_scaffold(func: Any) -> bool:
+    """True when the tool body only returns a registered scaffold placeholder."""
+    try:
+        import inspect
+
+        source = inspect.getsource(func)
+    except (OSError, TypeError):
+        return False
+    return "_scaffold_result(" in source
 
 
 @dataclass
@@ -31,8 +48,19 @@ class SpatialTool:
     callable: ToolCallable
     resource_profile: Optional[ResourceProfile] = None
     citation: Optional[MethodCitation] = None
+    # validated    : real backend, allowed to support biological claims
+    # descriptive  : real backend, describes data-derived groups only
+    # experimental : real method, not yet trusted for claims
+    # unavailable  : registered scaffold; must never be planned or presented as usable
+    capability: str = "validated"
 
     def __post_init__(self) -> None:
+        if self.capability == "validated" and _is_scaffold(self.callable):
+            # A scaffold returns a placeholder rather than doing the work. Marking
+            # it automatically keeps the registry honest even if a caller forgets.
+            self.capability = "unavailable"
+        if self.capability not in CAPABILITY_STATES:
+            raise ValueError("Unknown capability %r for tool %s" % (self.capability, self.name))
         if self.resource_profile is None:
             self.resource_profile = _resource_profile_from_runtime(self.estimated_runtime)
         if self.citation is None:
@@ -52,10 +80,22 @@ class ToolRegistry:
             raise KeyError("Unknown tool: %s" % name)
         return self._tools[name]
 
+    def list_plannable(self) -> List[SpatialTool]:
+        """Tools a planner may choose. Excludes unavailable scaffolds."""
+        return [tool for tool in self.list_all() if tool.capability in PLANNABLE_CAPABILITIES]
+
+    def capability_summary(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for tool in self.list_all():
+            counts[tool.capability] = counts.get(tool.capability, 0) + 1
+        return counts
+
     def list_all(self) -> List[SpatialTool]:
         return [self._tools[name] for name in sorted(self._tools.keys())]
 
-    def to_anthropic_tools(self) -> List[Dict[str, object]]:
+    def to_anthropic_tools(self, plannable_only: bool = True) -> List[Dict[str, object]]:
+        """Tool schemas for an LLM. Scaffolds are hidden by default so a model
+        cannot select a tool that does no work."""
         return [
             {
                 "name": tool.name,
@@ -63,7 +103,7 @@ class ToolRegistry:
                 % (tool.description, tool.when_to_use, tool.when_not_to_use),
                 "input_schema": tool.input_schema,
             }
-            for tool in self.list_all()
+            for tool in (self.list_plannable() if plannable_only else self.list_all())
         ]
 
     def citations(self) -> Dict[str, MethodCitation]:

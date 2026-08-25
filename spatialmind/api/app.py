@@ -6,7 +6,7 @@ from dataclasses import asdict, is_dataclass
 from ..agent import SpatialAgent, SpatialMindAgent
 from ..batch import BatchEngine
 from ..llm import build_llm_provider
-from ..ingestion import validate_xenium_label_intake
+from ..ingestion import infer_data_type, validate_xenium_label_intake
 from ..pilot import run_pilot
 from ..promotion import build_local_promotion_report
 from ..storage import StorageLayer
@@ -30,6 +30,14 @@ def create_app():
         llm_model: str = ""
         qc_approved: bool = False
         report_format: Literal["html", "pdf", "both"] = "html"
+        max_records: int = 5000
+        full_section: bool = False
+        review_max_records: int = 5000
+        min_label_coverage: float = 0.7
+        min_region_coverage: float = 0.7
+        allow_single_region: bool = False
+        allow_sampled_validation: bool = False
+        readiness_only: bool = False
 
     class BatchRequest(BaseModel):
         query: str
@@ -43,6 +51,11 @@ def create_app():
         min_region_coverage: float = 0.7
         allow_single_region: bool = False
         report_format: Literal["html", "pdf", "both"] = "html"
+        full_section: bool = False
+        review_max_records: int = 5000
+        allow_sampled_validation: bool = False
+        readiness_only: bool = False
+        prompt: str = "Validated Xenium pilot: annotate cells, summarize user regions, and test spatial relationships."
 
     class LocalPromotionRequest(BaseModel):
         data_root: str = "data"
@@ -59,6 +72,22 @@ def create_app():
 
     @app.post("/runs")
     def create_run(request: RunRequest) -> Dict[str, object]:
+        if infer_data_type(request.data_path) in {"xenium_directory", "xenium_experiment_file"}:
+            return _jsonable(
+                run_pilot(
+                    request.data_path,
+                    output_dir=Path(request.output_root),
+                    max_records=0 if request.full_section else request.max_records,
+                    min_label_coverage=request.min_label_coverage,
+                    min_region_coverage=request.min_region_coverage,
+                    allow_single_region=request.allow_single_region,
+                    report_format=request.report_format,
+                    readiness_only=request.readiness_only,
+                    require_complete_section=not request.allow_sampled_validation,
+                    review_max_records=request.review_max_records,
+                    query=request.prompt,
+                )
+            )
         provider = build_llm_provider(request.llm_provider, model=request.llm_model)
         agent = SpatialMindAgent(output_root=request.output_root, llm_provider=provider)
         run = agent.run(request.prompt, request.data_path, report_format=request.report_format)
@@ -117,10 +146,15 @@ def create_app():
             run_pilot(
                 request.data_path,
                 output_dir=Path(request.output_dir),
-                max_records=request.max_records,
+                max_records=0 if request.full_section else request.max_records,
                 min_label_coverage=request.min_label_coverage,
                 min_region_coverage=request.min_region_coverage,
                 allow_single_region=request.allow_single_region,
+                report_format=request.report_format,
+                readiness_only=request.readiness_only,
+                require_complete_section=not request.allow_sampled_validation,
+                review_max_records=request.review_max_records,
+                query=request.prompt,
             )
         )
 

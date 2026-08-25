@@ -1,5 +1,8 @@
+import base64
 import html
+import time
 import json
+import os
 import uuid
 from collections import Counter
 from dataclasses import asdict, is_dataclass
@@ -25,10 +28,12 @@ from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
 from spatialmind.tools.implementations import (
+    CLUSTER_ASSIGNMENT_KEY,
     run_distance_dependent_cooccurrence,
     run_neighborhood_robustness,
     run_region_stratified_neighborhoods,
 )
+from spatialmind.viz.renderers import PALETTE
 from spatialmind.viz import (
     PdfFigure,
     PdfSection,
@@ -40,6 +45,7 @@ from spatialmind.viz import (
 )
 
 
+MIN_CELLS_FOR_STABLE_CLUSTERS = 6000
 DEFAULT_DATASET = "data/Human_Breast_Biomarkers_S1_Top_outs"
 DEFAULT_OUTPUT = "outputs/xenium_validated_pilot"
 
@@ -53,6 +59,10 @@ def run_pilot(
     allow_single_region: bool = False,
     report_format: str = "html",
     readiness_only: bool = False,
+    review_artifacts: bool = True,
+    require_complete_section: bool = True,
+    review_max_records: int = 5000,
+    query: str = "Validated Xenium pilot: annotate cells, summarize user regions, and test spatial relationships.",
 ) -> Dict[str, Any]:
     normalized_format = normalize_report_format(report_format)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -73,6 +83,21 @@ def run_pilot(
         min_region_coverage=min_region_coverage,
         allow_single_region=allow_single_region,
     )
+    analysis_scope = _analysis_scope(dataset)
+    if (
+        gate["status"] == "validated_ready"
+        and require_complete_section
+        and not readiness_only
+        and not analysis_scope["complete_section"]
+    ):
+        gate["status"] = "blocked_sampled_inference"
+        gate["blocking_reasons"].append(
+            "Validated biological inference requires the complete tissue section; this run loaded %.2f%% of cells."
+            % (100.0 * float(analysis_scope["fraction_loaded"]))
+        )
+        gate["required_next_inputs"].append(
+            "Rerun with `max_records=0` (CLI: `--full-section`) after review labels and regions are complete."
+        )
     intake_report = build_xenium_label_intake_report(
         dataset=dataset,
         dataset_path=dataset_path,
@@ -94,16 +119,16 @@ def run_pilot(
         review_figures: List[str] = []
         figures: List[str] = []
     else:
-        label_template = write_expert_label_template(
+        label_template = "" if not review_artifacts else write_expert_label_template(
             dataset,
             str(output_dir / "expert_label_template.csv"),
-            max_rows=max_records,
+            max_rows=review_max_records if review_max_records > 0 else len(dataset.records),
             dataset_path=dataset_path,
         )
-        region_template = write_region_label_template(
+        region_template = "" if not review_artifacts else write_region_label_template(
             dataset,
             str(output_dir / "region_label_template.csv"),
-            max_rows=max_records,
+            max_rows=review_max_records if review_max_records > 0 else len(dataset.records),
             dataset_path=dataset_path,
         )
         review_figures = _write_review_figures(dataset, output_dir)
@@ -125,16 +150,37 @@ def run_pilot(
         "score": 0.0,
         "reason": "Neighborhood robustness sweep runs only for validated pilots.",
     }
+    # Descriptive lane: QC, expression clusters, per-cluster markers, and
+    # cluster-level neighbourhood structure need no expert labels, because they
+    # group by data-derived clusters rather than claimed cell identities. A
+    # blocked run should still hand back this analysis instead of only a refusal.
+    # Runs for validated pilots too: the cluster-level view is independent evidence
+    # that does not depend on the labels, so a labelled dataset should keep it
+    # alongside the cell-type view rather than lose it.
+    descriptive: Dict[str, Any] = {"status": "not_run", "reason": "Descriptive analysis was not requested."}
+    if not readiness_only:
+        descriptive = _run_descriptive_lane(dataset, output_dir)
+
+    analysis_backend_error = ""
     if gate["status"] == "validated_ready" and not readiness_only:
-        results = _run_validated_tools(dataset, plan)
-        for result in results:
-            _write_json(output_dir / ("%s.json" % result.tool_name), result)
-        figures.extend(_write_figures(dataset, output_dir))
-        neighborhood_result = next(
-            (result for result in results if result.tool_name == "cell_neighborhood_enrichment"),
-            None,
-        )
-        spatial_robustness = run_neighborhood_robustness(dataset, baseline_result=neighborhood_result)
+        try:
+            results = _run_validated_tools(dataset, plan)
+            for result in results:
+                _write_json(output_dir / ("%s.json" % result.tool_name), result)
+            figures.extend(_write_figures(dataset, output_dir))
+            neighborhood_result = next(
+                (result for result in results if result.tool_name == "cell_neighborhood_enrichment"),
+                None,
+            )
+            spatial_robustness = run_neighborhood_robustness(dataset, baseline_result=neighborhood_result)
+        except Exception as exc:
+            analysis_backend_error = "%s: %s" % (type(exc).__name__, exc)
+            results = []
+            gate["status"] = "blocked_analysis_backend"
+            gate["blocking_reasons"].append("Validated analysis backend failed: %s" % analysis_backend_error)
+            gate["required_next_inputs"].append(
+                "Repair the Scanpy/Squidpy environment and rerun; prototype fallbacks are disabled for validated claims."
+            )
 
     if readiness_only:
         spatial_relationships = {
@@ -150,13 +196,6 @@ def run_pilot(
             robustness=spatial_robustness,
             validated=gate["status"] == "validated_ready",
         )
-        relationship_figure = _render_spatial_relationship_heatmap(
-            spatial_relationships,
-            output_dir / "spatial_relationships_heatmap.png",
-        )
-        if relationship_figure:
-            spatial_relationships["figure"] = relationship_figure
-            figures.append(relationship_figure)
 
     region_stratified_neighborhoods: Dict[str, Any] = {
         "status": "not_run",
@@ -170,30 +209,72 @@ def run_pilot(
         "curves": [],
     }
     if gate["status"] == "validated_ready" and not readiness_only:
-        region_stratified_neighborhoods = run_region_stratified_neighborhoods(dataset)
-        relationship_pairs = [
-            str(item.get("pair"))
-            for item in spatial_relationships.get("relationships", [])
-            if isinstance(item, dict) and item.get("pair")
-        ]
-        distance_cooccurrence = run_distance_dependent_cooccurrence(dataset, pairs=relationship_pairs)
-        region_figure = _render_region_stratified_heatmap(
-            region_stratified_neighborhoods,
-            output_dir / "region_stratified_neighborhoods.png",
-        )
-        if region_figure:
-            region_stratified_neighborhoods["figure"] = region_figure
-            figures.append(region_figure)
-        cooccurrence_figure = _render_distance_cooccurrence_curves(
-            distance_cooccurrence,
-            output_dir / "distance_dependent_cooccurrence.png",
-        )
-        if cooccurrence_figure:
-            distance_cooccurrence["figure"] = cooccurrence_figure
-            figures.append(cooccurrence_figure)
+        try:
+            region_stratified_neighborhoods = run_region_stratified_neighborhoods(
+                dataset, params={"strict_engine": True}
+            )
+            relationship_pairs = [
+                str(item.get("pair"))
+                for item in spatial_relationships.get("relationships", [])
+                if isinstance(item, dict) and item.get("pair")
+            ]
+            distance_cooccurrence = run_distance_dependent_cooccurrence(
+                dataset, pairs=relationship_pairs, params={"strict_engine": True}
+            )
+            region_figure = _render_region_stratified_heatmap(
+                region_stratified_neighborhoods,
+                output_dir / "region_stratified_neighborhoods.png",
+            )
+            if region_figure:
+                region_stratified_neighborhoods["figure"] = region_figure
+                figures.append(region_figure)
+            cooccurrence_figure = _render_distance_cooccurrence_curves(
+                distance_cooccurrence,
+                output_dir / "distance_dependent_cooccurrence.png",
+            )
+            if cooccurrence_figure:
+                distance_cooccurrence["figure"] = cooccurrence_figure
+                figures.append(cooccurrence_figure)
+        except Exception as exc:
+            downstream_error = "%s: %s" % (type(exc).__name__, exc)
+            analysis_backend_error = "; ".join(value for value in (analysis_backend_error, downstream_error) if value)
+            gate["status"] = "blocked_analysis_backend"
+            gate["blocking_reasons"].append("Validated spatial backend failed: %s" % downstream_error)
+            gate["required_next_inputs"].append(
+                "Repair the Scanpy/Squidpy environment and rerun; partial spatial outputs cannot support validated claims."
+            )
+            region_stratified_neighborhoods = {
+                "status": "not_run",
+                "reason": "Validated spatial backend failed: %s" % downstream_error,
+                "regions": [],
+                "pair_consistency": [],
+            }
+            distance_cooccurrence = {
+                "status": "not_run",
+                "reason": "Validated spatial backend failed: %s" % downstream_error,
+                "curves": [],
+            }
+            spatial_relationships = build_spatial_relationship_summary(
+                dataset=dataset,
+                results=results,
+                robustness=spatial_robustness,
+                validated=False,
+            )
         _write_json(output_dir / "region_stratified_neighborhoods.json", region_stratified_neighborhoods)
         _write_json(output_dir / "distance_dependent_cooccurrence.json", distance_cooccurrence)
 
+    if gate["status"] == "validated_ready" and not readiness_only:
+        relationship_figure = _render_spatial_relationship_heatmap(
+            spatial_relationships,
+            output_dir / "spatial_relationships_heatmap.png",
+        )
+        if relationship_figure:
+            spatial_relationships["figure"] = relationship_figure
+            figures.append(relationship_figure)
+
+    analysis_scope["validated_claims_allowed"] = bool(
+        analysis_scope["complete_section"] and gate["status"] == "validated_ready"
+    )
     payload = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "dataset_path": dataset_path,
@@ -202,6 +283,9 @@ def run_pilot(
         "blocking_reasons": gate["blocking_reasons"],
         "required_next_inputs": gate["required_next_inputs"],
         "records_loaded": len(dataset.records),
+        "analysis_scope": analysis_scope,
+        "expression_layers": dataset.metadata.get("expression_layers", {}),
+        "analysis_backend_error": analysis_backend_error,
         "features_loaded": len(dataset.genes),
         "cell_types": dataset.cell_types,
         "regions": sorted({record.region for record in dataset.records if record.region}),
@@ -224,6 +308,8 @@ def run_pilot(
             "review_figures": "Generated from current loader labels/clusters for expert review and QA only.",
             "validated_figures": "Generated only after expert labels and user regions pass the pilot gate.",
         },
+        "run_qc": _run_qc(dataset),
+        "descriptive_analysis": descriptive,
         "spatial_robustness": spatial_robustness,
         "spatial_relationships": spatial_relationships,
         "region_stratified_neighborhoods": region_stratified_neighborhoods,
@@ -242,6 +328,7 @@ def run_pilot(
             else str(output_dir / "validated_xenium_pilot_report.html")
         ),
         "readiness_only": readiness_only,
+        "require_complete_section": require_complete_section,
         "run_record_path": "",
     }
     payload["claim_ledger"] = build_pilot_claim_ledger(payload, results)
@@ -271,13 +358,16 @@ def run_pilot(
     if cooccurrence_json.exists():
         report_artifacts["distance_dependent_cooccurrence"] = str(cooccurrence_json)
     run_record = StorageLayer(root=str(output_dir)).write_mvp_run_record(
-        query="Validated Xenium pilot: annotate cells, summarize user regions, and test neighborhoods.",
+        query=query,
         tool_trace=[{"tool_name": result.tool_name, "summary": result.summary, "metrics": result.metrics} for result in results],
         params={
+            "workflow_type": "validated_xenium_pilot",
             "max_records": max_records,
             "min_label_coverage": min_label_coverage,
             "min_region_coverage": min_region_coverage,
             "allow_single_region": allow_single_region,
+            "require_complete_section": require_complete_section,
+            "review_max_records": review_max_records,
             "report_format": normalized_format,
             "tool_plan": _jsonable(plan),
         },
@@ -391,6 +481,410 @@ def pilot_gate(
     }
 
 
+
+# Instrument-level QC from metrics_summary.csv. These are the first numbers a
+# wet-lab scientist checks, and they were parsed at ingestion but never reported.
+RUN_QC_FIELDS = (
+    ("fraction_transcripts_decoded_q20", "Transcripts decoded (Q20)", "fraction", 0.80, "higher is better"),
+    ("fraction_transcripts_assigned", "Transcripts assigned to cells", "fraction", 0.50, "higher is better"),
+    ("negative_control_probe_rate", "Negative control probe rate", "rate", None, "lower is better"),
+    ("negative_control_codeword_rate", "Negative control codeword rate", "rate", None, "lower is better"),
+    ("fraction_empty_cells", "Empty cells", "fraction", None, "lower is better"),
+    ("median_genes_per_cell", "Median genes per cell", "count", None, ""),
+    ("median_transcripts_per_cell", "Median transcripts per cell", "count", None, ""),
+    ("num_cells_detected", "Cells detected in run", "count", None, ""),
+    ("region_area", "Imaged region area (um^2)", "count", None, ""),
+)
+
+
+def _run_qc(dataset: SpatialDataset) -> Dict[str, Any]:
+    """Instrument run QC, with a pass/attention flag where a threshold is meaningful."""
+    metadata = dataset.metadata or {}
+    rows = []
+    for key, label, kind, floor, direction in RUN_QC_FIELDS:
+        if key not in metadata:
+            continue
+        try:
+            value = float(metadata[key])
+        except (TypeError, ValueError):
+            continue
+        row = {"key": key, "label": label, "value": value, "kind": kind, "direction": direction}
+        if floor is not None:
+            row["status"] = "ok" if value >= floor else "attention"
+            row["threshold"] = floor
+        rows.append(row)
+    return {"status": "reported" if rows else "unavailable", "metrics": rows,
+            "source": "metrics_summary.csv"}
+
+
+def _run_qc_markdown(payload: Dict[str, Any]) -> List[str]:
+    run_qc = payload.get("run_qc") or {}
+    rows = run_qc.get("metrics") or []
+    if not rows:
+        return []
+    lines = ["### Instrument run QC", "", "| Metric | Value | Note |", "| --- | ---: | --- |"]
+    for row in rows:
+        value = row["value"]
+        shown = ("%.4f" % value) if row["kind"] in {"fraction", "rate"} else ("%.0f" % value)
+        note = row.get("direction", "")
+        if row.get("status") == "attention":
+            note = "below %.2f - check run quality" % row["threshold"]
+        elif row.get("status") == "ok":
+            note = "above %.2f" % row["threshold"]
+        lines.append("| %s | %s | %s |" % (row["label"], shown, note))
+    lines.extend(["", "Source: `%s` (instrument output, not recomputed here)." % run_qc.get("source", ""), ""])
+    return lines
+
+
+def _timing_quality(wall_seconds: float, cpu_seconds: float) -> Dict[str, Any]:
+    """Flag stage timings measured while the machine was contended."""
+    ratio = (wall_seconds / cpu_seconds) if cpu_seconds > 0 else 0.0
+    contended = ratio > 2.0 and wall_seconds > 30.0
+    return {
+        "wall_seconds": round(wall_seconds, 2),
+        "cpu_seconds": round(cpu_seconds, 2),
+        "wall_to_cpu_ratio": round(ratio, 2),
+        "status": "contended" if contended else "clean",
+        "note": (
+            "Wall time is %.1fx CPU time, so this machine was running other work. "
+            "Stage seconds are inflated and should not be compared against other runs."
+            % ratio
+        )
+        if contended
+        else "Wall and CPU time agree; stage timings are comparable across runs.",
+    }
+
+
+# A cluster far below the others is not a peer of them: marker statistics on a
+# few dozen cells against two hundred thousand are threadbare, and such clusters
+# are frequently doublets or noise rather than a rare population. Reporting them
+# in the same table, same format, as a fifty-thousand-cell cluster overstates them.
+LOW_CONFIDENCE_CLUSTER_FRACTION = 0.005
+LOW_CONFIDENCE_CLUSTER_CELLS = 100
+
+
+def _cluster_confidence(cluster_counts: Dict[str, Any]) -> Dict[str, Any]:
+    """Separate well-populated clusters from ones too small to support markers."""
+    counts = {str(key): int(value) for key, value in (cluster_counts or {}).items()}
+    total = sum(counts.values())
+    if not counts or total <= 0:
+        return {"status": "unavailable", "low_confidence_clusters": [], "well_populated_clusters": []}
+    low, well = [], []
+    for cluster, count in counts.items():
+        if count < LOW_CONFIDENCE_CLUSTER_CELLS or (count / total) < LOW_CONFIDENCE_CLUSTER_FRACTION:
+            low.append(cluster)
+        else:
+            well.append(cluster)
+    well_cells = sum(counts[cluster] for cluster in well)
+    return {
+        "status": "computed",
+        "total_cells": total,
+        "low_confidence_clusters": sorted(low, key=_sort_cluster_key),
+        "well_populated_clusters": sorted(well, key=_sort_cluster_key),
+        "fraction_cells_in_well_populated": round(well_cells / total, 4),
+        "min_cells_threshold": LOW_CONFIDENCE_CLUSTER_CELLS,
+        "min_fraction_threshold": LOW_CONFIDENCE_CLUSTER_FRACTION,
+    }
+
+
+def _silhouette_reading(silhouette: Any, modularity: Any) -> str:
+    """Plain reading of the separation diagnostics for this run."""
+    try:
+        value = float(silhouette)
+    except (TypeError, ValueError):
+        return ""
+    if value < 0.02:
+        strength = (
+            "Silhouette is at or below zero, so clusters overlap almost completely in PCA space. "
+            "The grouping is driven by graph structure rather than clear separation; treat cluster "
+            "boundaries as soft and rely on marker evidence rather than on the partition itself."
+        )
+    elif value < 0.10:
+        strength = (
+            "Silhouette is low, which is routine for single-cell and spatial data because populations "
+            "grade into one another."
+        )
+    else:
+        strength = "Silhouette indicates clusters are reasonably separated for this data type."
+    try:
+        mod = float(modularity)
+        strength += " Weighted graph modularity is %.2f%s." % (
+            mod,
+            ", which supports well-separated groups in the expression graph" if mod >= 0.7 else "",
+        )
+    except (TypeError, ValueError):
+        pass
+    return strength
+
+def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str, Any]:
+    """Label-free analysis: QC, clusters, per-cluster markers, cluster neighbourhoods.
+
+    Every result here is a statement about data-derived groupings, never about
+    named cell types, so it stands without expert annotation.
+    """
+    registry = build_mvp_registry()
+    payload: Dict[str, Any] = {"status": "computed", "group_key": "cluster", "tools": []}
+    # Stage timings: a full-section run takes minutes, and without per-stage
+    # numbers there is no way to tell which stage to optimise.
+    timings: Dict[str, float] = {}
+    started = time.time()
+    cpu_started = time.process_time()
+    stage_start = time.time()
+    try:
+        clustering = registry.get("qc_and_cluster").run(
+            dataset, {"resolution": 0.55, "random_state": 0, "strict_engine": True}
+        )
+    except Exception as exc:
+        return {"status": "not_run", "reason": "Clustering failed: %s" % exc}
+    timings["qc_and_cluster"] = round(time.time() - stage_start, 2)
+    payload["tools"].append("qc_and_cluster")
+    payload["cluster_counts"] = clustering.metrics.get("cluster_counts", {})
+    payload["cluster_count"] = len(payload["cluster_counts"])
+    payload["expression_qc"] = clustering.metrics.get("expression_qc", {})
+    payload["clustering_method"] = clustering.metrics.get("method")
+    payload["cluster_confidence"] = _cluster_confidence(payload["cluster_counts"])
+    payload["clustering_diagnostics"] = {
+        "silhouette": clustering.metrics.get("silhouette"),
+        "modularity": clustering.metrics.get("modularity"),
+        "analyzed_cell_count": clustering.metrics.get("analyzed_cell_count"),
+        "excluded_zero_feature_cell_count": clustering.metrics.get("excluded_zero_feature_cell_count", 0),
+    }
+    _write_json(output_dir / "descriptive_qc_and_cluster.json", clustering)
+
+    for tool_name, params, key in (
+        (
+            "marker_detection",
+            {"group_key": "cluster", "n_top": 25, "strict_engine": True},
+            "markers_by_cluster",
+        ),
+        (
+            "spatial_variable_genes",
+            {
+                "n_top": 15,
+                "n_neighs": 6,
+                "n_perms": 100,
+                "random_state": 0,
+                "strict_engine": True,
+            },
+            "spatial_genes",
+        ),
+        (
+            "cell_neighborhood_enrichment",
+            {
+                "group_key": "cluster",
+                "n_neighs": 6,
+                "n_perms": 100,
+                "random_state": 0,
+                "strict_engine": True,
+            },
+            "cluster_neighborhood",
+        ),
+    ):
+        stage_start = time.time()
+        try:
+            result = registry.get(tool_name).run(dataset, dict(params))
+        except Exception as exc:
+            timings[tool_name] = round(time.time() - stage_start, 2)
+            payload[key] = {"status": "not_run", "reason": str(exc)}
+            continue
+        timings[tool_name] = round(time.time() - stage_start, 2)
+        payload["tools"].append(tool_name)
+        _write_json(output_dir / ("descriptive_%s.json" % tool_name), result)
+        if tool_name == "marker_detection":
+            payload[key] = {
+                str(group): [str(row.get("gene")) for row in rows[:8] if isinstance(row, dict)]
+                for group, rows in (result.metrics.get("markers_by_group") or {}).items()
+            }
+        elif tool_name == "spatial_variable_genes":
+            payload[key] = {
+                "engine": result.metrics.get("engine"),
+                "method": result.metrics.get("method"),
+                "n_perms": result.metrics.get("n_perms"),
+                "multiple_testing": result.metrics.get("multiple_testing"),
+                "significant_gene_count_top_n": result.metrics.get("significant_gene_count_top_n"),
+                "significant_gene_count_all": result.metrics.get("significant_gene_count_all"),
+                "screening": result.metrics.get("screening"),
+                "top_genes": result.metrics.get("top_genes", [])[:15],
+            }
+        else:
+            payload[key] = {
+                "top_pairs": result.metrics.get("top_pairs", [])[:10],
+                "engine": result.metrics.get("engine"),
+            }
+    # Empirically, cluster structure on a Xenium brain section is recovered at
+    # >=6000 sampled cells (all 10 full-section clusters, ARI 0.90); 3000 cells
+    # recovered only 8. Flag runs below that so a thin sample is not mistaken for
+    # a complete picture.
+    analyzed = int((payload.get("clustering_diagnostics") or {}).get("analyzed_cell_count") or len(dataset.records))
+    # Small tolerance: QC legitimately drops a few zero-feature cells, and
+    # 5999 analyzed of 6000 requested is not a meaningfully thinner sample.
+    if analyzed < MIN_CELLS_FOR_STABLE_CLUSTERS * 0.95:
+        payload["sampling_warning"] = (
+            "Only %d cells were clustered. Cluster structure is typically incomplete below %d cells; "
+            "rare populations may be missing or merged. Increase --max-cells for a fuller picture."
+            % (analyzed, MIN_CELLS_FOR_STABLE_CLUSTERS)
+        )
+    payload["interpretation"] = (
+        "Clusters are derived from measured expression, not from cell-type labels. Marker genes "
+        "describe what distinguishes each cluster; naming clusters as cell types requires expert review."
+    )
+    stage_start = time.time()
+    payload["figures"] = _write_descriptive_figures(dataset, payload, output_dir)
+    timings["figures"] = round(time.time() - stage_start, 2)
+    wall_total = time.time() - started
+    cpu_total = time.process_time() - cpu_started
+    timings["total"] = round(wall_total, 2)
+    payload["stage_seconds"] = timings
+    # Wall clock alone misleads on a busy machine: the Squidpy permutation stages
+    # are the first to be starved, and their wall time can inflate more than
+    # tenfold while CPU time barely moves. Reporting both makes a contended run
+    # identifiable instead of being mistaken for a slow dataset.
+    payload["timing_quality"] = _timing_quality(wall_total, cpu_total)
+    return payload
+
+
+def _cluster_assignments(dataset: SpatialDataset) -> Dict[str, str]:
+    assignments = dataset.metadata.get(CLUSTER_ASSIGNMENT_KEY)
+    return dict(assignments) if isinstance(assignments, dict) else {}
+
+
+def _write_descriptive_figures(dataset: SpatialDataset, payload: Dict[str, Any], output_dir: Path) -> List[str]:
+    """Cluster spatial map and marker heatmap for the label-free lane."""
+    assignments = _cluster_assignments(dataset)
+    if not assignments:
+        return []
+    figures = []
+    spatial = _render_cluster_spatial_map(dataset, assignments, output_dir / "descriptive_cluster_map.png")
+    if spatial:
+        figures.append(spatial)
+    markers = payload.get("markers_by_cluster")
+    if isinstance(markers, dict) and markers:
+        heatmap = _render_cluster_marker_heatmap(
+            dataset, assignments, markers, output_dir / "descriptive_marker_heatmap.png"
+        )
+        if heatmap:
+            figures.append(heatmap)
+    return figures
+
+
+def _render_cluster_spatial_map(dataset: SpatialDataset, assignments: Dict[str, str], path: Path) -> str:
+    """Cells in tissue coordinates, coloured by data-derived cluster."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return ""
+    clusters = sorted({value for value in assignments.values() if value}, key=_sort_cluster_key)
+    if not clusters:
+        return ""
+    colors = {cluster: PALETTE[index % len(PALETTE)] for index, cluster in enumerate(clusters)}
+    counts = Counter(assignments.get(record.cell_id or str(index), "") for index, record in enumerate(dataset.records))
+    fig = plt.figure(figsize=(11.2, 6.0), dpi=180)
+    ax = fig.add_axes([0.07, 0.10, 0.60, 0.80])
+    legend_ax = fig.add_axes([0.70, 0.10, 0.28, 0.80])
+    legend_ax.axis("off")
+    ax.set_facecolor("#fbfbf7")
+    for cluster in clusters:
+        xs, ys = [], []
+        for index, record in enumerate(dataset.records):
+            if assignments.get(record.cell_id or str(index)) == cluster:
+                xs.append(record.x)
+                ys.append(record.y)
+        ax.scatter(xs, ys, s=4.0, c=colors[cluster], alpha=0.75, linewidths=0)
+    ax.set_title("Expression clusters in tissue space", fontsize=13, pad=8)
+    ax.set_xlabel("spatial1 (microns)")
+    ax.set_ylabel("spatial2 (microns)")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.0)
+        spine.set_color("#222222")
+    for index, cluster in enumerate(clusters):
+        y = 0.96 - index * (0.90 / max(len(clusters), 1))
+        legend_ax.scatter([0.04], [y], s=40, c=colors[cluster], transform=legend_ax.transAxes)
+        legend_ax.text(
+            0.13, y, "cluster %s  (n=%d)" % (cluster, counts.get(cluster, 0)),
+            fontsize=9, va="center", transform=legend_ax.transAxes,
+        )
+    fig.text(
+        0.07, 0.02,
+        "Clusters are data-derived expression groups, not cell-type calls.",
+        fontsize=8.5, color="#5b6770",
+    )
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(path)
+
+
+def _render_cluster_marker_heatmap(
+    dataset: SpatialDataset,
+    assignments: Dict[str, str],
+    markers_by_cluster: Dict[str, Any],
+    path: Path,
+    per_cluster: int = 3,
+) -> str:
+    """Mean expression of each cluster's top markers across all clusters."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:
+        return ""
+    clusters = sorted({value for value in assignments.values() if value}, key=_sort_cluster_key)
+    genes: List[str] = []
+    for cluster in clusters:
+        for gene in (markers_by_cluster.get(cluster) or [])[:per_cluster]:
+            if gene and gene not in genes:
+                genes.append(str(gene))
+    if not clusters or not genes:
+        return ""
+    totals = {cluster: {gene: 0.0 for gene in genes} for cluster in clusters}
+    counts = {cluster: 0 for cluster in clusters}
+    for index, record in enumerate(dataset.records):
+        cluster = assignments.get(record.cell_id or str(index), "")
+        if cluster not in totals:
+            continue
+        counts[cluster] += 1
+        for gene in genes:
+            try:
+                totals[cluster][gene] += float(record.genes.get(gene, 0.0))
+            except (TypeError, ValueError):
+                continue
+    matrix = np.array(
+        [[totals[cluster][gene] / max(counts[cluster], 1) for gene in genes] for cluster in clusters],
+        dtype=float,
+    )
+    # Scale each gene to its own maximum so low-abundance markers stay visible.
+    maxima = matrix.max(axis=0)
+    maxima[maxima <= 0] = 1.0
+    scaled = matrix / maxima
+
+    fig_width = max(8.0, 0.34 * len(genes) + 3.0)
+    fig_height = max(3.2, 0.42 * len(clusters) + 2.0)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=180)
+    image = ax.imshow(scaled, aspect="auto", cmap="viridis", vmin=0.0, vmax=1.0)
+    ax.set_xticks(range(len(genes)))
+    ax.set_xticklabels(genes, rotation=90, fontsize=7)
+    ax.set_yticks(range(len(clusters)))
+    ax.set_yticklabels(["cluster %s" % cluster for cluster in clusters], fontsize=9)
+    ax.set_title("Top marker genes per cluster (mean expression, scaled per gene)", fontsize=11, pad=10)
+    fig.colorbar(image, ax=ax, fraction=0.02, pad=0.02, label="relative mean expression")
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(path)
+
+
+def _sort_cluster_key(value: str) -> Any:
+    try:
+        return (0, int(value))
+    except (TypeError, ValueError):
+        return (1, str(value))
+
+
 def _run_validated_tools(dataset: SpatialDataset, plan: List[Any]) -> List[ToolResult]:
     registry = build_mvp_registry()
     results = []
@@ -399,6 +893,25 @@ def _run_validated_tools(dataset: SpatialDataset, plan: List[Any]) -> List[ToolR
         # default, so no arbitrary pairwise group selection is imposed here.
         results.append(registry.get(spec.tool_name).run(dataset, dict(spec.params)))
     return results
+
+
+def _analysis_scope(dataset: SpatialDataset) -> Dict[str, Any]:
+    sampling = dict(dataset.metadata.get("sampling") or {})
+    total = int(sampling.get("total_records") or dataset.metadata.get("n_obs_total") or len(dataset.records))
+    loaded = len(dataset.records)
+    complete = str(dataset.metadata.get("analysis_scope") or "").lower() == "full_section"
+    if total > 0 and loaded < total:
+        complete = False
+    return {
+        "scope": "full_section" if complete else "sampled",
+        "complete_section": complete,
+        "complete_section_requirement_met": complete,
+        "loaded_records": loaded,
+        "total_records": total,
+        "fraction_loaded": round(loaded / float(max(total, 1)), 6),
+        "sampling_method": sampling.get("method", "unknown"),
+        "validated_claims_allowed": False,
+    }
 
 
 def _write_figures(dataset: SpatialDataset, output_dir: Path) -> List[str]:
@@ -731,22 +1244,112 @@ def _render_review_composition_svg(dataset: SpatialDataset, path: Path) -> str:
     return str(path)
 
 
-def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[ToolResult]) -> None:
+
+# Sections that only make sense once the validated tier is in play. On a
+# descriptive run they are either empty, internal, or about claims that were
+# never attempted, so they bury the results the reader asked for.
+VALIDATION_ONLY_SECTIONS = (
+    "Typed Tool Plan",
+    "Generated Review Templates",
+    "Current Label Summary",
+    "Current Region Summary",
+    "Tool Results",
+    "Spatial Relationships",
+    "Region-Stratified Neighborhood Testing",
+    "Distance-Dependent Co-Occurrence",
+    "Claim Ledger",
+    "Claim Reliability",
+    "Spatial Robustness Sweep",
+    "Claim Policy",
+    "Label and Region Readiness",
+    "Required Next Inputs",
+    "What Is Still Needed To Go Further",
+)
+
+
+def _filter_descriptive_sections(lines: List[str], payload: Dict[str, Any]) -> List[str]:
+    """Drop validated-tier sections from a descriptive report.
+
+    Kept verbatim for validated runs, where every one of them carries content.
+    """
+    if payload.get("status") == "validated_ready":
+        return lines
+    if (payload.get("descriptive_analysis") or {}).get("status") != "computed":
+        return lines
+    kept: List[str] = []
+    skipping = False
+    for line in lines:
+        if line.startswith("## "):
+            title = line[3:].strip()
+            skipping = any(title.startswith(name) for name in VALIDATION_ONLY_SECTIONS)
+        if not skipping:
+            kept.append(line)
+    return kept
+
+
+def _expert_review_note(payload: Dict[str, Any]) -> List[str]:
+    """One compact block replacing the dropped validation scaffolding."""
+    required = payload.get("required_next_inputs") or []
     lines = [
-        "# Validated Xenium Pilot Report",
+        "## What Expert Review Would Add",
+        "",
+        "The results above describe data-derived expression clusters and stand on their own. "
+        "Naming those clusters as cell types, summarising user-defined tissue regions, and making "
+        "scored biological claims all require reviewed inputs:",
+        "",
+    ]
+    lines.extend("- %s" % item for item in (required or ["Expert cell labels and user-defined regions."]))
+    lines.extend([
+        "",
+        "Run `scripts/plan_expert_review.py <dataset> --max-cells N` to generate review files aligned "
+        "to the run you intend, and see `docs/getting_cell_labels.md` for how many cells to label.",
+        "",
+    ])
+    return lines
+
+def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[ToolResult]) -> None:
+    scope = payload.get("analysis_scope") or {
+        "scope": "unknown",
+        "loaded_records": payload.get("records_loaded", 0),
+        "total_records": payload.get("records_loaded", 0),
+        "fraction_loaded": 1.0,
+    }
+    descriptive_ok = (payload.get("descriptive_analysis") or {}).get("status") == "computed"
+    validated = payload["status"] == "validated_ready"
+    if validated:
+        headline, outcome = "Validated Xenium Pilot Report", "validated analysis complete"
+    elif descriptive_ok:
+        # The descriptive deliverable succeeded; only the extra validated tier is
+        # gated. Leading with the gate code reads as a failed run when it is not.
+        headline, outcome = "Xenium Analysis Report", "descriptive analysis complete"
+    else:
+        headline, outcome = "Xenium Analysis Report", "no analysis produced"
+    lines = [
+        "# %s" % headline,
         "",
         "Created: `%s`" % payload["created_at"],
         "",
         "## Status",
         "",
-        "- Status: `%s`" % payload["status"],
+        "- Outcome: **%s**" % outcome,
+        "- Validation gate: `%s`" % payload["status"],
         "- Dataset: `%s`" % payload["dataset_path"],
         "- Loaded cells: `%d`" % payload["records_loaded"],
         "- Loaded features: `%d`" % payload["features_loaded"],
+        "- Analysis scope: `%s` (%s/%s cells; %.2f%%)"
+        % (
+            scope["scope"],
+            scope["loaded_records"],
+            scope["total_records"],
+            100.0 * float(scope["fraction_loaded"]),
+        ),
+        "- QC expression source: `%s`"
+        % payload.get("expression_layers", {}).get("source", "source layer unavailable"),
         "",
     ]
+    lines.extend(_descriptive_markdown(payload))
     if payload["blocking_reasons"]:
-        lines.extend(["## Blocking Reasons", ""])
+        lines.extend(["## What Is Still Needed To Go Further", ""])
         lines.extend("- %s" % item for item in payload["blocking_reasons"])
         lines.extend(["", "## Required Next Inputs", ""])
         lines.extend("- %s" % item for item in payload["required_next_inputs"])
@@ -964,6 +1567,11 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
             "",
         ]
     )
+    lines = _filter_descriptive_sections(lines, payload)
+    if payload.get("status") != "validated_ready" and (payload.get("descriptive_analysis") or {}).get("status") == "computed":
+        # Replace the dropped scaffolding with one honest pointer.
+        anchor = next((i for i, line in enumerate(lines) if line.startswith("## Limitations")), len(lines))
+        lines = lines[:anchor] + _expert_review_note(payload) + lines[anchor:]
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -1157,6 +1765,22 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         "<tr><td>%s</td><td>%d</td></tr>" % (html.escape(region), count)
         for region, count in sorted(payload["region_counts"].items(), key=lambda item: item[1], reverse=True)
     )
+    descriptive_html = _descriptive_html(payload)
+    scope = payload.get("analysis_scope") or {}
+    scope_html = (
+        "<section><h2>Analysis Scope and Expression Layers</h2>"
+        "<p>Scope: <code>%s</code> (%s/%s cells; %.2f%%). Final validated claims allowed: <code>%s</code>.</p>"
+        "<p>Analysis layer: <code>%s</code><br>Source layer: <code>%s</code></p></section>"
+        % (
+            html.escape(str(scope.get("scope") or "unknown")),
+            html.escape(str(scope.get("loaded_records") or 0)),
+            html.escape(str(scope.get("total_records") or 0)),
+            100.0 * float(scope.get("fraction_loaded") or 0.0),
+            html.escape(str(scope.get("validated_claims_allowed", False)).lower()),
+            html.escape(str(payload.get("expression_layers", {}).get("analysis") or "unknown")),
+            html.escape(str(payload.get("expression_layers", {}).get("source") or "unknown")),
+        )
+    )
     content = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Validated Xenium Pilot</title>
 <style>body{font-family:Arial,sans-serif;margin:32px;line-height:1.45;color:#1f2933}code{background:#f6f8fa;padding:1px 4px}section{margin:24px 0}li{margin:4px 0}.gallery{display:grid;grid-template-columns:minmax(280px,1fr);gap:18px;max-width:1100px}.figure{border:1px solid #d6dde5;padding:12px;background:#fff}.figure img{max-width:100%%;height:auto}table{border-collapse:collapse;min-width:380px}td,th{border:1px solid #d6dde5;padding:6px 8px;text-align:left}</style>
@@ -1164,6 +1788,8 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
 <h1>Validated Xenium Pilot</h1>
 <p>Status: <code>%s</code></p>
 <p>Dataset: <code>%s</code>. Loaded %d cells and %d features.</p>
+%s
+%s
 <section><h2>Blocking Reasons</h2><ul>%s</ul></section>
 <section><h2>Required Next Inputs</h2><ul>%s</ul></section>
 <section><h2>Review Visualizations</h2><p>Generated for QA and expert review from current labels/clusters. These are not validated biological result figures until the gate passes.</p><div class="gallery">%s</div></section>
@@ -1186,6 +1812,8 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         html.escape(payload["dataset_path"]),
         payload["records_loaded"],
         payload["features_loaded"],
+        scope_html,
+        descriptive_html,
         blockers or "<li>None</li>",
         required or "<li>None</li>",
         gallery,
@@ -1265,6 +1893,61 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
         for item in payload.get("review_figures", [])
         if Path(item).suffix.lower() in {".png", ".jpg", ".jpeg"}
     ]
+    descriptive_sections = []
+    descriptive = payload.get("descriptive_analysis") or {}
+    if descriptive.get("status") == "computed":
+        qc = descriptive.get("expression_qc") or {}
+        diagnostics = descriptive.get("clustering_diagnostics") or {}
+        diagnostic_rows = [
+            ("Cells loaded", qc.get("n_cells", "-")),
+            ("Features analyzed", qc.get("n_features", "-")),
+            ("Median counts / cell", qc.get("median_total_counts", "-")),
+            ("Median features / cell", qc.get("median_features_per_cell", "-")),
+            ("Cells analyzed for clustering", diagnostics.get("analyzed_cell_count", "-")),
+            ("Zero-feature cells excluded", diagnostics.get("excluded_zero_feature_cell_count", 0)),
+            ("PCA silhouette", diagnostics.get("silhouette", "not computed")),
+            ("Weighted graph modularity", diagnostics.get("modularity", "not computed")),
+        ]
+        cluster_rows = sorted(
+            (descriptive.get("cluster_counts") or {}).items(), key=lambda item: -int(item[1])
+        )
+        marker_rows = [
+            (str(cluster), ", ".join(str(gene) for gene in genes[:8]))
+            for cluster, genes in sorted((descriptive.get("markers_by_cluster") or {}).items())
+        ]
+        spatial_gene_rows = [
+            (str(item.get("gene")), item.get("morans_i"), item.get("pval_adj", "not available"))
+            for item in (descriptive.get("spatial_genes") or {}).get("top_genes", [])[:12]
+        ]
+        neighborhood_rows = [
+            (str(item.get("pair")), item.get("zscore"))
+            for item in (descriptive.get("cluster_neighborhood") or {}).get("top_pairs", [])[:10]
+        ]
+        descriptive_sections = [
+            PdfSection(
+                title="Descriptive Analysis (no expert labels required)",
+                paragraphs=[
+                    "Cells are grouped by measured-expression clusters. Cluster identities are not cell-type claims.",
+                    str(descriptive.get("interpretation") or ""),
+                ],
+                tables=[
+                    PdfTable(headers=["QC / diagnostic", "Value"], rows=diagnostic_rows, column_widths=[3, 2]),
+                    PdfTable(headers=["Cluster", "Cells"], rows=cluster_rows, column_widths=[2, 1]),
+                ],
+            ),
+            PdfSection(
+                title="Descriptive Cluster Evidence",
+                tables=[
+                    PdfTable(headers=["Cluster", "Top marker genes"], rows=marker_rows, column_widths=[1, 4]),
+                    PdfTable(
+                        headers=["Gene", "Moran's I", "Adjusted p-value"],
+                        rows=spatial_gene_rows,
+                        column_widths=[2, 1, 1.4],
+                    ),
+                    PdfTable(headers=["Cluster pair", "z-score"], rows=neighborhood_rows, column_widths=[3, 1]),
+                ],
+            ),
+        ]
     sections = [
         PdfSection(
             title="Executive Summary",
@@ -1272,6 +1955,7 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
                 "This report records the validation-gated Xenium workflow. Biological interpretation is released only when expert labels and user-provided regions pass coverage and diversity gates."
             ],
         ),
+        *descriptive_sections,
         PdfSection(title="Blocking Reasons", bullets=payload.get("blocking_reasons", []) or ["None"]),
         PdfSection(title="Required Next Inputs", bullets=payload.get("required_next_inputs", []) or ["None"]),
         PdfSection(
@@ -1468,6 +2152,15 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
             ("Created", payload.get("created_at", "")),
             ("Cells loaded", payload.get("records_loaded", 0)),
             ("Features loaded", payload.get("features_loaded", 0)),
+            ("Analysis scope", payload.get("analysis_scope", {}).get("scope", "unknown")),
+            (
+                "Cells represented",
+                "%s/%s"
+                % (
+                    payload.get("analysis_scope", {}).get("loaded_records", 0),
+                    payload.get("analysis_scope", {}).get("total_records", 0),
+                ),
+            ),
             ("Label status", payload.get("label_report", {}).get("status", "unknown")),
             ("Region status", payload.get("region_report", {}).get("status", "unknown")),
         ],
@@ -1716,8 +2409,15 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
         "Neighborhood enrichment reflects spatial adjacency only; it does not establish interaction, signaling, causation, or mechanism.",
         "No deconvolution, trajectory, motif activity, ligand-receptor, pathway, CNV, or causal inference was run.",
     ]
+    if payload.get("analysis_scope", {}).get("scope") != "full_section":
+        items.append(
+            "This run is a deterministic cell sample, not a complete-section analysis; final biological claims require a full-section rerun."
+        )
     if payload.get("status") != "validated_ready":
-        items.append("Analysis tools were not run because validation inputs are incomplete; generated templates are preparation artifacts.")
+        items.append(
+            "Validation-gated biological tools were not run because required inputs are incomplete; "
+            "the reported QC, expression clusters, cluster markers, spatial genes, and cluster neighborhoods are descriptive analyses only."
+        )
     if payload.get("region_stratified_neighborhoods", {}).get("status") == "computed":
         items.append("Region-stratified tests are within-section analyses; biological generalization requires replicate sections or donors.")
     if payload.get("distance_cooccurrence", {}).get("status") == "computed":
@@ -1725,15 +2425,315 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
     return items
 
 
+# Cap on what gets inlined, so one very large SVG cannot make the report itself
+# unopenable. Anything larger stays a relative link.
+MAX_INLINE_FIGURE_BYTES = 6 * 1024 * 1024
+
+
+def _figure_data_uri(path: str) -> str:
+    """Base64 data URI for a figure, or "" when it cannot or should not be inlined.
+
+    The HTML report is the artifact a reviewer is sent. Referencing figures by
+    relative filename means every image breaks the moment the file is emailed
+    apart from its directory, which is exactly how it would reach a domain expert.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return ""
+    if size <= 0 or size > MAX_INLINE_FIGURE_BYTES:
+        return ""
+    mime = "image/svg+xml" if path.lower().endswith(".svg") else "image/png"
+    try:
+        with open(path, "rb") as handle:
+            encoded = base64.b64encode(handle.read()).decode("ascii")
+    except OSError:
+        return ""
+    return "data:%s;base64,%s" % (mime, encoded)
+
+
 def _figure_html(path: str) -> str:
     name = Path(path).name
     escaped_name = html.escape(name)
     if name.lower().endswith((".png", ".svg")):
+        source = _figure_data_uri(path) or escaped_name
         return '<div class="figure"><img src="%s" alt="%s"><p><code>%s</code></p></div>' % (
-            escaped_name,
+            source,
             escaped_name,
             escaped_name,
         )
     if name.lower().endswith(".html"):
         return '<div class="figure"><p><a href="%s">%s</a></p></div>' % (escaped_name, escaped_name)
     return '<div class="figure"><p><code>%s</code></p></div>' % escaped_name
+
+
+
+def _cluster_marker_hints(markers_by_cluster: Dict[str, Any]) -> Dict[str, str]:
+    """Which broad lineage a cluster's markers point at, from canonical markers.
+
+    This is marker evidence, not a cell-type call. It names what the genes are
+    known for and leaves the identification to a reviewer, which is why the
+    report labels the column "marker evidence suggests" rather than "cell type".
+    """
+    from spatialmind.tools.implementations import LINEAGE_MARKERS
+
+    hints: Dict[str, str] = {}
+    for cluster, genes in (markers_by_cluster or {}).items():
+        upper = {str(gene).upper() for gene in genes}
+        scored = []
+        for lineage, markers in LINEAGE_MARKERS.items():
+            overlap = len(upper & {marker.upper() for marker in markers})
+            if overlap:
+                scored.append((overlap, lineage))
+        if not scored:
+            continue
+        scored.sort(reverse=True)
+        best, lineage = scored[0]
+        runner_up = scored[1][0] if len(scored) > 1 else 0
+        # Only hint when one lineage clearly leads; ties stay silent.
+        if best >= 2 and best > runner_up:
+            hints[str(cluster)] = "%s markers (%d of top genes)" % (lineage, best)
+    return hints
+
+def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
+    """Label-free results, rendered before any refusal text."""
+    descriptive = payload.get("descriptive_analysis") or {}
+    if descriptive.get("status") != "computed":
+        return []
+    lines = [
+        "## Descriptive Analysis (no expert labels required)",
+        "",
+        "These results group cells by data-derived expression clusters, so they stand "
+        "without expert annotation. Cluster identities are not cell-type claims.",
+        "",
+    ]
+    lines.extend(_run_qc_markdown(payload))
+    qc = descriptive.get("expression_qc") or {}
+    if qc:
+        lines.extend([
+            "| QC metric | Value |",
+            "| --- | ---: |",
+            "| Cells | %s |" % qc.get("n_cells", "-"),
+            "| Features | %s |" % qc.get("n_features", "-"),
+            "| Median counts / cell | %s |" % qc.get("median_total_counts", "-"),
+            "| Median features / cell | %s |" % qc.get("median_features_per_cell", "-"),
+            "",
+        ])
+    counts = descriptive.get("cluster_counts") or {}
+    confidence = descriptive.get("cluster_confidence") or {}
+    low_confidence = set(confidence.get("low_confidence_clusters") or [])
+    if counts:
+        total_cells = sum(int(value) for value in counts.values()) or 1
+        lines.extend(["### Expression clusters (%s)" % (descriptive.get("clustering_method") or "leiden"), "",
+                      "| Cluster | Cells | Share | Confidence |", "| --- | ---: | ---: | --- |"])
+        for cluster, count in sorted(counts.items(), key=lambda item: -int(item[1])):
+            flag = "low - too few cells for reliable markers" if str(cluster) in low_confidence else "ok"
+            lines.append("| `%s` | %s | %.2f%% | %s |" % (cluster, count, 100.0 * int(count) / total_cells, flag))
+        lines.append("")
+        if low_confidence:
+            lines.extend([
+                "%d of %d clusters hold fewer than %d cells or under %.1f%% of the section and are marked "
+                "low confidence. Differential statistics on so few cells are unreliable, and such clusters "
+                "are often doublets or noise rather than rare populations. The remaining %d clusters carry "
+                "%.1f%% of all cells."
+                % (
+                    len(low_confidence), len(counts),
+                    confidence.get("min_cells_threshold", 100),
+                    100.0 * float(confidence.get("min_fraction_threshold", 0.005)),
+                    len(confidence.get("well_populated_clusters") or []),
+                    100.0 * float(confidence.get("fraction_cells_in_well_populated") or 0.0),
+                ),
+                "",
+            ])
+    diagnostics = descriptive.get("clustering_diagnostics") or {}
+    if diagnostics:
+        lines.extend(
+            [
+                "### Clustering diagnostics",
+                "",
+                "| Diagnostic | Value |",
+                "| --- | ---: |",
+                "| Cells analyzed | %s |" % diagnostics.get("analyzed_cell_count", "-"),
+                "| Zero-feature cells excluded | %s |"
+                % diagnostics.get("excluded_zero_feature_cell_count", 0),
+                "| PCA silhouette | %s |" % diagnostics.get("silhouette", "not computed"),
+                "| Weighted graph modularity | %s |" % diagnostics.get("modularity", "not computed"),
+                "",
+                _silhouette_reading(diagnostics.get("silhouette"), diagnostics.get("modularity")),
+                "",
+            ]
+        )
+    markers = descriptive.get("markers_by_cluster")
+    if isinstance(markers, dict) and markers:
+        hints = _cluster_marker_hints(markers)
+        lines.extend(["### Top markers per cluster (one-vs-rest)", "",
+                      "| Cluster | Marker genes | Marker evidence suggests |", "| --- | --- | --- |"])
+        for cluster, genes in sorted(markers.items()):
+            hint = hints.get(str(cluster), "no clear lineage match")
+            if str(cluster) in low_confidence:
+                hint = "%s (low-confidence cluster)" % hint
+            lines.append("| `%s` | %s | %s |" % (
+                cluster,
+                ", ".join("`%s`" % gene for gene in genes[:6]),
+                hint,
+            ))
+        lines.extend([
+            "",
+            "The final column reports which canonical marker family these genes belong to. It is marker "
+            "evidence, not a cell-type assignment: confirming an identity is an expert judgement.",
+            "",
+        ])
+    spatial_genes = descriptive.get("spatial_genes") or {}
+    if spatial_genes.get("top_genes"):
+        lines.extend(
+            [
+                "### Spatially autocorrelated genes",
+                "",
+                "Method: `%s`; permutations: `%s`; multiple testing: `%s`"
+                % (
+                    spatial_genes.get("method"),
+                    spatial_genes.get("n_perms"),
+                    spatial_genes.get("multiple_testing"),
+                ),
+                "",
+                _spatial_screen_note(spatial_genes),
+                "",
+                "Adjusted p-values commonly tie at the permutation floor here: these genes are all far "
+                "beyond the resolution %s permutations can distinguish, so they are ranked by Moran's I "
+                "effect size rather than by p-value." % spatial_genes.get("n_perms", "the"),
+                "",
+                "| Gene | Moran's I | Adjusted p-value |",
+                "| --- | ---: | ---: |",
+            ]
+        )
+        for item in spatial_genes["top_genes"][:12]:
+            lines.append(
+                "| `%s` | %s | %s |"
+                % (item.get("gene"), item.get("morans_i"), item.get("pval_adj", "not available"))
+            )
+        lines.append("")
+    neighborhood = descriptive.get("cluster_neighborhood")
+    if isinstance(neighborhood, dict) and neighborhood.get("top_pairs"):
+        lines.extend(["### Cluster spatial co-occurrence", "",
+                      "| Cluster pair | z-score |", "| --- | ---: |"])
+        for pair in neighborhood["top_pairs"][:8]:
+            lines.append("| `%s` | %s |" % (pair.get("pair"), pair.get("zscore")))
+        lines.append("")
+    warning = descriptive.get("sampling_warning")
+    if warning:
+        lines.extend(["> **Sampling note:** %s" % warning, ""])
+    quality = descriptive.get("timing_quality") or {}
+    stages = descriptive.get("stage_seconds") or {}
+    if stages:
+        lines.extend(["### Stage timings (seconds)", "", "| Stage | Seconds |", "| --- | ---: |"])
+        for stage, seconds in sorted(stages.items(), key=lambda item: -float(item[1])):
+            lines.append("| `%s` | %s |" % (stage, seconds))
+        lines.append("")
+        if quality.get("note"):
+            prefix = "**Timing warning:** " if quality.get("status") == "contended" else ""
+            lines.extend([prefix + quality["note"], ""])
+    figures = descriptive.get("figures") or []
+    if figures:
+        lines.extend(["### Descriptive figures", ""])
+        lines.extend("- `%s`" % Path(item).name for item in figures)
+        lines.append("")
+    lines.extend([descriptive.get("interpretation", ""), ""])
+    return lines
+
+
+def _descriptive_html(payload: Dict[str, Any]) -> str:
+    """Render label-free results before validation blockers in the HTML report."""
+    descriptive = payload.get("descriptive_analysis") or {}
+    if descriptive.get("status") != "computed":
+        return ""
+    qc = descriptive.get("expression_qc") or {}
+    diagnostics = descriptive.get("clustering_diagnostics") or {}
+    qc_rows = [
+        ("Cells loaded", qc.get("n_cells", "-")),
+        ("Features analyzed", qc.get("n_features", "-")),
+        ("Median counts / cell", qc.get("median_total_counts", "-")),
+        ("Median features / cell", qc.get("median_features_per_cell", "-")),
+        ("Cells analyzed for clustering", diagnostics.get("analyzed_cell_count", "-")),
+        ("Zero-feature cells excluded", diagnostics.get("excluded_zero_feature_cell_count", 0)),
+        ("PCA silhouette", diagnostics.get("silhouette", "not computed")),
+        ("Weighted graph modularity", diagnostics.get("modularity", "not computed")),
+    ]
+    qc_table = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>" % (html.escape(str(label)), html.escape(str(value)))
+        for label, value in qc_rows
+    )
+    cluster_rows = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>" % (html.escape(str(cluster)), html.escape(str(count)))
+        for cluster, count in sorted(
+            (descriptive.get("cluster_counts") or {}).items(), key=lambda item: -int(item[1])
+        )
+    )
+    marker_rows = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>"
+        % (html.escape(str(cluster)), html.escape(", ".join(str(gene) for gene in genes[:8])))
+        for cluster, genes in sorted((descriptive.get("markers_by_cluster") or {}).items())
+    )
+    spatial_gene_rows = "".join(
+        "<tr><td>%s</td><td>%s</td><td>%s</td></tr>"
+        % (
+            html.escape(str(item.get("gene"))),
+            html.escape(str(item.get("morans_i"))),
+            html.escape(str(item.get("pval_adj", "not available"))),
+        )
+        for item in (descriptive.get("spatial_genes") or {}).get("top_genes", [])[:12]
+    )
+    neighborhood_rows = "".join(
+        "<tr><td>%s</td><td>%s</td></tr>"
+        % (html.escape(str(item.get("pair"))), html.escape(str(item.get("zscore"))))
+        for item in (descriptive.get("cluster_neighborhood") or {}).get("top_pairs", [])[:10]
+    )
+    return (
+        "<section><h2>Descriptive Analysis (no expert labels required)</h2>"
+        "<p>Cells are grouped by measured-expression clusters. Cluster identities are not cell-type claims.</p>"
+        "<h3>QC and clustering diagnostics</h3><table><tr><th>Metric</th><th>Value</th></tr>%s</table>"
+        "<h3>Expression clusters (%s)</h3><table><tr><th>Cluster</th><th>Cells</th></tr>%s</table>"
+        "<h3>Top markers per cluster</h3><table><tr><th>Cluster</th><th>Marker genes</th></tr>%s</table>"
+        "<h3>Spatially autocorrelated genes</h3><table><tr><th>Gene</th><th>Moran's I</th><th>Adjusted p-value</th></tr>%s</table>"
+        "<h3>Cluster spatial co-occurrence</h3><table><tr><th>Pair</th><th>z-score</th></tr>%s</table>"
+        "%s"
+        "<p>%s</p></section>"
+        % (
+            qc_table,
+            html.escape(str(descriptive.get("clustering_method") or "leiden")),
+            cluster_rows,
+            marker_rows,
+            spatial_gene_rows,
+            neighborhood_rows,
+            _descriptive_figures_html(descriptive),
+            html.escape(str(descriptive.get("interpretation") or "")),
+        )
+    )
+
+
+def _descriptive_figures_html(descriptive: Dict[str, Any]) -> str:
+    figures = descriptive.get("figures") or []
+    if not figures:
+        return ""
+    return (
+        "<h3>Descriptive figures</h3><div class=\"gallery\">%s</div>"
+        % "".join(_figure_html(item) for item in figures)
+    )
+
+
+def _spatial_screen_note(spatial_genes: Dict[str, Any]) -> str:
+    """State the gene screen, so significance counts are not read as whole-panel."""
+    screen = spatial_genes.get("screening") or {}
+    if not screen:
+        return ""
+    return (
+        "Screened before permutation testing: %s. Of %s panel genes, %s were detected and %s were "
+        "tested; %s of the tested genes passed FDR <= 0.05. Adjusted p-values are corrected over the "
+        "tested set and are conditional on this screen."
+        % (
+            screen.get("rule", "unknown rule"),
+            screen.get("panel_genes", "?"),
+            screen.get("detected_genes", "?"),
+            screen.get("tested_genes", "?"),
+            spatial_genes.get("significant_gene_count_all", "?"),
+        )
+    )

@@ -4,7 +4,7 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: unit tests 81/81, legacy eval 15/15, MVP eval 10/10, import-linter clean.
+Last verified: 2026-08-20. Unit tests 128/128; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
 
 ## The one-sentence version
 
@@ -38,7 +38,8 @@ scope boundary, not an omission.
 
 Everything downstream speaks one contract. `load_xenium` produces a
 `SpatialDataset` of `SpotRecord`s carrying `cell_id`, `x`/`y` (microns),
-`cell_type`, `region`, and a `genes` dict, plus dataset-level metadata, QC metrics,
+`cell_type`, `region`, normalized analysis values in `genes`, immutable source values
+in `raw_genes`, plus dataset-level metadata, QC metrics,
 and caveats.
 
 Two details that matter:
@@ -51,6 +52,13 @@ Two details that matter:
   library-size and area proxies on a different scale, so
   `expression_feature_names()` excludes them from every expression matrix. Left in,
   they dominate PCA and rank as top "markers".
+- **Source and analysis layers are separate.** Count-aware QC and AnnData
+  `layers["counts"]` use preserved Xenium counts. Library-size normalization and
+  `log1p` change only biological values in `genes`; count summaries and morphology
+  features remain unchanged. H5AD ingestion prefers `layers["counts"]` when it
+  exists and records source-value semantics when it does not.
+- **Scope is explicit.** Every Xenium load records total cells, loaded cells,
+  sampling method, fraction loaded, and `sampled` versus `full_section` scope.
 
 ## Stage 3: Label and region intake
 
@@ -72,8 +80,26 @@ analysis. It requires:
 3. User regions applied, ≥70% coverage
 4. ≥2 biological cell classes
 5. ≥2 user-defined regions
+6. Complete-section scope for final validated inference
 
-Any failure ⇒ `blocked_missing_validation_inputs`. **No analysis tool runs.**
+Missing review evidence yields `blocked_missing_validation_inputs`; a passing review gate on a sample yields `blocked_sampled_inference`; a failed required backend yields `blocked_analysis_backend`. A label-free descriptive lane still runs strict Scanpy/Squidpy QC, expression clustering, per-cluster markers, Moran's I, and cluster neighborhoods. Those outputs describe data-derived groups only and never name them as cell types.
+
+## Stage 4b: Tool capability states
+
+Every registered tool carries a capability:
+
+| State | Meaning |
+| --- | --- |
+| `validated` | Real backend; may support biological claims once gated inputs exist |
+| `descriptive` | Real backend; describes data-derived groups only |
+| `experimental` | Real method, not yet trusted for claims |
+| `unavailable` | Registered scaffold that returns a placeholder and does no work |
+
+Scaffolds are detected automatically from the implementation, so the registry
+stays honest even if a caller forgets to set the field. `list_plannable()` and
+`to_anthropic_tools()` exclude them by default: of 30 registered tools, 16 are
+plannable and 14 are hidden, so a model cannot select a tool that does nothing.
+They remain in `list_all()` for provenance.
 
 ## Stage 5: Typed plan validation
 
@@ -83,16 +109,51 @@ dependencies; `validate_tool_plan()` checks it. Plan validation checks *structur
 *availability* is the gate's job alone. That separation is why a blocked run still
 reports a valid plan instead of duplicating the gate's blockers as fake plan errors.
 
-## Stage 6: The six MVP tools (validated runs only)
+## Stage 6: The seven MVP tools
 
 | Tool | Backend | What it does |
 | --- | --- | --- |
-| `qc_and_cluster` | Scanpy | Per-cell QC, then normalize → log1p → PCA → neighbours → Leiden on **expression**. `cluster_on="spatial"` opts into spatial-domain clustering. |
+| `qc_and_cluster` | Scanpy | Per-cell QC, then normalize → log1p → PCA → neighbours → Leiden on **expression**. Uses scanpy's exact sklearn kNN backend, falling back to the default when unsupported. `cluster_on="spatial"` opts into spatial-domain clustering. |
 | `annotation` | — | Summarises applied expert labels |
 | `marker_detection` | Scanpy | **One-vs-rest** markers for every cell type by default; explicit `group1`+`group2` gives a pairwise contrast |
+| `spatial_variable_genes` | Squidpy | Moran's I over a spatial kNN graph. Genes are **screened before permutation testing** (see below), so FDR is corrected over the tested subset, not the whole panel; Scanpy HVG is an explicit development fallback only |
 | `region_summary` | — | Cell-type composition and feature means per user region |
 | `cell_neighborhood_enrichment` | Squidpy | Permutation z-scores for cell-type adjacency |
 | `feature_overlay` | — | Single-feature spatial values, with panel-absence guarding |
+
+`qc_and_cluster`, cluster-group marker detection, `spatial_variable_genes`, and cluster-group neighborhood enrichment can run in the descriptive lane before expert labels exist. Annotation, reviewed-region summaries, and cell-type relationship claims remain validation-gated.
+
+### Gene screening before permutation testing
+
+Permutation testing dominates `spatial_variable_genes`: measured at 43s for
+`n_perms=100` across 491 genes, against 0.5s for the analytic Moran's I. Running
+`n_jobs=4` measured *slower* than `n_jobs=1`, so the lever is testing fewer genes
+rather than testing them faster. Two screens run first, and both are recorded:
+
+1. **Detection filter.** Genes detected in too few cells are dropped. They cannot
+   support a spatial claim and only enlarge the multiple-testing burden.
+2. **Analytic pre-rank.** Survivors are ranked by the near-free analytic Moran's I,
+   and only the strongest candidates are permuted.
+
+On a 24,406-cell section this took the stage from 60.6s to 17.1s and the whole
+descriptive lane from 114.8s to 72.0s, with the top genes and their order
+unchanged.
+
+**This changes what the p-values mean, so the report says so.** Every run states
+the screening rule, the panel/detected/tested gene counts, and that FDR is
+corrected over the tested set. Reporting "50 significant" without that context
+would read as 50 of 491 rather than 50 of 50 tested.
+
+The permutation budget stays at `n_perms` *per gene*. Raising it to spend the
+saving back is a measured mistake: 50 genes at 999 permutations is the same total
+work as 491 at 100, and it ran no faster. `screened_n_perms` raises it explicitly
+at proportional cost. Note also that the strongest genes tie at the p-value floor
+regardless of budget — they sit at p ≈ 0, and effect size is what separates them,
+which is already the ranking used.
+
+All statistical tools in the validated plan carry `strict_engine=True`. If Scanpy,
+Leiden, or Squidpy is absent or fails, the run records a backend blocker; it cannot
+silently publish coordinate bins, pseudo-p-values, variance ranks, or radius counts.
 
 ## Stage 7: Robustness and spatial relationships
 
@@ -120,6 +181,62 @@ reliability = min(S_statistical, A_annotation, P_panel, R_spatial_robustness)
 `R` = the measured robustness sweep. Weakest-link keeps a claim at 0.0 whenever any
 required evidence class is missing. The calibrated logistic combiner stays `not_fit`
 until expert-reviewed claim truth exists.
+
+## Stage 7b: Biological replication
+
+Cells within one section are not independent biological replicates. A
+healthy-versus-disease difference computed from one section per condition is
+pseudoreplication: the apparent sample size is the cell count, but the real
+sample size is one donor per group, so the difference cannot be attributed to the
+conditions however many cells were measured.
+
+`assess_condition_replication` reports the design — sections and donors per
+condition — and `build_brain_comparison_report` refuses condition-level output
+when it is not met, returning `blocked_insufficient_biological_replication`. It
+still emits a per-section descriptive summary; it never subtracts one condition
+from the other.
+
+This matters most *after* expert labels arrive. Labels alone would otherwise flip
+the comparison to `ready` and produce condition deltas from n=1 versus n=1, so the
+guard exists ahead of the review sprint rather than after it. Once replicates
+exist, condition-level statistics should be section-aware or pseudobulk.
+
+## Stage 8b: Running it — scope, sampling, and cost
+
+`scripts/analyze.py` is the entry point for someone who has just produced a Xenium
+run and wants a report:
+
+```bash
+python scripts/analyze.py <xenium_folder> --out outputs/analysis
+```
+
+It runs the descriptive lane and prints where the report, viewer, and JSON landed,
+plus what expert review would add. No labels required.
+
+**How many cells to analyze.** Clustering was compared against full-section labels
+on shared cells for a healthy-brain section:
+
+| Sample | Clusters found | ARI vs full section |
+| --- | ---: | ---: |
+| 3,000 | 8 | 0.79 |
+| 6,000 | 10 | 0.90 |
+| 20,000 | 10 | 0.94 |
+| full (24,406) | 10 | — |
+
+Cluster structure is recovered from roughly 6,000 cells; 3,000 merges or drops
+populations. Runs below that carry an explicit `sampling_warning` in the payload,
+the report, and the CLI. The default cap is 20,000.
+
+**Display is capped separately from analysis.** The viewer draws one DOM node per
+cell, so a full section would otherwise produce a file no browser opens usefully.
+`spatialmind/viz/display_sampling.py` subsamples on a spatial grid — deterministic,
+coverage-preserving — for the viewer, the SVG, and the interactive HTML only.
+Analysis still uses every loaded cell, and the cap is stated in the artifact.
+Measured on the 377,985-cell lymph node section: viewer 7.35 MB against roughly
+131 MB projected uncapped. Output is bounded by the cap rather than by input size.
+
+**Stage timings** are recorded for every descriptive run (`stage_seconds`) and
+rendered in the report, so slow stages are identifiable rather than guessed at.
 
 ## Stage 9: Explorer-lite viewer
 
@@ -166,6 +283,10 @@ produce the full review packet — that is the point: a blocked run should be
   only; writes one `pilot_validation.json`. ~0.67s and 17 KB per dataset, no
   matplotlib. Used by the multi-dataset scorecard.
 - **Full run** — every artifact above, including the morphology-backed viewer.
+- **Sampled review run** — bounded by `max_records`; useful for review preparation
+  and descriptive QA, but not eligible for final biological claims.
+- **Full-section validated run** — launched with `--full-section` after labels and
+  regions pass; analysis and review-template row limits are independent.
 
 ## Getting labels: the two routes
 

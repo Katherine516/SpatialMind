@@ -4,6 +4,7 @@ import os
 from typing import Dict, Iterable, List
 
 from ..schemas import SpatialDataset, ToolResult
+from .display_sampling import DEFAULT_DISPLAY_CAP, display_caption, downsample_for_display
 from .export import PdfSection, PdfTable, ReportPaths, normalize_report_format, write_pdf_report
 
 
@@ -34,8 +35,16 @@ PALETTE = [
 class VisualizationLayer:
     """Renders portable artifacts for spatial results."""
 
-    def render_distribution_svg(self, dataset: SpatialDataset, run_dir: str, focus_cell_types: List[str]) -> str:
+    def render_distribution_svg(
+        self,
+        dataset: SpatialDataset,
+        run_dir: str,
+        focus_cell_types: List[str],
+        max_display_points: int = DEFAULT_DISPLAY_CAP,
+    ) -> str:
         bounds = dataset.bounds()
+        # One <circle> per cell; cap the drawn set so full sections stay openable.
+        display_records, display_info = downsample_for_display(dataset.records, max_points=max_display_points)
         width = 980
         plot_x = 78
         plot_y = 58
@@ -57,8 +66,8 @@ class VisualizationLayer:
             return plot_y + plot_h - ((value - bounds["min_y"]) / span) * plot_h
 
         points = []
-        radius = 2.7 if len(dataset.records) > 500 else 4.0
-        for record in dataset.records:
+        radius = 2.7 if len(display_records) > 500 else 4.0
+        for record in display_records:
             color = color_by_type.get(record.cell_type, default_color)
             opacity = "0.90" if record.cell_type in color_by_type else "0.20"
             points.append(
@@ -115,8 +124,15 @@ class VisualizationLayer:
             handle.write(svg)
         return path
 
-    def render_distribution_interactive_html(self, dataset: SpatialDataset, run_dir: str, focus_cell_types: List[str]) -> str:
+    def render_distribution_interactive_html(
+        self,
+        dataset: SpatialDataset,
+        run_dir: str,
+        focus_cell_types: List[str],
+        max_display_points: int = DEFAULT_DISPLAY_CAP,
+    ) -> str:
         bounds = dataset.bounds()
+        display_records, display_info = downsample_for_display(dataset.records, max_points=max_display_points)
         cell_types = focus_cell_types or dataset.cell_types
         color_by_type = {cell_type: PALETTE[index % len(PALETTE)] for index, cell_type in enumerate(cell_types)}
         default_color = "#9aa6b2"
@@ -130,7 +146,7 @@ class VisualizationLayer:
             return 100.0 - ((value - bounds["min_y"]) / span) * 100.0
 
         points = []
-        for index, record in enumerate(dataset.records):
+        for index, record in enumerate(display_records):
             color = color_by_type.get(record.cell_type, default_color)
             opacity = "0.92" if record.cell_type in color_by_type else "0.22"
             feature_total = sum(record.genes.values())
