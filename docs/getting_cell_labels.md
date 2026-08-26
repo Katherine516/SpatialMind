@@ -108,6 +108,42 @@ Those are weak heuristics for prioritising review only.
 carries `review_status=needs_expert_review` and the tool's caveats say so. The gate
 only accepts `expert_cell_labels.csv`, which a human must write.
 
+### Check coverage first — confidence cannot tell you the reference is incomplete
+
+The right tissue is not enough; the reference also has to carry a class for every
+population in your section. A KNN vote runs over the classes the reference
+*happens to contain*, so it has no way to say "none of these" — a cell whose true
+type is missing still gets its nearest available label, usually at high
+confidence.
+
+This is not hypothetical. Three Human Brain Atlas superclusters
+(Oligodendrocyte, Splatter, Upper-layer IT) against the healthy brain section
+produced mean confidence **0.8845** while roughly **40%** of cells belonged to
+lineages the reference could not name — astrocyte, endothelial, myeloid, OPC.
+Panel overlap was 310/319, so that looked fine too.
+
+Run the preflight before you commit to a transfer. It is header-only and takes
+about 1.5 seconds:
+
+```bash
+.venv/bin/python scripts/build_candidate_cell_labels.py \
+  --data "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs" \
+  --inspect --reference /path/to/ref_a.h5ad /path/to/ref_b.h5ad
+```
+
+It reports which lineages the reference can name, which the target's own markers
+support, and blocks when two or more populations are unnameable. The transfer
+itself applies the same check and refuses before fitting the KNN. Cell counts in
+that report are a **floor** — the strict per-cell marker rule under-counts sparse
+populations rather than guessing — so treat the named lineages as the signal, not
+the percentage.
+
+The fix is almost always to add reference files rather than to override:
+supercluster-style atlases ship one cell class per file, and `--reference` accepts
+several. If you must proceed anyway, `--allow-incomplete-reference` transfers and
+keeps the caveat, and the affected cells carry `lineage_absent_from_reference` for
+review.
+
 ## Where to get a reference
 
 ### How many do you need? One per tissue context — not all of them

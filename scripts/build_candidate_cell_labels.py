@@ -27,7 +27,12 @@ if str(ROOT) not in sys.path:
 from spatialmind.ingestion import load_scrna_reference_set, load_xenium
 from spatialmind.ingestion.labels import MARKER_EVIDENCE_FEATURES, NON_BIOLOGICAL_FEATURES
 from spatialmind.tools.exceptions import MissingPreconditionError
-from spatialmind.tools.implementations import reference_label_transfer
+from spatialmind.tools.implementations import (
+    assess_reference_lineage_coverage,
+    describe_lineage_coverage,
+    lineage_for_label,
+    reference_label_transfer,
+)
 
 CANDIDATE_FIELDS = [
     "cell_id",
@@ -125,11 +130,15 @@ def _h5ad_header(path):
 
 
 def _inspect_references(args) -> bool:
-    target = load_xenium(args.data, max_records=min(args.max_records, 300))
+    # Larger than the panel check needs, because the lineage-coverage check below
+    # counts cells per lineage: a 300-cell sample leaves minor populations under
+    # the evidence floor and reports a missing lineage as absent.
+    target = load_xenium(args.data, max_records=min(args.max_records, 3000))
     panel = {gene.upper() for gene in target.genes}
     target_organism = str(target.metadata.get("organism") or "").strip()
     print("TARGET   %s" % args.data)
-    print("         organism=%s  panel_genes=%d\n" % (target_organism or "unknown", len(panel)))
+    print("         organism=%s  panel_genes=%d  cells_sampled=%d\n"
+          % (target_organism or "unknown", len(panel), len(target.records)))
 
     all_classes, organisms, ok = set(), set(), True
     for path in args.reference:
@@ -166,6 +175,32 @@ def _inspect_references(args) -> bool:
         verdict.append("BLOCKED: %d cell class(es) across all references; KNN needs at least 2. "
                        "Supply more files via --reference a.h5ad b.h5ad ..." % len(all_classes))
         ok = False
+
+    # Panel overlap says the two datasets share genes. It says nothing about
+    # whether the reference can *name* what is in this tissue, which is the
+    # failure the vote fraction cannot express.
+    reference_lineages = {lineage_for_label(label) for label in all_classes}
+    reference_lineages.discard("")
+    coverage = assess_reference_lineage_coverage(target, reference_lineages)
+    print("LINEAGE COVERAGE")
+    print("         reference names : %s" % (", ".join(sorted(reference_lineages)) or "no recognised lineage"))
+    detected = coverage["target_lineage_counts"]
+    print("         target detected : %s" % (", ".join("%s=%d" % item for item in detected.items()) or "none"))
+    print("         %s" % describe_lineage_coverage(coverage))
+    print()
+    if coverage["status"] == "inadequate":
+        verdict.append(
+            "BLOCKED: reference cannot name %d lineage(s) present in this tissue (%s). "
+            "Add reference classes covering them, or pass allow_incomplete_reference=True to transfer anyway."
+            % (len(coverage["uncovered_lineages"]), ", ".join(coverage["uncovered_lineages"]))
+        )
+        ok = False
+    elif coverage["status"] == "partial":
+        verdict.append(
+            "WARNING: reference cannot name %s; those cells will still be labelled, at high confidence."
+            % ", ".join(coverage["uncovered_lineages"])
+        )
+
     if ok:
         verdict.append("USABLE: %d combined cell classes." % len(all_classes))
     for line in verdict:
@@ -188,6 +223,12 @@ def main() -> None:
     parser.add_argument("--confidence-threshold", type=float, default=0.6)
     parser.add_argument("--reference-max-records", type=int, default=5000, help="Reference cells sampled for KNN.")
     parser.add_argument("--allow-cross-species", action="store_true", help="Only for pre-mapped orthologs.")
+    parser.add_argument(
+        "--allow-incomplete-reference",
+        action="store_true",
+        help="Transfer even when the reference has no class for lineages present in the target. Those cells "
+             "still get a label, so review the lineage_absent_from_reference flags.",
+    )
     args = parser.parse_args()
 
     if args.inspect:
@@ -219,6 +260,7 @@ def main() -> None:
                     "n_neighbors": args.n_neighbors,
                     "confidence_threshold": args.confidence_threshold,
                     "allow_cross_species": args.allow_cross_species,
+                    "allow_incomplete_reference": args.allow_incomplete_reference,
                 },
             )
         except MissingPreconditionError as exc:
@@ -253,6 +295,7 @@ def main() -> None:
                 "marker_disagreement_count": result.metrics.get("marker_disagreement_count"),
                 "lineage_absent_from_reference_count": result.metrics.get("lineage_absent_from_reference_count"),
                 "reference_lineages": result.metrics.get("reference_lineages"),
+                "lineage_coverage": result.metrics.get("lineage_coverage"),
                 "platform_shift_ratio": result.metrics.get("platform_shift_ratio"),
                 "reference_label_class_count": len(reference_labels),
                 "predicted_label_counts": result.metrics.get("predicted_label_counts"),

@@ -4,7 +4,7 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-08-20. Unit tests 128/128; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
+Last verified: 2026-08-26. Unit tests 166/166; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
 
 ## The one-sentence version
 
@@ -302,6 +302,33 @@ reviewer must complete `expert_label` and `reviewer_id` and save it as
 `expert_cell_labels.csv` before the gate accepts it. Without a labelled reference
 dataset the tool reports feature *compatibility only* and explicitly states that no
 labels were transferred.
+
+### Route 2's failure mode: a reference that cannot name the tissue
+
+A KNN vote is taken over the classes the reference *happens to contain*, so it
+cannot express "none of these". A cell whose true type is absent still gets its
+nearest available label, usually at high confidence — and neither the vote
+fraction nor panel overlap can surface it. Measured on the healthy brain section
+against three Human Brain Atlas superclusters: mean confidence 0.8845 while
+roughly 40% of cells belonged to lineages (astrocyte, endothelial, myeloid, OPC)
+the reference had no class for.
+
+`assess_reference_lineage_coverage` closes this. It compares the lineages the
+reference can name against the lineages the target's own markers support, and
+`reference_label_transfer` **refuses** when two or more populations are
+unnameable — before fitting the KNN, so a doomed run costs seconds rather than
+minutes. `scripts/build_candidate_cell_labels.py --inspect` runs the same check
+header-only in about 1.5s. `allow_incomplete_reference=True` overrides it and the
+caveat survives into the report.
+
+The counts it reports are a **floor, not an estimate**. They come from the strict
+per-cell `marker_lineage` rule, which under-counts sparse populations but does not
+invent them. Two looser estimators were tried and rejected: raw marker argmax
+hands low-expression lineages (endothelial) to abundant ones (neuronal) on
+background signal, and per-lineage standardization pushes assignment toward
+uniform, inventing thousands of lymphoid cells in a brain section. The refusal
+therefore rests on *which* lineages are confidently present and unnameable — which
+the strict rule does establish — not on a precise share it cannot.
 
 ## The invariant
 

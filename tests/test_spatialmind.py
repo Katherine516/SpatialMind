@@ -57,7 +57,13 @@ from spatialmind.storage import index_run_records, replay_run_record, verify_run
 from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_mvp_registry
 from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.fusion import ModalityFuser
-from spatialmind.tools.implementations import feature_overlay, marker_detection, reference_label_transfer
+from spatialmind.tools.implementations import (
+    assess_reference_lineage_coverage,
+    describe_lineage_coverage,
+    feature_overlay,
+    marker_detection,
+    reference_label_transfer,
+)
 from spatialmind.workflows import INTEGRATION_MODE, SCATAC_STANDALONE, SCRNA_STANDALONE, XENIUM_STANDALONE
 from spatialmind.contracts import BiologicalClaim, CellByFeatureContract, CoreSpatialObject, ground_claim
 from spatialmind.schemas import SpatialDataset, SpotRecord, ToolResult
@@ -1657,6 +1663,129 @@ class LabelTransferTests(unittest.TestCase):
         )
         with self.assertRaises(MissingPreconditionError):
             reference_label_transfer(self._target(), {"reference_dataset": reference, "min_shared_features": 2})
+
+
+class ReferenceLineageCoverageTests(unittest.TestCase):
+    """A reference can share genes with the panel and still be unable to name the tissue.
+
+    Panel overlap and vote confidence both miss this: a cell whose type is absent
+    from the reference is assigned its nearest available label, usually at high
+    confidence. Only the target's own markers can answer it.
+    """
+
+    LINEAGE_PROFILES = {
+        "myeloid": {"CD68": 6.0, "AIF1": 5.0, "C1QA": 4.0},
+        "lymphoid": {"CD8A": 7.0, "CD3D": 6.0, "PTPRC": 5.0},
+        "neuronal": {"SNAP25": 7.0, "RBFOX3": 6.0, "SYT1": 5.0},
+        "opc": {"PDGFRA": 8.0, "CSPG4": 7.0, "VCAN": 6.0},
+    }
+    ALL_MARKERS = {
+        marker: 0.0 for profile in LINEAGE_PROFILES.values() for marker in profile
+    }
+
+    def _cells(self, lineage, count, prefix):
+        records = []
+        for index in range(count):
+            genes = dict(self.ALL_MARKERS)
+            genes.update(self.LINEAGE_PROFILES[lineage])
+            genes["MBP"] = 0.0
+            records.append(
+                SpotRecord("X", float(index), 0.0, "Unannotated cell", genes, cell_id="%s%d" % (prefix, index))
+            )
+        return records
+
+    def _target(self, composition):
+        records = []
+        for lineage, count in composition.items():
+            records.extend(self._cells(lineage, count, lineage[:3]))
+        return SpatialDataset(sample_id="X", source_path="x", modality="xenium_spatial_rna", records=records)
+
+    def _reference(self):
+        """Oligodendrocyte + neuron classes, so `oligodendrocyte` and `neuronal` are nameable."""
+        records = []
+        for index in range(12):
+            oligo = dict(self.ALL_MARKERS)
+            oligo["MBP"] = 9.0
+            records.append(SpotRecord("R", 0.0, 0.0, "oligodendrocyte", oligo, cell_id="o%d" % index))
+            neuron = dict(self.ALL_MARKERS)
+            neuron.update(self.LINEAGE_PROFILES["neuronal"])
+            neuron["MBP"] = 0.0
+            records.append(SpotRecord("R", 0.0, 0.0, "neuron", neuron, cell_id="n%d" % index))
+        return SpatialDataset(sample_id="R", source_path="ref", modality="scrna", records=records)
+
+    def test_lineages_above_the_evidence_floor_are_reported_as_uncovered(self):
+        target = self._target({"neuronal": 40, "myeloid": 30, "lymphoid": 30})
+        report = assess_reference_lineage_coverage(target, {"neuronal", "oligodendrocyte"})
+        self.assertEqual(set(report["uncovered_lineages"]), {"myeloid", "lymphoid"})
+        self.assertEqual(report["status"], "inadequate")
+        self.assertEqual(report["confident_uncovered_cell_count"], 60)
+
+    def test_a_handful_of_cells_is_not_a_missing_population(self):
+        # Below the evidence floor these are ambiguous calls, not a population,
+        # and must not trigger a refusal.
+        target = self._target({"neuronal": 200, "myeloid": 5})
+        report = assess_reference_lineage_coverage(target, {"neuronal", "oligodendrocyte"})
+        self.assertEqual(report["uncovered_lineages"], [])
+        self.assertEqual(report["uncovered_below_evidence_floor"], {"myeloid": 5})
+        self.assertEqual(report["status"], "adequate")
+
+    def test_counts_are_reported_as_a_floor_not_an_estimate(self):
+        # The strict rule leaves sparse cells unassigned rather than guessing, so
+        # the wording must not present its counts as the true share.
+        target = self._target({"neuronal": 40, "myeloid": 30})
+        report = assess_reference_lineage_coverage(target, {"neuronal"})
+        self.assertIn("floor rather than an estimate", describe_lineage_coverage(report))
+        self.assertIn("floor", report["method"])
+
+    def test_near_lineages_still_count_as_uncovered(self):
+        # COMPATIBLE_LINEAGES suppresses false *disagreement* alarms, a different
+        # question. An OPC labelled `oligodendrocyte` is a wrong label.
+        target = self._target({"neuronal": 40, "opc": 30})
+        report = assess_reference_lineage_coverage(target, {"neuronal", "oligodendrocyte"})
+        self.assertIn("opc", report["uncovered_lineages"])
+
+    def test_transfer_refuses_an_incomplete_reference(self):
+        target = self._target({"neuronal": 40, "myeloid": 30, "lymphoid": 30})
+        with self.assertRaises(MissingPreconditionError) as ctx:
+            reference_label_transfer(target, {"reference_dataset": self._reference(), "min_shared_features": 2})
+        message = str(ctx.exception)
+        self.assertIn("incomplete reference", message)
+        self.assertIn("myeloid", message)
+
+    def test_explicit_override_transfers_and_carries_the_caveat(self):
+        target = self._target({"neuronal": 40, "myeloid": 30, "lymphoid": 30})
+        result = reference_label_transfer(
+            target,
+            {
+                "reference_dataset": self._reference(),
+                "min_shared_features": 2,
+                "allow_incomplete_reference": True,
+            },
+        )
+        self.assertEqual(result.metrics["status"], "transferred")
+        self.assertEqual(result.metrics["lineage_coverage"]["status"], "inadequate")
+        self.assertTrue(
+            any("systematically wrong rather than uncertain" in caveat for caveat in result.caveats),
+            "an overridden coverage failure must still be stated in the caveats",
+        )
+
+    def test_an_adequate_reference_transfers_without_a_coverage_caveat(self):
+        target = self._target({"neuronal": 60})
+        result = reference_label_transfer(
+            target, {"reference_dataset": self._reference(), "min_shared_features": 2}
+        )
+        self.assertEqual(result.metrics["status"], "transferred")
+        self.assertEqual(result.metrics["lineage_coverage"]["status"], "adequate")
+        self.assertFalse(any("systematically wrong" in caveat for caveat in result.caveats))
+
+    def test_refusal_happens_before_the_knn_is_fitted(self):
+        # The check needs only class names and target markers, so a doomed run
+        # must not pay for a full transfer first.
+        target = self._target({"neuronal": 40, "myeloid": 30, "lymphoid": 30})
+        reference = self._reference()
+        reference.records = []  # unusable for KNN; refusal must still fire
+        with self.assertRaises(MissingPreconditionError):
+            reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2})
 
 
 class H5adReferenceLoadingTests(unittest.TestCase):
