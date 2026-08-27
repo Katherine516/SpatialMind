@@ -29,6 +29,7 @@ from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
 from spatialmind.tools.implementations import (
     CLUSTER_ASSIGNMENT_KEY,
+    expression_feature_names,
     run_distance_dependent_cooccurrence,
     run_neighborhood_robustness,
     run_region_stratified_neighborhoods,
@@ -287,6 +288,10 @@ def run_pilot(
         "expression_layers": dataset.metadata.get("expression_layers", {}),
         "analysis_backend_error": analysis_backend_error,
         "features_loaded": len(dataset.genes),
+        # The measured panel, not just its size. Panel adequacy scoring needs to
+        # know *which* genes were measured to judge whether a claim's markers are
+        # present; without the list it could only ever return a constant.
+        "feature_names": expression_feature_names(dataset),
         "cell_types": dataset.cell_types,
         "regions": sorted({record.region for record in dataset.records if record.region}),
         "cell_type_counts": dict(Counter(record.cell_type for record in dataset.records)),

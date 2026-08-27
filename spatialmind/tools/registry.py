@@ -25,14 +25,34 @@ PLANNABLE_CAPABILITIES = ("validated", "descriptive", "experimental")
 
 
 def _is_scaffold(func: Any) -> bool:
-    """True when the tool body only returns a registered scaffold placeholder."""
-    try:
-        import inspect
+    """True when the tool actually returns a registered scaffold placeholder.
 
-        source = inspect.getsource(func)
-    except (OSError, TypeError):
+    Parses the body rather than searching its text. A substring search matched
+    `_scaffold_result(` wherever it appeared -- including in a comment, a
+    docstring, or a caveat string -- so a working tool that merely *mentioned*
+    the scaffold helper was silently marked unavailable and vanished from
+    `list_plannable()` with no error anywhere.
+
+    Detects a real `return _scaffold_result(...)`. A scaffold return sitting in
+    unreachable code still counts; that is pathological enough to be worth
+    flagging as a scaffold rather than quietly trusting.
+    """
+    try:
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    except (OSError, TypeError, SyntaxError, IndentationError):
         return False
-    return "_scaffold_result(" in source
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Call):
+            continue
+        called = node.value.func
+        name = called.id if isinstance(called, ast.Name) else getattr(called, "attr", "")
+        if name == "_scaffold_result":
+            return True
+    return False
 
 
 @dataclass

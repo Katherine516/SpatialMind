@@ -1,7 +1,11 @@
+import importlib
 import math
 import os
 import csv
+import shutil
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1767,6 +1771,115 @@ class ToolHonestyTests(unittest.TestCase):
                 "%s does no real work and must not be marked usable" % name,
             )
             self.assertNotIn(name, exposed, "%s must not be offered to a planner" % name)
+
+
+class ScaffoldDetectionTests(unittest.TestCase):
+    def test_a_mention_of_the_scaffold_helper_is_not_a_scaffold(self):
+        """Detection parses the body; it does not search the text.
+
+        The substring check this replaced matched `_scaffold_result(` anywhere in
+        the source, so a working tool that named the helper in a docstring,
+        comment or caveat string was silently marked unavailable and dropped out
+        of `list_plannable()` with no error raised anywhere.
+        """
+        from spatialmind.tools.registry import _is_scaffold
+
+        source = textwrap.dedent(
+            '''
+            from spatialmind.schemas import ToolResult
+            from spatialmind.tools.implementations import _scaffold_result
+
+            def real_tool(dataset, params):
+                """A real tool. Unlike _scaffold_result(), this does the work."""
+                # deliberately mentions _scaffold_result( in a comment
+                return ToolResult(tool_name="real", summary="s",
+                                  metrics={"x": 1}, caveats=["see _scaffold_result("])
+
+            def genuine_scaffold(dataset, params):
+                return _scaffold_result("t", "s", "c", params)
+            '''
+        )
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "scaffold_probe_module.py")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        sys.path.insert(0, directory)
+        try:
+            module = importlib.import_module("scaffold_probe_module")
+            self.assertFalse(_is_scaffold(module.real_tool), "prose mention must not mark a tool unavailable")
+            self.assertTrue(_is_scaffold(module.genuine_scaffold), "a real scaffold return must still be caught")
+        finally:
+            sys.path.remove(directory)
+            sys.modules.pop("scaffold_probe_module", None)
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def test_registered_scaffolds_are_still_detected(self):
+        registry = build_full_registry()
+        summary = registry.capability_summary()
+        self.assertGreaterEqual(summary.get("unavailable", 0), 14)
+        self.assertNotIn("tumor_niche_analysis", {t.name for t in registry.list_plannable()})
+
+
+class PanelAdequacyTests(unittest.TestCase):
+    """P_panel must measure the panel, not match words in a sentence.
+
+    It read marker families out of the claim's English text. The pilot's claims
+    are capability statements that never name a cell type, so it always returned
+    its 0.8 fallback -- and because reliability is a weakest link, 0.8 became the
+    silent ceiling on every claim in every Xenium report.
+    """
+
+    def _payload(self, feature_names, cell_types=("oligodendrocyte",)):
+        return {
+            "contract": {"panel_name": "test_panel", "n_features": len(feature_names)},
+            "features_loaded": len(feature_names),
+            "feature_names": list(feature_names),
+            "cell_types": list(cell_types),
+            "claim_ledger": [
+                {
+                    "claim_text": "Expert-reviewed cell labels are available for the loaded cells.",
+                    "claim_type": "cell_type_annotation",
+                    "status": "supported",
+                }
+            ],
+            "label_report": {"status": "expert_labels_applied", "coverage": 1.0},
+        }
+
+    def _panel_score(self, payload):
+        rows = build_claim_reliability_table(payload, [])
+        return rows[0]["components"]["P_panel"]["score"]
+
+    def test_score_reflects_which_markers_the_panel_measures(self):
+        # LINEAGE_MARKERS["oligodendrocyte"] has 8 canonical markers.
+        from spatialmind.tools.implementations import LINEAGE_MARKERS
+
+        markers = list(LINEAGE_MARKERS["oligodendrocyte"])
+        full = self._panel_score(self._payload(markers))
+        half = self._panel_score(self._payload(markers[: len(markers) // 2]))
+        none = self._panel_score(self._payload(["IRRELEVANT1", "IRRELEVANT2"]))
+        self.assertAlmostEqual(full, 1.0, places=3)
+        self.assertAlmostEqual(half, 0.5, places=3)
+        self.assertAlmostEqual(none, 0.0, places=3)
+
+    def test_score_is_not_pinned_to_the_generic_fallback(self):
+        # The exact defect: a claim naming no cell type used to score 0.8 no
+        # matter what the panel contained.
+        from spatialmind.tools.implementations import LINEAGE_MARKERS
+
+        markers = list(LINEAGE_MARKERS["oligodendrocyte"])
+        scores = {
+            self._panel_score(self._payload(markers)),
+            self._panel_score(self._payload(markers[:2])),
+        }
+        self.assertNotIn(0.8, scores, "P_panel fell back to the constant despite labels being applied")
+        self.assertEqual(len(scores), 2, "P_panel did not vary with panel content")
+
+    def test_label_text_is_not_treated_as_a_measured_gene(self):
+        # `measured` used to be seeded from cell_types, so a cell type sharing a
+        # name with a gene scored as though that gene had been measured.
+        payload = self._payload(["IRRELEVANT"], cell_types=["oligodendrocyte"])
+        payload["cell_types"] = payload["cell_types"] + ["MOG"]
+        self.assertAlmostEqual(self._panel_score(payload), 0.0, places=3)
 
 
 class ReferenceLineageCoverageTests(unittest.TestCase):

@@ -180,16 +180,39 @@ def _panel_component(claim: Dict[str, Any], payload: Dict[str, Any]) -> Reliabil
         status = "computed" if n_features else "blocked"
         caveat = "Panel exists, but this refused claim cannot rely on panel adequacy alone."
     else:
+        # Panel adequacy asks whether this panel measures the markers a claim
+        # depends on. Reading that out of the claim's English sentence only works
+        # when the sentence happens to name a cell type -- and the pilot's claims
+        # are capability statements ("Expert-reviewed cell labels are available
+        # ..."), which never do. Every claim therefore scored the 0.8 fallback,
+        # and since reliability is a weakest link, 0.8 silently became the ceiling
+        # for every claim in every Xenium report regardless of evidence.
+        #
+        # The labels actually applied to the dataset answer the same question
+        # without parsing prose, so fall back to them before falling back to a
+        # constant.
         relevant = _markers_for_claim(claim_text)
+        basis = "cell types named in the claim"
         if not relevant:
-            score = 0.8 if n_features else 0.0
-            caveat = "No specific marker family was parsed from the claim; score reflects general panel availability."
+            relevant = _markers_for_applied_labels(payload)
+            basis = "cell types present in the dataset"
+        if relevant:
+            # Only real panel features count as measured. Seeding this from
+            # `cell_types` compared label text against gene symbols, so a cell
+            # type sharing a name with a gene scored as if the gene were measured.
+            measured = _features_from_payload(payload)
+            overlap = len(relevant & measured)
+            score = overlap / float(len(relevant))
+            caveat = (
+                "Panel adequacy is the share of canonical markers for the %s that this panel measures "
+                "(%d of %d)." % (basis, overlap, len(relevant))
+            )
         else:
-            measured = {gene.upper() for gene in (payload.get("cell_types") or [])}
-            measured.update(_features_from_payload(payload))
-            overlap = len({gene.upper() for gene in relevant} & measured)
-            score = overlap / float(max(len(relevant), 1))
-            caveat = "Panel adequacy reflects marker coverage for parsed claim terms."
+            score = 0.8 if n_features else 0.0
+            caveat = (
+                "No cell type was named in the claim and none is applied to the dataset; score reflects "
+                "general panel availability only."
+            )
         status = "computed" if n_features else "blocked"
     return ReliabilityComponent(
         name="P_panel",
@@ -294,7 +317,25 @@ def _markers_for_claim(claim_text: str) -> set[str]:
     for label, genes in DEFAULT_CELL_MARKERS.items():
         if label in claim_text:
             markers.update(genes)
-    return markers
+    return {gene.upper() for gene in markers}
+
+
+def _markers_for_applied_labels(payload: Dict[str, Any]) -> set[str]:
+    """Canonical markers for the cell types actually applied to this dataset.
+
+    Resolves each label to a broad lineage and unions that lineage's markers.
+    Reuses the lineage table in `spatialmind.tools.implementations` rather than
+    keeping a second copy here: the reference-coverage check already depends on
+    it, and two marker tables would drift apart silently.
+    """
+    from spatialmind.tools.implementations import LINEAGE_MARKERS, lineage_for_label
+
+    markers: set[str] = set()
+    for label in payload.get("cell_types") or []:
+        lineage = lineage_for_label(str(label))
+        if lineage:
+            markers.update(LINEAGE_MARKERS.get(lineage, ()))
+    return {gene.upper() for gene in markers}
 
 
 def _features_from_payload(payload: Dict[str, Any]) -> set[str]:
