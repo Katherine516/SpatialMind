@@ -54,7 +54,7 @@ from spatialmind.viz import (
 )
 from spatialmind.storage import StorageLayer
 from spatialmind.storage import index_run_records, replay_run_record, verify_run_record
-from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_mvp_registry
+from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_full_registry, build_mvp_registry
 from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.fusion import ModalityFuser
 from spatialmind.tools.implementations import (
@@ -1663,6 +1663,110 @@ class LabelTransferTests(unittest.TestCase):
         )
         with self.assertRaises(MissingPreconditionError):
             reference_label_transfer(self._target(), {"reference_dataset": reference, "min_shared_features": 2})
+
+
+class ToolHonestyTests(unittest.TestCase):
+    """A tool must never report work it did not do.
+
+    `_is_scaffold` catches tools that do *nothing* -- it greps their source for
+    `_scaffold_result(`. It cannot catch a tool that does *meaningless* work, which
+    is how four tools shipped as `capability="validated"` while returning hardcoded
+    p-values, a coordinate gradient labelled "pseudotime", label counts labelled
+    "deconvolution", and a list index labelled "TF activity".
+    """
+
+    STAT_KEYS = (
+        "pval", "pvalue", "p_value", "pval_adj", "padj", "score", "zscore", "z_score",
+        "activity_score", "pseudotime", "morans_i", "silhouette", "modularity",
+    )
+    GENES = ("VEGFA", "PTPRC", "EPCAM", "CD8A", "CD3D", "KDR", "FLT1", "MBP", "GFAP", "SNAP25")
+
+    def _dataset(self, modality, subtype, seed):
+        records = []
+        for index in range(40):
+            genes = {gene: float((index * (n + 1) + seed) % 7) for n, gene in enumerate(self.GENES)}
+            records.append(
+                SpotRecord(
+                    "S",
+                    float((index * 3 + seed) % 20),
+                    float((index * 7 + seed) % 20),
+                    ["Tumor cell", "CD8+ T cell", "Endothelial cell"][index % 3],
+                    genes,
+                    region=["r1", "r2"][index % 2],
+                    cell_id="c%d" % index,
+                )
+            )
+        dataset = SpatialDataset(sample_id="S", source_path="p", modality=modality, records=records)
+        dataset.metadata["assay_subtype"] = subtype
+        return dataset
+
+    def _statistics(self, payload, path=""):
+        found = []
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key in self.STAT_KEYS and isinstance(value, (int, float)):
+                    found.append(("%s.%s" % (path, key), round(float(value), 6)))
+                else:
+                    found.extend(self._statistics(value, "%s.%s" % (path, key)))
+        elif isinstance(payload, list):
+            for index, value in enumerate(payload):
+                found.extend(self._statistics(value, "%s[%d]" % (path, index)))
+        return found
+
+    def test_no_plannable_tool_returns_data_independent_statistics(self):
+        """A statistic that survives changing every value was never computed.
+
+        Expression, coordinates and labels all differ between the two datasets, so
+        a tool whose p-values, scores or z-scores come out identical is asserting a
+        test it never ran. Tools that raise are fine: refusing on data they cannot
+        handle is the honest outcome. Tools that emit no statistic at all are fine
+        too -- `annotation` summarises labels and claims nothing more.
+
+        Calls `.callable` rather than `.run` deliberately: `run` attaches quality
+        metrics derived from the dataset, which would make any result look
+        data-dependent and mask exactly what this is looking for.
+        """
+        offenders = []
+        for tool in build_full_registry().list_plannable():
+            for modality, subtype in (
+                ("spatial_transcriptomics", "spatial_transcriptomics"),
+                ("scatac", "scatac_gene_activity"),
+            ):
+                try:
+                    first = tool.callable(self._dataset(modality, subtype, 0), {})
+                    second = tool.callable(self._dataset(modality, subtype, 3), {})
+                except Exception:
+                    continue  # refused this modality; try the next
+                baseline = self._statistics(first.metrics)
+                if baseline and baseline == self._statistics(second.metrics):
+                    offenders.append("%s (%d identical: %s)" % (tool.name, len(baseline), baseline[:2]))
+                break
+        self.assertEqual(
+            offenders,
+            [],
+            "plannable tools returned statistics unchanged by the data: %s" % "; ".join(offenders),
+        )
+
+    def test_known_prototype_tools_are_not_plannable(self):
+        # These four fabricated or mislabelled their output and were reachable by
+        # an LLM planner through to_anthropic_tools(). Two of them
+        # (trajectory_inference, spatial_deconvolution) derive a real number from
+        # the data and so cannot be caught by the check above -- their defect is
+        # that the quantity is not what the name claims. Pin them explicitly.
+        registry = build_full_registry()
+        exposed = {schema["name"] for schema in registry.to_anthropic_tools()}
+        for name in (
+            "ligand_receptor_analysis",
+            "trajectory_inference",
+            "spatial_deconvolution",
+            "motif_tf_activity",
+        ):
+            self.assertEqual(
+                registry.get(name).capability,
+                "unavailable",
+                "%s does no real work and must not be marked usable" % name,
+            )
+            self.assertNotIn(name, exposed, "%s must not be offered to a planner" % name)
 
 
 class ReferenceLineageCoverageTests(unittest.TestCase):

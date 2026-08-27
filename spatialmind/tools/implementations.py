@@ -94,19 +94,19 @@ def feature_overlay(dataset: SpatialDataset, params: Dict[str, object]) -> ToolR
 
 
 def spatial_deconvolution(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
+    # Previously counted the labels it was handed and reported the shares as
+    # "estimated cell-type proportions". Deconvolution exists to estimate
+    # composition where per-cell labels are absent; counting supplied labels
+    # answers a question that was never asked. Use `region_summary` for the
+    # composition of labelled data -- it makes the same computation under a name
+    # that is true.
     require_cell_types(dataset)
-    by_region: Dict[str, Counter] = defaultdict(Counter)
-    for record in dataset.records:
-        by_region[record.region or "all"][record.cell_type] += 1
-    proportions = {}
-    for region, counts in by_region.items():
-        total = sum(counts.values()) or 1
-        proportions[region] = {key: round(value / total, 4) for key, value in counts.items()}
-    return ToolResult(
-        tool_name="spatial_deconvolution",
-        summary="Estimated cell-type proportions from existing labels for %d regions." % len(proportions),
-        metrics={"proportions": proportions, "method": params.get("method", "label_proportions")},
-        caveats=["Prototype uses observed labels as proportions; production should call Cell2location/RCTD."],
+    return _scaffold_result(
+        "spatial_deconvolution",
+        "Deconvolution scaffold validated cell labels but did not deconvolve anything.",
+        "Requires a reference-based mixture model (Cell2location/RCTD) over spot-level or "
+        "unlabelled data. For the composition of already-labelled cells, use region_summary.",
+        params,
     )
 
 
@@ -174,18 +174,17 @@ def neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, object]) 
 
 
 def ligand_receptor_analysis(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
+    # Previously returned hardcoded sender/receiver pairs with literal `score` and
+    # `pval` values, keyed only on whether a gene name appeared in the panel. The
+    # numbers were identical for every dataset and survived zeroing all expression,
+    # so they asserted a test that was never run.
     require_cell_types(dataset)
-    genes = set(dataset.genes)
-    candidates = []
-    if "VEGFA" in genes:
-        candidates.append({"ligand": "VEGFA", "receptor": "KDR/FLT1", "sender": "Tumor cell", "receiver": "Endothelial cell", "score": 0.72, "pval": 0.08})
-    if "PTPRC" in genes:
-        candidates.append({"ligand": "immune_marker", "receptor": "context_marker", "sender": "CD8+ T cell", "receiver": "Tumor cell", "score": 0.41, "pval": 0.2})
-    return ToolResult(
-        tool_name="ligand_receptor_analysis",
-        summary="Generated %d candidate interaction records." % len(candidates),
-        metrics={"database": params.get("db", "cellchat"), "interactions": candidates},
-        caveats=["Prototype uses marker heuristics; production should call CellChat/NicheNet."],
+    return _scaffold_result(
+        "ligand_receptor_analysis",
+        "Ligand-receptor scaffold validated cell labels but did not test for interactions.",
+        "Requires a permutation test over a curated ligand-receptor database; squidpy.gr.ligrec "
+        "is available in this environment and is the intended backend.",
+        params,
     )
 
 
@@ -194,17 +193,16 @@ def trajectory_inference(dataset: SpatialDataset, params: Dict[str, object]) -> 
     subtype = str(dataset.metadata.get("assay_subtype") or dataset.modality)
     if subtype not in {"scrna", "spatial_transcriptomics", "spatial_table", "tidy_csv"}:
         raise DataModalityError("trajectory_inference", dataset.modality, "scRNA")
-    bounds = dataset.bounds()
-    span = max((bounds["max_x"] - bounds["min_x"]) + (bounds["max_y"] - bounds["min_y"]), 1.0)
-    values = []
-    for index, record in enumerate(dataset.records):
-        pseudotime = ((record.x - bounds["min_x"]) + (record.y - bounds["min_y"])) / span
-        values.append({"index": index, "cell_type": record.cell_type, "pseudotime": round(pseudotime, 4)})
-    return ToolResult(
-        tool_name="trajectory_inference",
-        summary="Computed prototype spatial pseudotime for %d observations." % len(values),
-        metrics={"root_cell_type": params.get("root_cell_type"), "pseudotime": values[:20]},
-        caveats=["Prototype uses coordinate gradient; production should use Palantir/PAGA spatial."],
+    # Previously returned normalised (x + y) -- a diagonal coordinate gradient --
+    # under the key `pseudotime`. That value does vary with the data, so no
+    # data-independence check can catch it; it is wrong because the quantity is
+    # not what the name claims. Developmental ordering is not spatial position.
+    return _scaffold_result(
+        "trajectory_inference",
+        "Trajectory scaffold validated modality but did not infer a trajectory.",
+        "Requires diffusion-map pseudotime over an expression neighbour graph; scanpy.tl.paga and "
+        "scanpy.tl.dpt are available in this environment and are the intended backend.",
+        params,
     )
 
 
@@ -212,17 +210,15 @@ def motif_tf_activity(dataset: SpatialDataset, params: Dict[str, object]) -> Too
     subtype = str(dataset.metadata.get("assay_subtype") or dataset.modality)
     if subtype != "scatac_gene_activity" and dataset.modality not in {"scatac", "spatial_atac", "chromatin_accessibility"}:
         raise DataModalityError("motif_tf_activity", dataset.modality, "scATAC gene-activity or peak matrix")
-    genes = dataset.genes[: max(1, min(10, len(dataset.genes)))]
-    tf_rows = [
-        {"tf": gene, "activity_score": round((index + 1) / float(len(genes) + 1), 4), "evidence": "accessibility_inferred"}
-        for index, gene in enumerate(genes)
-    ]
-    return ToolResult(
-        tool_name="motif_tf_activity",
-        summary="Estimated prototype TF activity for %d accessibility-derived features." % len(tf_rows),
-        metrics={"feature_type": "gene_activity", "tf_activity": tf_rows},
-        caveats=["scATAC gene activity is accessibility-inferred; do not report it as measured expression."],
-        label_caveat="Accessibility-derived gene activity is an estimate of expression, not measured transcription.",
+    # Previously scored each feature as (index + 1) / (n + 1) -- its position in
+    # the feature list -- and reported it as `activity_score`. The value never
+    # depended on a single accessibility measurement.
+    return _scaffold_result(
+        "motif_tf_activity",
+        "Motif/TF activity scaffold validated modality but did not score any motif.",
+        "Requires chromVAR-style deviation scoring against a motif database over a peak matrix. "
+        "scATAC gene activity is accessibility-inferred and is not measured transcription.",
+        params,
     )
 
 
