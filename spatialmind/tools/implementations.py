@@ -14,7 +14,14 @@ from spatialmind.contracts.metrics import (
     SpatialMetrics,
     metric,
 )
-from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES, SpatialDataset, ToolResult
+from spatialmind.schemas import (
+    CONTROL_FEATURE_PREFIXES,
+    NON_EXPRESSION_FEATURE_NAMES,
+    SpatialDataset,
+    ToolResult,
+    control_feature_names,
+    is_control_feature,
+)
 
 from .exceptions import DataModalityError, InsufficientDataError, InvalidParameterError, MissingPreconditionError
 
@@ -2200,52 +2207,17 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
 # rank as spurious markers. Mirrors ingestion.labels.NON_BIOLOGICAL_FEATURES.
 EXPRESSION_EXCLUDED_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
-# Xenium panels ship control probes alongside real targets: negative controls,
-# unassigned and deprecated codewords, blanks, and antisense probes. They exist to
-# measure background and misassignment, and they are a large share of the panel --
-# 41% of the breast panel and 38% of the glioblastoma panel in local data. Left in
-# the expression matrix they drive PCA, appear as cluster markers, and can define
-# entire clusters out of technical noise. They stay available for QC, which reads
-# them from the instrument metrics rather than from this matrix.
-CONTROL_FEATURE_PREFIXES = (
-    "UNASSIGNEDCODEWORD",
-    "NEGCONTROLCODEWORD",
-    "NEGCONTROLPROBE",
-    "DEPRECATEDCODEWORD",
-    "BLANK",
-    "ANTISENSE",
-    "NEGPROBE",
-    "NEGCONTROL",
-)
-
-
-def is_control_feature(name: str) -> bool:
-    """True for Xenium control/background probes rather than measured genes.
-
-    Control probes follow ``Prefix_0123`` / ``Prefix0123``, so the prefix must be
-    followed by a separator or digits. Matching on the prefix alone would catch
-    real genes that merely start with the same letters.
-    """
-    upper = str(name).upper()
-    for prefix in CONTROL_FEATURE_PREFIXES:
-        if not upper.startswith(prefix):
-            continue
-        remainder = upper[len(prefix):]
-        if not remainder or remainder[0] in "_-." or remainder[0].isdigit():
-            return True
-    return False
-
-
 def expression_feature_names(dataset: SpatialDataset) -> List[str]:
     """Genes used for expression analysis.
 
     Excludes QC/morphology pseudo-features and Xenium control probes, both of
     which are technical rather than biological signal.
     """
+    controls = control_feature_names(dataset)
     biological = [
         gene
         for gene in dataset.genes
-        if gene.upper() not in EXPRESSION_EXCLUDED_FEATURES and not is_control_feature(gene)
+        if gene.upper() not in EXPRESSION_EXCLUDED_FEATURES and gene.upper() not in controls
     ]
     # Only drop them when real genes remain, so tiny fixtures stay usable.
     return biological if len(biological) >= 2 else list(dataset.genes)

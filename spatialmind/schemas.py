@@ -29,6 +29,73 @@ NON_EXPRESSION_FEATURE_NAMES = frozenset(
 )
 
 
+# Xenium panels ship control probes alongside real targets: negative controls,
+# unassigned and deprecated codewords, blanks, and antisense probes. They exist to
+# measure background and misassignment, and they are a large share of the panel --
+# 41% of the breast panel and 38% of the glioblastoma panel in local data. Left in
+# the expression matrix they drive PCA, appear as cluster markers, and can define
+# entire clusters out of technical noise.
+#
+# This prefix rule is the FALLBACK. The authoritative answer is the
+# `features/feature_type` dataset inside cell_feature_matrix.h5, which the loader
+# reads into `metadata["control_features"]`; prefer that via
+# `control_feature_names()`. Prefixes only guess at 10x's naming staying still,
+# and it does not -- newer chemistries add control classes this tuple has never
+# heard of.
+CONTROL_FEATURE_PREFIXES = (
+    "UNASSIGNEDCODEWORD",
+    "NEGCONTROLCODEWORD",
+    "NEGCONTROLPROBE",
+    "DEPRECATEDCODEWORD",
+    "GENOMICCONTROL",
+    "BLANK",
+    "ANTISENSE",
+    "NEGPROBE",
+    "NEGCONTROL",
+)
+
+# feature_type values in a 10x matrix that are NOT measured gene expression.
+NON_GENE_FEATURE_TYPES = frozenset(
+    {
+        "negative control probe",
+        "negative control codeword",
+        "unassigned codeword",
+        "deprecated codeword",
+        "genomic control",
+        "antisense probe",
+    }
+)
+
+
+def is_control_feature(name: str) -> bool:
+    """True for Xenium control/background probes rather than measured genes.
+
+    Control probes follow ``Prefix_0123`` / ``Prefix0123``, so the prefix must be
+    followed by a separator or digits. Matching on the prefix alone would catch
+    real genes that merely start with the same letters.
+    """
+    upper = str(name).upper()
+    for prefix in CONTROL_FEATURE_PREFIXES:
+        if not upper.startswith(prefix):
+            continue
+        remainder = upper[len(prefix):]
+        if not remainder or remainder[0] in "_-." or remainder[0].isdigit():
+            return True
+    return False
+
+
+def control_feature_names(dataset: "SpatialDataset") -> set:
+    """Uppercased control features for a dataset, declared list preferred.
+
+    Uses what the instrument said when the loader captured it, and falls back to
+    the name-prefix guess only for datasets that carry no declaration.
+    """
+    declared = (dataset.metadata or {}).get("control_features")
+    if declared:
+        return {str(name).upper() for name in declared}
+    return {str(gene).upper() for gene in dataset.genes if is_control_feature(gene)}
+
+
 @dataclass
 class RawDataSource:
     path: str

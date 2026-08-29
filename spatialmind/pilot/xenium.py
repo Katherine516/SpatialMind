@@ -29,6 +29,7 @@ from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
 from spatialmind.tools.implementations import (
     CLUSTER_ASSIGNMENT_KEY,
+    control_feature_names,
     expression_feature_names,
     run_distance_dependent_cooccurrence,
     run_neighborhood_robustness,
@@ -288,7 +289,21 @@ def run_pilot(
         "cell_qc": dataset.metadata.get("cell_qc", {}),
         "expression_layers": dataset.metadata.get("expression_layers", {}),
         "analysis_backend_error": analysis_backend_error,
-        "features_loaded": len(dataset.genes),
+        # The measured gene panel. This counted control probes and QC
+        # pseudo-features until now, so the Limitations line -- the one sentence a
+        # reader leans on to judge what the assay could have seen -- overstated a
+        # 319-gene brain panel as 495 features. The raw count stays available
+        # below for provenance.
+        "features_loaded": len(expression_feature_names(dataset)),
+        "raw_features_loaded": len(dataset.genes),
+        # Controls present in the loaded data, not the panel's full declared list:
+        # the report says these were excluded from analysis, so it must count the
+        # ones that were actually there to exclude.
+        "control_features_loaded": len(
+            {gene.upper() for gene in dataset.genes} & control_feature_names(dataset)
+        ),
+        "panel_control_feature_count": len(dataset.metadata.get("control_features") or []),
+        "control_feature_source": dataset.metadata.get("control_feature_source", "name_prefix_fallback"),
         # The measured panel, not just its size. Panel adequacy scoring needs to
         # know *which* genes were measured to judge whether a claim's markers are
         # present; without the list it could only ever return a constant.
@@ -2425,7 +2440,16 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
     label_status = payload.get("label_report", {}).get("status", "unknown")
     region_status = payload.get("region_report", {}).get("status", "unknown")
     items = [
-        "Xenium uses a targeted panel (%s loaded features); absence of a gene means it was not measured, not that it is unexpressed." % feature_count,
+        "Xenium uses a targeted panel (%s measured genes%s); absence of a gene means it was not measured, not that it is unexpressed."
+        % (
+            feature_count,
+            (
+                "; %d control probes were excluded from analysis, identified by %s"
+                % (payload["control_features_loaded"], payload.get("control_feature_source", "name prefix"))
+            )
+            if payload.get("control_features_loaded")
+            else ""
+        ),
         "Cell-type labels status: %s. Validated biological interpretation requires expert-reviewed labels." % label_status,
         "Region labels status: %s. Region summaries use user-provided regions; they are not image-derived or independently validated by this MVP." % region_status,
         "Neighborhood enrichment reflects spatial adjacency only; it does not establish interaction, signaling, causation, or mechanism.",

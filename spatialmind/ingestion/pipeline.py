@@ -8,7 +8,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from ..schemas import NON_EXPRESSION_FEATURE_NAMES, RawDataSource, SpatialDataset, SpotRecord
+from ..schemas import (
+    NON_EXPRESSION_FEATURE_NAMES,
+    NON_GENE_FEATURE_TYPES,
+    RawDataSource,
+    SpatialDataset,
+    SpotRecord,
+    control_feature_names,
+    is_control_feature,
+)
 
 
 KNOWN_COLUMNS = {"sample_id", "x", "y", "cell_type", "region", "spot_id", "barcode", "cell_id"}
@@ -531,6 +539,10 @@ class DataIngestionLayer:
                 "raw_count_source": "cell_feature_matrix.h5" if matrix_features else "cells.csv count summaries",
                 "analysis_scope": "full_section" if complete_section else "sampled",
                 "cell_qc": cell_qc,
+                # Declared by the matrix where available, so downstream stops
+                # guessing control status from probe names.
+                "control_features": matrix_metadata.get("control_features", []),
+                "control_feature_source": matrix_metadata.get("control_feature_source", "name_prefix_fallback"),
                 "sampling": {
                     "method": "all" if complete_section else ("deterministic_even_index" if target_indices is not None else "first_n"),
                     "requested_records": max_records,
@@ -726,11 +738,18 @@ class DataIngestionLayer:
             dataset.notes.append("%d duplicate coordinate pairs were detected." % duplicate_coordinates)
 
     def _normalize_features(self, dataset: SpatialDataset) -> None:
+        # Control probes measure background, not expression, so they must not
+        # scale real genes. Excluding only the QC pseudo-features left them in the
+        # denominator, which made a cell's normalised expression shift with how
+        # much misassignment it happened to carry.
+        controls = control_feature_names(dataset)
         for record in dataset.records:
             if not record.raw_genes:
                 record.raw_genes = dict(record.genes)
             expression = {
-                feature: value for feature, value in record.raw_genes.items() if feature not in NON_EXPRESSION_FEATURES
+                feature: value
+                for feature, value in record.raw_genes.items()
+                if feature not in NON_EXPRESSION_FEATURES and feature.upper() not in controls
             }
             total = sum(max(value, 0.0) for value in expression.values())
             if total <= 0:
@@ -743,6 +762,8 @@ class DataIngestionLayer:
             "source": "raw_genes: immutable source values",
             "normalization_target_sum": 10000.0,
             "non_expression_features_excluded": sorted(NON_EXPRESSION_FEATURES),
+            "control_features_excluded": len(controls),
+            "control_feature_source": dataset.metadata.get("control_feature_source", "name_prefix_fallback"),
         }
         dataset.processing_steps.append("Applied library-size normalization and log1p transform.")
         dataset.notes.append(
@@ -1196,10 +1217,15 @@ def _load_xenium_gene_matrix(
             indices = matrix["indices"]
             data = matrix["data"]
             feature_names = _read_h5_feature_names(matrix)
+            controls, type_counts, control_source = _read_h5_control_features(matrix, feature_names)
             metadata.update(
                 {
                     "n_cells_in_matrix": len(barcodes),
                     "n_features_in_matrix": len(feature_names),
+                    "control_features": sorted(controls),
+                    "control_feature_count": len(controls),
+                    "feature_type_counts": type_counts,
+                    "control_feature_source": control_source,
                 }
             )
             if len(indptr) != len(barcodes) + 1:
@@ -1240,6 +1266,35 @@ def _read_h5_feature_names(matrix: Any) -> List[str]:
     shape = matrix.get("shape")
     feature_count = int(shape[0]) if shape is not None and len(shape[:]) else 0
     return ["FEATURE_%d" % index for index in range(feature_count)]
+
+
+def _read_h5_control_features(matrix: Any, feature_names: List[str]) -> Tuple[List[str], Dict[str, int], str]:
+    """Control features as the matrix itself declares them.
+
+    10x writes a `features/feature_type` dataset naming each feature's class:
+    `Gene Expression` against `Negative Control Probe`, `Negative Control
+    Codeword`, `Unassigned Codeword` and others. This was never read, so control
+    handling relied on guessing from probe names -- which is right for today's
+    files and silently wrong the moment a chemistry adds a class the prefix list
+    has not heard of.
+
+    Falls back to the prefix rule when a file carries no `feature_type`, and
+    reports which source was used so a reader can tell.
+    """
+    features = matrix.get("features")
+    types_node = features.get("feature_type") if features is not None else None
+    if types_node is None:
+        controls = [name for name in feature_names if is_control_feature(name)]
+        return controls, {"prefix_matched": len(controls)}, "name_prefix_fallback"
+
+    declared = [_decode_h5_value(value) for value in types_node[:]]
+    counts: Dict[str, int] = {}
+    controls = []
+    for name, feature_type in zip(feature_names, declared):
+        counts[feature_type] = counts.get(feature_type, 0) + 1
+        if feature_type.strip().lower() in NON_GENE_FEATURE_TYPES:
+            controls.append(name)
+    return controls, counts, "declared_feature_type"
 
 
 def _feature_slice_to_values(
