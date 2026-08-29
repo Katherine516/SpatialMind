@@ -285,6 +285,7 @@ def run_pilot(
         "required_next_inputs": gate["required_next_inputs"],
         "records_loaded": len(dataset.records),
         "analysis_scope": analysis_scope,
+        "cell_qc": dataset.metadata.get("cell_qc", {}),
         "expression_layers": dataset.metadata.get("expression_layers", {}),
         "analysis_backend_error": analysis_backend_error,
         "features_loaded": len(dataset.genes),
@@ -1352,6 +1353,22 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         % payload.get("expression_layers", {}).get("source", "source layer unavailable"),
         "",
     ]
+    cell_qc = payload.get("cell_qc") or {}
+    if cell_qc.get("status") == "applied":
+        lines.extend(
+            [
+                "- Cell QC: `%s` — removed %d of %d cells (%d low transcript count, %d high background); %d cells had no detected nucleus and were kept."
+                % (
+                    cell_qc["rule"],
+                    cell_qc["dropped_cell_count"],
+                    cell_qc["input_cell_count"],
+                    cell_qc["dropped_low_transcript_count"],
+                    cell_qc["dropped_high_background_count"],
+                    cell_qc["nucleus_free_cell_count"],
+                ),
+                "",
+            ]
+        )
     lines.extend(_descriptive_markdown(payload))
     if payload["blocking_reasons"]:
         lines.extend(["## What Is Still Needed To Go Further", ""])

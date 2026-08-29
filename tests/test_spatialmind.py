@@ -16,6 +16,8 @@ from spatialmind.agent_loop import SpatialAgent
 from spatialmind.datasets import discover_dataset_candidates, inspect_dataset
 from spatialmind.governance import build_dataset_governance_manifest
 from spatialmind.ingestion import (
+    IngestionValidationError,
+    apply_xenium_cell_qc,
     BatchIngestionConfig,
     BatchIngestionPipeline,
     DataFormat,
@@ -222,7 +224,15 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(infer_data_type(experiment_path), "xenium_experiment_file")
         dataset = DataIngestionLayer().load(experiment_path)
         self.assertEqual(dataset.modality, "spatial_transcriptomics")
-        self.assertEqual(len(dataset.records), 5000)
+        # The scan selects 5000 cells; per-cell QC then removes the unusable ones,
+        # so the retained count is 5000 minus exactly what QC reports dropping.
+        # This lymph node section is genuinely sparse (median 45 transcripts per
+        # cell against 166 in the brain section), so the drop is not negligible.
+        sampling = dataset.metadata["sampling"]
+        cell_qc = dataset.metadata["cell_qc"]
+        self.assertEqual(sampling["scanned_records"], 5000)
+        self.assertEqual(len(dataset.records), 5000 - cell_qc["dropped_cell_count"])
+        self.assertEqual(cell_qc["retained_cell_count"], len(dataset.records))
         self.assertEqual(dataset.source_path, experiment_path)
         self.assertEqual(dataset.sources[0].data_type, "xenium_experiment_file")
         self.assertTrue(dataset.metadata["xenium_files"]["experiment_xenium"])
@@ -1773,6 +1783,78 @@ class ToolHonestyTests(unittest.TestCase):
             self.assertNotIn(name, exposed, "%s must not be offered to a planner" % name)
 
 
+class XeniumCellQCTests(unittest.TestCase):
+    """Nothing filtered a Xenium load before this.
+
+    `_apply_threshold_qc` is reachable only from the config-driven pipeline, so
+    every statistic in every Xenium report was computed over an unfiltered
+    population.
+    """
+
+    def _cell(self, cell_id, transcripts, background=0.0, nucleus_area=5.0):
+        return SpotRecord(
+            "S", 0.0, 0.0, "Unannotated cell",
+            {
+                "TRANSCRIPT_COUNTS": float(transcripts),
+                "TOTAL_COUNTS": float(transcripts) + float(background),
+                "CELL_AREA": 100.0,
+                "NUCLEUS_AREA": float(nucleus_area),
+                "CONTROL_PROBE_COUNTS": float(background),
+                "CONTROL_CODEWORD_COUNTS": 0.0,
+                "UNASSIGNED_CODEWORD_COUNTS": 0.0,
+                "GENE_A": 1.0,
+            },
+            cell_id=cell_id,
+        )
+
+    def test_low_count_and_high_background_cells_are_removed(self):
+        records = [
+            self._cell("good", 200),
+            self._cell("sparse", 3),
+            self._cell("noisy", 200, background=100.0),
+        ]
+        kept, report = apply_xenium_cell_qc(records)
+        self.assertEqual([r.cell_id for r in kept], ["good"])
+        self.assertEqual(report["dropped_low_transcript_count"], 1)
+        self.assertEqual(report["dropped_high_background_count"], 1)
+        self.assertEqual(report["input_cell_count"], 3)
+        self.assertEqual(report["retained_cell_count"], 1)
+
+    def test_nucleus_free_cells_are_reported_but_kept(self):
+        # A zero nucleus area is a segmentation warning, not proof the cell is
+        # wrong; dropping on it would silently discard whole morphologies.
+        kept, report = apply_xenium_cell_qc([self._cell("anucleate", 200, nucleus_area=0.0)])
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(report["nucleus_free_cell_count"], 1)
+        self.assertEqual(report["dropped_cell_count"], 0)
+
+    def test_filtering_everything_refuses_instead_of_returning_nothing(self):
+        with self.assertRaises(IngestionValidationError) as ctx:
+            apply_xenium_cell_qc([self._cell("a", 1), self._cell("b", 2)])
+        self.assertIn("removed every cell", str(ctx.exception))
+
+    def test_thresholds_are_reported_not_silent(self):
+        _kept, report = apply_xenium_cell_qc([self._cell("good", 200)], min_transcripts=25)
+        self.assertIn("transcript_counts >= 25", report["rule"])
+        self.assertEqual(report["min_transcripts"], 25)
+
+    def test_background_features_are_never_expression(self):
+        from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES
+
+        for name in ("CONTROL_PROBE_COUNTS", "CONTROL_CODEWORD_COUNTS", "UNASSIGNED_CODEWORD_COUNTS"):
+            self.assertIn(name, NON_EXPRESSION_FEATURE_NAMES)
+
+    def test_the_three_exclusion_sets_cannot_drift(self):
+        # They were three identical literals in three modules. Adding a fourth
+        # feature to one would have silently left the others behind.
+        from spatialmind.ingestion.labels import NON_BIOLOGICAL_FEATURES
+        from spatialmind.ingestion.pipeline import NON_EXPRESSION_FEATURES
+        from spatialmind.tools.implementations import EXPRESSION_EXCLUDED_FEATURES
+
+        self.assertIs(NON_EXPRESSION_FEATURES, NON_BIOLOGICAL_FEATURES)
+        self.assertIs(NON_BIOLOGICAL_FEATURES, EXPRESSION_EXCLUDED_FEATURES)
+
+
 class ScaffoldDetectionTests(unittest.TestCase):
     def test_a_mention_of_the_scaffold_helper_is_not_a_scaffold(self):
         """Detection parses the body; it does not search the text.
@@ -3155,9 +3237,11 @@ class ControlProbeExclusionTests(unittest.TestCase):
         kept = set(expression_feature_names(dataset))
         dropped = set(dataset.genes) - kept
         self.assertTrue(dropped, "expected control probes in a real Xenium panel")
+        from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES
+
         for gene in dropped:
             self.assertTrue(
-                is_control_feature(gene) or gene.upper() in {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"},
+                is_control_feature(gene) or gene.upper() in NON_EXPRESSION_FEATURE_NAMES,
                 "dropped a biological gene: %s" % gene,
             )
 

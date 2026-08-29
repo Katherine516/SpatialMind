@@ -4,6 +4,31 @@ from typing import Any, Dict, List, Optional
 from spatialmind.contracts.metrics import QualityMetrics
 
 
+# Per-cell measurements stored alongside genes that are NOT expression: library
+# size and morphology proxies, plus the instrument's own background counts. They
+# live on the record because they drive QC, and they must be excluded from every
+# expression matrix -- left in, they are on a different scale and dominate PCA and
+# marker ranking.
+#
+# Defined once here because three layers need the same answer (ingestion
+# normalization, expression matrix construction, label evidence). Three separate
+# copies drifted identical until a fourth feature was added, at which point they
+# would not have.
+NON_EXPRESSION_FEATURE_NAMES = frozenset(
+    {
+        "TRANSCRIPT_COUNTS",
+        "TOTAL_COUNTS",
+        "CELL_AREA",
+        "NUCLEUS_AREA",
+        # Xenium per-cell background, from cells.csv. The instrument's own
+        # signal-to-noise measure for each cell.
+        "CONTROL_PROBE_COUNTS",
+        "CONTROL_CODEWORD_COUNTS",
+        "UNASSIGNED_CODEWORD_COUNTS",
+    }
+)
+
+
 @dataclass
 class RawDataSource:
     path: str

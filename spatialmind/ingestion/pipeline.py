@@ -8,14 +8,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from ..schemas import RawDataSource, SpatialDataset, SpotRecord
+from ..schemas import NON_EXPRESSION_FEATURE_NAMES, RawDataSource, SpatialDataset, SpotRecord
 
 
 KNOWN_COLUMNS = {"sample_id", "x", "y", "cell_type", "region", "spot_id", "barcode", "cell_id"}
 TABLE_TYPES = {"tidy_csv", "segmentation_csv", "multiplex_imaging_csv", "spatial_table"}
 COMMON_ANNOTATION_KEYS = ("cell_type", "celltype", "cell_type_key", "annotation", "cluster", "leiden", "seurat_clusters")
 COMMON_SPATIAL_KEYS = ("spatial", "X_spatial")
-NON_EXPRESSION_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
+# Single definition lives in schemas so ingestion, tools and labels cannot drift.
+NON_EXPRESSION_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
 SUPPORTED_RAW_DATA_TYPES = [
     {
@@ -447,6 +448,13 @@ class DataIngestionLayer:
                                 "TOTAL_COUNTS": float(row.get("total_counts") or 0.0),
                                 "CELL_AREA": float(row.get("cell_area") or 0.0),
                                 "NUCLEUS_AREA": float(row.get("nucleus_area") or 0.0),
+                                # The instrument's own per-cell background. Previously
+                                # parsed past and dropped, which discarded the only
+                                # per-cell signal-to-noise measure Xenium provides and
+                                # left cell QC with nothing to threshold on.
+                                "CONTROL_PROBE_COUNTS": float(row.get("control_probe_counts") or 0.0),
+                                "CONTROL_CODEWORD_COUNTS": float(row.get("control_codeword_counts") or 0.0),
+                                "UNASSIGNED_CODEWORD_COUNTS": float(row.get("unassigned_codeword_counts") or 0.0),
                             },
                             region=str(metadata.get("region_name") or "") or None,
                             cell_id=cell_id,
@@ -485,9 +493,14 @@ class DataIngestionLayer:
         for record in records:
             record.raw_genes = dict(record.genes)
 
+        # Decide scope from the scan, before QC removes anything. Otherwise cells
+        # dropped for quality would make a full section look like a sample and
+        # wrongly block validated inference.
         complete_section = max_records <= 0 or (
             target_indices is None and not reached_record_limit and bool(estimated_total and len(records) >= estimated_total)
         )
+        scanned_record_count = len(records)
+        records, cell_qc = apply_xenium_cell_qc(records)
 
         sources = [
             RawDataSource(
@@ -517,12 +530,16 @@ class DataIngestionLayer:
                 "raw_counts_available": bool(matrix_features),
                 "raw_count_source": "cell_feature_matrix.h5" if matrix_features else "cells.csv count summaries",
                 "analysis_scope": "full_section" if complete_section else "sampled",
+                "cell_qc": cell_qc,
                 "sampling": {
                     "method": "all" if complete_section else ("deterministic_even_index" if target_indices is not None else "first_n"),
                     "requested_records": max_records,
+                    "scanned_records": scanned_record_count,
                     "loaded_records": len(records),
                     "total_records": estimated_total,
-                    "fraction_loaded": round(len(records) / float(estimated_total or len(records)), 6),
+                    # Scope fraction describes what the scan selected, so cells
+                    # removed by QC do not read as incomplete coverage.
+                    "fraction_loaded": round(scanned_record_count / float(estimated_total or scanned_record_count), 6),
                 },
                 **metadata,
             },
@@ -542,8 +559,22 @@ class DataIngestionLayer:
             dataset.notes.append(
                 "Xenium adapter loaded cell centroids/count summaries. Gene-level expression will attach automatically when h5py can read cell_feature_matrix.h5."
             )
-        if len(records) < estimated_total:
-            dataset.notes.append("Loaded a deterministic subset of %d/%d cells for agent-safe execution." % (len(records), estimated_total))
+        if cell_qc["dropped_cell_count"]:
+            dataset.notes.append(
+                "Cell QC removed %d/%d cells (%d below %d transcripts, %d above %.0f%% background); %d cells have no detected nucleus."
+                % (
+                    cell_qc["dropped_cell_count"],
+                    cell_qc["input_cell_count"],
+                    cell_qc["dropped_low_transcript_count"],
+                    cell_qc["min_transcripts"],
+                    cell_qc["dropped_high_background_count"],
+                    cell_qc["max_control_fraction"] * 100,
+                    cell_qc["nucleus_free_cell_count"],
+                )
+            )
+            dataset.processing_steps.append("Applied Xenium per-cell QC: %s." % cell_qc["rule"])
+        if scanned_record_count < estimated_total:
+            dataset.notes.append("Loaded a deterministic subset of %d/%d cells for agent-safe execution." % (scanned_record_count, estimated_total))
         if input_path != path:
             dataset.processing_steps.append("Resolved Xenium experiment descriptor %s to %s." % (input_path, path))
         dataset.processing_steps.append("Loaded Xenium cell table from %s." % cells_path)
@@ -1408,6 +1439,91 @@ def _median(values: List[float]) -> float:
     if len(ordered) % 2:
         return ordered[mid]
     return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def apply_xenium_cell_qc(
+    records: List[SpotRecord],
+    min_transcripts: int = 10,
+    max_control_fraction: float = 0.05,
+) -> Tuple[List[SpotRecord], Dict[str, Any]]:
+    """Drop cells the instrument's own counts say are not usable.
+
+    Nothing filtered a Xenium load before this. `_apply_threshold_qc` exists but is
+    reachable only from the config-driven pipeline, so every statistic in every
+    Xenium report was computed over an unfiltered population -- a full section
+    lost 3 of 24,406 cells, and those went for having zero features downstream
+    rather than from any quality rule.
+
+    Two rules, both on values the instrument supplies per cell:
+
+    - **Transcript count.** A cell with a handful of transcripts cannot support a
+      cluster assignment or a marker call; it contributes noise to both.
+    - **Background fraction.** Control probes and unassigned codewords measure
+      misassignment. A cell whose counts are mostly background is a segmentation
+      or decoding failure, however many total counts it has.
+
+    Nucleus-free cells are counted and reported but not dropped: a zero nucleus
+    area is a segmentation warning, not proof the cell is wrong, and dropping on
+    it would silently discard whole morphologies.
+
+    Returns the retained records and a report. Nothing is dropped silently -- the
+    report carries the rule, the thresholds and every count, and is written into
+    dataset metadata, the run payload and the rendered report.
+    """
+    kept: List[SpotRecord] = []
+    low_count = 0
+    high_background = 0
+    nucleus_free = 0
+    for record in records:
+        source = record.raw_genes or record.genes
+        transcripts = float(source.get("TRANSCRIPT_COUNTS", 0.0))
+        total = float(source.get("TOTAL_COUNTS", 0.0))
+        background = (
+            float(source.get("CONTROL_PROBE_COUNTS", 0.0))
+            + float(source.get("CONTROL_CODEWORD_COUNTS", 0.0))
+            + float(source.get("UNASSIGNED_CODEWORD_COUNTS", 0.0))
+        )
+        if float(source.get("NUCLEUS_AREA", 0.0)) <= 0:
+            nucleus_free += 1
+        if transcripts < min_transcripts:
+            low_count += 1
+            continue
+        # Guard the denominator: total_counts should include background, but a
+        # malformed export could leave it at zero while background is positive.
+        denominator = total if total > 0 else transcripts + background
+        if denominator > 0 and (background / denominator) > max_control_fraction:
+            high_background += 1
+            continue
+        kept.append(record)
+
+    dropped = low_count + high_background
+    report = {
+        "status": "applied",
+        "rule": "transcript_counts >= %d and background fraction <= %.3f"
+        % (min_transcripts, max_control_fraction),
+        "min_transcripts": min_transcripts,
+        "max_control_fraction": max_control_fraction,
+        "input_cell_count": len(records),
+        "retained_cell_count": len(kept),
+        "dropped_cell_count": dropped,
+        "dropped_low_transcript_count": low_count,
+        "dropped_high_background_count": high_background,
+        "nucleus_free_cell_count": nucleus_free,
+        "background_features": [
+            "CONTROL_PROBE_COUNTS",
+            "CONTROL_CODEWORD_COUNTS",
+            "UNASSIGNED_CODEWORD_COUNTS",
+        ],
+    }
+    if not kept:
+        # Refuse rather than hand back an empty dataset that fails obscurely later.
+        report["status"] = "refused_all_cells_filtered"
+        raise IngestionValidationError(
+            "Xenium cell QC removed every cell (%d below %d transcripts, %d above %.0f%% background). "
+            "Loosen min_transcripts/max_control_fraction, or check the run's QC metrics."
+            % (low_count, min_transcripts, high_background, max_control_fraction * 100)
+        )
+    return kept, report
 
 
 def _apply_threshold_qc(dataset: SpatialDataset, config: IngestionConfig) -> None:

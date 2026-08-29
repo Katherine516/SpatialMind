@@ -14,7 +14,7 @@ from spatialmind.contracts.metrics import (
     SpatialMetrics,
     metric,
 )
-from spatialmind.schemas import SpatialDataset, ToolResult
+from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES, SpatialDataset, ToolResult
 
 from .exceptions import DataModalityError, InsufficientDataError, InvalidParameterError, MissingPreconditionError
 
@@ -2198,7 +2198,7 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
 # real gene counts. They are library-size / area proxies on a different scale and
 # must be excluded from the expression matrix, or they dominate PCA/clustering and
 # rank as spurious markers. Mirrors ingestion.labels.NON_BIOLOGICAL_FEATURES.
-EXPRESSION_EXCLUDED_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
+EXPRESSION_EXCLUDED_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
 # Xenium panels ship control probes alongside real targets: negative controls,
 # unassigned and deprecated codewords, blanks, and antisense probes. They exist to
