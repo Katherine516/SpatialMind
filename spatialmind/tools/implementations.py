@@ -3,7 +3,7 @@ import random
 import warnings
 from collections import Counter, defaultdict
 from dataclasses import asdict, is_dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from spatialmind.contracts.metrics import (
     AnnotationMetrics,
@@ -14,7 +14,14 @@ from spatialmind.contracts.metrics import (
     SpatialMetrics,
     metric,
 )
-from spatialmind.schemas import SpatialDataset, ToolResult
+from spatialmind.schemas import (
+    CONTROL_FEATURE_PREFIXES,
+    NON_EXPRESSION_FEATURE_NAMES,
+    SpatialDataset,
+    ToolResult,
+    control_feature_names,
+    is_control_feature,
+)
 
 from .exceptions import DataModalityError, InsufficientDataError, InvalidParameterError, MissingPreconditionError
 
@@ -94,19 +101,19 @@ def feature_overlay(dataset: SpatialDataset, params: Dict[str, object]) -> ToolR
 
 
 def spatial_deconvolution(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
+    # Previously counted the labels it was handed and reported the shares as
+    # "estimated cell-type proportions". Deconvolution exists to estimate
+    # composition where per-cell labels are absent; counting supplied labels
+    # answers a question that was never asked. Use `region_summary` for the
+    # composition of labelled data -- it makes the same computation under a name
+    # that is true.
     require_cell_types(dataset)
-    by_region: Dict[str, Counter] = defaultdict(Counter)
-    for record in dataset.records:
-        by_region[record.region or "all"][record.cell_type] += 1
-    proportions = {}
-    for region, counts in by_region.items():
-        total = sum(counts.values()) or 1
-        proportions[region] = {key: round(value / total, 4) for key, value in counts.items()}
-    return ToolResult(
-        tool_name="spatial_deconvolution",
-        summary="Estimated cell-type proportions from existing labels for %d regions." % len(proportions),
-        metrics={"proportions": proportions, "method": params.get("method", "label_proportions")},
-        caveats=["Prototype uses observed labels as proportions; production should call Cell2location/RCTD."],
+    return _scaffold_result(
+        "spatial_deconvolution",
+        "Deconvolution scaffold validated cell labels but did not deconvolve anything.",
+        "Requires a reference-based mixture model (Cell2location/RCTD) over spot-level or "
+        "unlabelled data. For the composition of already-labelled cells, use region_summary.",
+        params,
     )
 
 
@@ -174,18 +181,17 @@ def neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, object]) 
 
 
 def ligand_receptor_analysis(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
+    # Previously returned hardcoded sender/receiver pairs with literal `score` and
+    # `pval` values, keyed only on whether a gene name appeared in the panel. The
+    # numbers were identical for every dataset and survived zeroing all expression,
+    # so they asserted a test that was never run.
     require_cell_types(dataset)
-    genes = set(dataset.genes)
-    candidates = []
-    if "VEGFA" in genes:
-        candidates.append({"ligand": "VEGFA", "receptor": "KDR/FLT1", "sender": "Tumor cell", "receiver": "Endothelial cell", "score": 0.72, "pval": 0.08})
-    if "PTPRC" in genes:
-        candidates.append({"ligand": "immune_marker", "receptor": "context_marker", "sender": "CD8+ T cell", "receiver": "Tumor cell", "score": 0.41, "pval": 0.2})
-    return ToolResult(
-        tool_name="ligand_receptor_analysis",
-        summary="Generated %d candidate interaction records." % len(candidates),
-        metrics={"database": params.get("db", "cellchat"), "interactions": candidates},
-        caveats=["Prototype uses marker heuristics; production should call CellChat/NicheNet."],
+    return _scaffold_result(
+        "ligand_receptor_analysis",
+        "Ligand-receptor scaffold validated cell labels but did not test for interactions.",
+        "Requires a permutation test over a curated ligand-receptor database; squidpy.gr.ligrec "
+        "is available in this environment and is the intended backend.",
+        params,
     )
 
 
@@ -194,17 +200,16 @@ def trajectory_inference(dataset: SpatialDataset, params: Dict[str, object]) -> 
     subtype = str(dataset.metadata.get("assay_subtype") or dataset.modality)
     if subtype not in {"scrna", "spatial_transcriptomics", "spatial_table", "tidy_csv"}:
         raise DataModalityError("trajectory_inference", dataset.modality, "scRNA")
-    bounds = dataset.bounds()
-    span = max((bounds["max_x"] - bounds["min_x"]) + (bounds["max_y"] - bounds["min_y"]), 1.0)
-    values = []
-    for index, record in enumerate(dataset.records):
-        pseudotime = ((record.x - bounds["min_x"]) + (record.y - bounds["min_y"])) / span
-        values.append({"index": index, "cell_type": record.cell_type, "pseudotime": round(pseudotime, 4)})
-    return ToolResult(
-        tool_name="trajectory_inference",
-        summary="Computed prototype spatial pseudotime for %d observations." % len(values),
-        metrics={"root_cell_type": params.get("root_cell_type"), "pseudotime": values[:20]},
-        caveats=["Prototype uses coordinate gradient; production should use Palantir/PAGA spatial."],
+    # Previously returned normalised (x + y) -- a diagonal coordinate gradient --
+    # under the key `pseudotime`. That value does vary with the data, so no
+    # data-independence check can catch it; it is wrong because the quantity is
+    # not what the name claims. Developmental ordering is not spatial position.
+    return _scaffold_result(
+        "trajectory_inference",
+        "Trajectory scaffold validated modality but did not infer a trajectory.",
+        "Requires diffusion-map pseudotime over an expression neighbour graph; scanpy.tl.paga and "
+        "scanpy.tl.dpt are available in this environment and are the intended backend.",
+        params,
     )
 
 
@@ -212,17 +217,15 @@ def motif_tf_activity(dataset: SpatialDataset, params: Dict[str, object]) -> Too
     subtype = str(dataset.metadata.get("assay_subtype") or dataset.modality)
     if subtype != "scatac_gene_activity" and dataset.modality not in {"scatac", "spatial_atac", "chromatin_accessibility"}:
         raise DataModalityError("motif_tf_activity", dataset.modality, "scATAC gene-activity or peak matrix")
-    genes = dataset.genes[: max(1, min(10, len(dataset.genes)))]
-    tf_rows = [
-        {"tf": gene, "activity_score": round((index + 1) / float(len(genes) + 1), 4), "evidence": "accessibility_inferred"}
-        for index, gene in enumerate(genes)
-    ]
-    return ToolResult(
-        tool_name="motif_tf_activity",
-        summary="Estimated prototype TF activity for %d accessibility-derived features." % len(tf_rows),
-        metrics={"feature_type": "gene_activity", "tf_activity": tf_rows},
-        caveats=["scATAC gene activity is accessibility-inferred; do not report it as measured expression."],
-        label_caveat="Accessibility-derived gene activity is an estimate of expression, not measured transcription.",
+    # Previously scored each feature as (index + 1) / (n + 1) -- its position in
+    # the feature list -- and reported it as `activity_score`. The value never
+    # depended on a single accessibility measurement.
+    return _scaffold_result(
+        "motif_tf_activity",
+        "Motif/TF activity scaffold validated modality but did not score any motif.",
+        "Requires chromVAR-style deviation scoring against a motif database over a peak matrix. "
+        "scATAC gene activity is accessibility-inferred and is not measured transcription.",
+        params,
     )
 
 
@@ -937,6 +940,128 @@ def lineages_conflict(predicted: str, observed: str) -> bool:
     return not any(pair <= compatible for compatible in COMPATIBLE_LINEAGES)
 
 
+# A lineage counts as present when the strict rule confidently assigns it this
+# many cells. The bar is deliberately low: those counts are already a floor (see
+# `assess_reference_lineage_coverage`), so requiring a large *share* on top of an
+# undercount penalizes the same sparsity twice. 25+ confidently assigned cells is
+# a population, not noise.
+MIN_LINEAGE_EVIDENCE_CELLS = 25
+MIN_LINEAGE_EVIDENCE_FRACTION = 0.002
+
+
+def assess_reference_lineage_coverage(
+    dataset: SpatialDataset,
+    reference_lineages: Iterable[str],
+    min_cells: int = MIN_LINEAGE_EVIDENCE_CELLS,
+    min_fraction: float = MIN_LINEAGE_EVIDENCE_FRACTION,
+) -> Dict[str, object]:
+    """Find lineages present in the target that the reference cannot name.
+
+    A KNN vote is taken over the classes the reference happens to contain, so a
+    cell whose true type is absent still receives its nearest available label,
+    usually at high confidence. Confidence therefore cannot answer "is this
+    reference adequate for this tissue?" -- only the target's own marker evidence
+    can.
+
+    This reuses the strict :func:`marker_lineage` rule rather than a looser
+    population estimator. That is a deliberate trade of sensitivity for
+    defensibility: the strict rule under-counts, because most targeted-panel cells
+    are too sparse to beat the dominance test, but it does not invent populations.
+    Two looser estimators were tried and rejected -- raw marker argmax hands
+    low-expression lineages (endothelial) to abundant ones (neuronal) on
+    background signal, and per-lineage standardization pushes assignment toward
+    uniform across lineages, inventing thousands of lymphoid cells in a brain
+    section. Both produced numbers that could not be defended.
+
+    So the counts here are a **floor, not an estimate**: the true uncovered share
+    is higher, and the fraction is named ``confident_uncovered_fraction`` to keep
+    that honest. The refusal decision rests on *which lineages* are confidently
+    present and unnameable, which the strict rule does establish, rather than on
+    a precise share it cannot.
+
+    Coverage is deliberately strict about ``COMPATIBLE_LINEAGES``, which is not
+    consulted. That set suppresses false *disagreement* alarms between
+    neighbouring lineages, a different question. For coverage, "close enough"
+    still means the reference cannot name the cell correctly -- an OPC labelled
+    ``oligodendrocyte`` is a wrong label, not a near miss.
+    """
+    covered_lineages = {str(lineage) for lineage in reference_lineages if lineage}
+    counts: Counter = Counter()
+    indeterminate = 0
+    for record in dataset.records:
+        lineage, _score = marker_lineage(record.genes)
+        if lineage:
+            counts[lineage] += 1
+        else:
+            indeterminate += 1
+
+    total_cells = len(dataset.records)
+    floor = max(int(min_cells), int(math.ceil(min_fraction * total_cells)))
+    covered_cells = sum(count for lineage, count in counts.items() if lineage in covered_lineages)
+    # Only lineages with enough confident cells to be a population rather than a
+    # handful of ambiguous calls.
+    uncovered = {
+        lineage: count
+        for lineage, count in counts.items()
+        if lineage not in covered_lineages and count >= floor
+    }
+    below_floor = {
+        lineage: count
+        for lineage, count in counts.items()
+        if lineage not in covered_lineages and count < floor
+    }
+    uncovered_cells = sum(uncovered.values())
+    evidenced = covered_cells + uncovered_cells + sum(below_floor.values())
+    fraction = (uncovered_cells / float(evidenced)) if evidenced else 0.0
+
+    if not evidenced:
+        status = "indeterminate"
+    elif not uncovered:
+        status = "adequate"
+    elif len(uncovered) >= 2 or fraction >= 0.10:
+        status = "inadequate"
+    else:
+        status = "partial"
+
+    return {
+        "status": status,
+        "method": "strict per-cell marker lineage rule; counts are a floor, not an estimate",
+        "reference_lineages": sorted(covered_lineages),
+        "target_lineage_counts": dict(counts.most_common()),
+        "uncovered_lineages": sorted(uncovered, key=lambda name: -uncovered[name]),
+        "uncovered_lineage_counts": dict(sorted(uncovered.items(), key=lambda item: -item[1])),
+        "uncovered_below_evidence_floor": dict(sorted(below_floor.items(), key=lambda item: -item[1])),
+        "evidence_floor_cells": floor,
+        "confident_covered_cell_count": covered_cells,
+        "confident_uncovered_cell_count": uncovered_cells,
+        "no_marker_evidence_cell_count": indeterminate,
+        "confident_lineage_cell_count": evidenced,
+        "confident_uncovered_fraction": round(fraction, 4),
+    }
+
+
+def describe_lineage_coverage(report: Dict[str, object]) -> str:
+    """One-line human summary of a coverage report."""
+    uncovered = report.get("uncovered_lineages") or []
+    if not uncovered:
+        return "Every lineage confidently detected in the target has a matching reference class."
+    counts = report.get("uncovered_lineage_counts") or {}
+    detail = ", ".join("%s (%d cells)" % (name, counts.get(name, 0)) for name in uncovered)
+    return (
+        "The target carries confident marker evidence for %d lineage(s) the reference has no class for: "
+        "%s. That is at least %d cells (%.1f%% of the %d confidently assigned), and a floor rather than an "
+        "estimate -- the strict per-cell rule leaves %d further cells unassigned."
+        % (
+            len(uncovered),
+            detail,
+            int(report.get("confident_uncovered_cell_count") or 0),
+            float(report.get("confident_uncovered_fraction") or 0.0) * 100,
+            int(report.get("confident_lineage_cell_count") or 0),
+            int(report.get("no_marker_evidence_cell_count") or 0),
+        )
+    )
+
+
 SPECIES_ALIASES = {
     "human": "human",
     "homo sapiens": "human",
@@ -987,6 +1112,28 @@ def _knn_reference_label_transfer(
         raise MissingPreconditionError(
             "reference_label_transfer requires a reference with at least two labelled classes; got %d." % len(labels)
         )
+
+    # Lineage each reference class belongs to, resolved once and reused below.
+    label_lineages = {label: lineage_for_label(label) for label in labels}
+    reference_lineages = {lineage for lineage in label_lineages.values() if lineage}
+
+    # Run before fitting anything: this needs only the reference's class names and
+    # the target's own markers, so an inadequate reference is refused in seconds
+    # rather than after a multi-minute KNN over the full section.
+    coverage = assess_reference_lineage_coverage(dataset, reference_lineages)
+    if coverage["status"] == "inadequate" and not params.get("allow_incomplete_reference"):
+        raise MissingPreconditionError(
+            "reference_label_transfer refuses an incomplete reference: %s The reference can only name %s. "
+            "Every one of those cells would still be assigned its nearest available label, usually at high "
+            "confidence, so the vote fraction cannot surface this. Add reference classes covering the missing "
+            "lineages, or pass allow_incomplete_reference=True to transfer anyway and review the "
+            "lineage_absent_from_reference flags."
+            % (
+                describe_lineage_coverage(coverage),
+                ", ".join(sorted(reference_lineages)) or "no recognised lineage",
+            )
+        )
+
     try:
         import numpy as np  # type: ignore
         from sklearn.neighbors import KNeighborsClassifier  # type: ignore
@@ -1036,9 +1183,10 @@ def _knn_reference_label_transfer(
     median_target_distance = float(np.median(target_distances))
     median_reference_distance = float(np.median(reference_baseline))
 
-    # Lineage each reference class belongs to, resolved once.
-    label_lineages = {label: lineage_for_label(label) for label in classes}
-    reference_lineages = {lineage for lineage in label_lineages.values() if lineage}
+    # `classes` comes back from the fitted classifier and should match `labels`;
+    # resolve any class the earlier pass did not see rather than assuming.
+    for label in classes:
+        label_lineages.setdefault(label, lineage_for_label(label))
 
     predictions = []
     low_confidence = 0
@@ -1108,6 +1256,7 @@ def _knn_reference_label_transfer(
             "marker_disagreement_count": disagreements,
             "lineage_absent_from_reference_count": uncovered,
             "reference_lineages": sorted(reference_lineages),
+            "lineage_coverage": coverage,
             "distant_from_reference_count": out_of_reference,
             "review_priority_percentile": review_percentile,
             "reference_distance_threshold": round(distance_threshold, 4),
@@ -1133,9 +1282,25 @@ def _knn_reference_label_transfer(
             "only to rank review priority within this dataset."
             % (median_target_distance / max(median_reference_distance, 1e-9)),
         ]
+        + _lineage_coverage_caveats(coverage)
         + _type_honesty_caveats(dataset),
         label_caveat="Cell-type labels were transferred from a reference and must be expert-reviewed before use.",
     )
+
+
+def _lineage_coverage_caveats(coverage: Dict[str, object]) -> List[str]:
+    """Caveat for a reference that only partly covers the target's lineages.
+
+    Only reachable when coverage is short of adequate: either between the warn and
+    refuse thresholds, or past the refuse threshold with an explicit override.
+    """
+    if coverage.get("status") not in {"partial", "inadequate"}:
+        return []
+    return [
+        "%s Those cells received their nearest available label regardless, so their transferred labels "
+        "are systematically wrong rather than uncertain, and mean confidence does not reflect it."
+        % describe_lineage_coverage(coverage)
+    ]
 
 
 def spatial_clustering(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
@@ -2040,43 +2205,7 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
 # real gene counts. They are library-size / area proxies on a different scale and
 # must be excluded from the expression matrix, or they dominate PCA/clustering and
 # rank as spurious markers. Mirrors ingestion.labels.NON_BIOLOGICAL_FEATURES.
-EXPRESSION_EXCLUDED_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
-
-# Xenium panels ship control probes alongside real targets: negative controls,
-# unassigned and deprecated codewords, blanks, and antisense probes. They exist to
-# measure background and misassignment, and they are a large share of the panel --
-# 41% of the breast panel and 38% of the glioblastoma panel in local data. Left in
-# the expression matrix they drive PCA, appear as cluster markers, and can define
-# entire clusters out of technical noise. They stay available for QC, which reads
-# them from the instrument metrics rather than from this matrix.
-CONTROL_FEATURE_PREFIXES = (
-    "UNASSIGNEDCODEWORD",
-    "NEGCONTROLCODEWORD",
-    "NEGCONTROLPROBE",
-    "DEPRECATEDCODEWORD",
-    "BLANK",
-    "ANTISENSE",
-    "NEGPROBE",
-    "NEGCONTROL",
-)
-
-
-def is_control_feature(name: str) -> bool:
-    """True for Xenium control/background probes rather than measured genes.
-
-    Control probes follow ``Prefix_0123`` / ``Prefix0123``, so the prefix must be
-    followed by a separator or digits. Matching on the prefix alone would catch
-    real genes that merely start with the same letters.
-    """
-    upper = str(name).upper()
-    for prefix in CONTROL_FEATURE_PREFIXES:
-        if not upper.startswith(prefix):
-            continue
-        remainder = upper[len(prefix):]
-        if not remainder or remainder[0] in "_-." or remainder[0].isdigit():
-            return True
-    return False
-
+EXPRESSION_EXCLUDED_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
 def expression_feature_names(dataset: SpatialDataset) -> List[str]:
     """Genes used for expression analysis.
@@ -2084,10 +2213,11 @@ def expression_feature_names(dataset: SpatialDataset) -> List[str]:
     Excludes QC/morphology pseudo-features and Xenium control probes, both of
     which are technical rather than biological signal.
     """
+    controls = control_feature_names(dataset)
     biological = [
         gene
         for gene in dataset.genes
-        if gene.upper() not in EXPRESSION_EXCLUDED_FEATURES and not is_control_feature(gene)
+        if gene.upper() not in EXPRESSION_EXCLUDED_FEATURES and gene.upper() not in controls
     ]
     # Only drop them when real genes remain, so tiny fixtures stay usable.
     return biological if len(biological) >= 2 else list(dataset.genes)

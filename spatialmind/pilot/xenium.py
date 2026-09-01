@@ -29,6 +29,8 @@ from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
 from spatialmind.tools.implementations import (
     CLUSTER_ASSIGNMENT_KEY,
+    control_feature_names,
+    expression_feature_names,
     run_distance_dependent_cooccurrence,
     run_neighborhood_robustness,
     run_region_stratified_neighborhoods,
@@ -284,9 +286,28 @@ def run_pilot(
         "required_next_inputs": gate["required_next_inputs"],
         "records_loaded": len(dataset.records),
         "analysis_scope": analysis_scope,
+        "cell_qc": dataset.metadata.get("cell_qc", {}),
         "expression_layers": dataset.metadata.get("expression_layers", {}),
         "analysis_backend_error": analysis_backend_error,
-        "features_loaded": len(dataset.genes),
+        # The measured gene panel. This counted control probes and QC
+        # pseudo-features until now, so the Limitations line -- the one sentence a
+        # reader leans on to judge what the assay could have seen -- overstated a
+        # 319-gene brain panel as 495 features. The raw count stays available
+        # below for provenance.
+        "features_loaded": len(expression_feature_names(dataset)),
+        "raw_features_loaded": len(dataset.genes),
+        # Controls present in the loaded data, not the panel's full declared list:
+        # the report says these were excluded from analysis, so it must count the
+        # ones that were actually there to exclude.
+        "control_features_loaded": len(
+            {gene.upper() for gene in dataset.genes} & control_feature_names(dataset)
+        ),
+        "panel_control_feature_count": len(dataset.metadata.get("control_features") or []),
+        "control_feature_source": dataset.metadata.get("control_feature_source", "name_prefix_fallback"),
+        # The measured panel, not just its size. Panel adequacy scoring needs to
+        # know *which* genes were measured to judge whether a claim's markers are
+        # present; without the list it could only ever return a constant.
+        "feature_names": expression_feature_names(dataset),
         "cell_types": dataset.cell_types,
         "regions": sorted({record.region for record in dataset.records if record.region}),
         "cell_type_counts": dict(Counter(record.cell_type for record in dataset.records)),
@@ -899,16 +920,23 @@ def _analysis_scope(dataset: SpatialDataset) -> Dict[str, Any]:
     sampling = dict(dataset.metadata.get("sampling") or {})
     total = int(sampling.get("total_records") or dataset.metadata.get("n_obs_total") or len(dataset.records))
     loaded = len(dataset.records)
+    # Completeness is about how much of the section was *covered*, not how many
+    # cells survived QC. Comparing the post-QC count against the section total
+    # made 44 cells dropped for quality read as incomplete coverage and block
+    # validated inference on a full section.
+    scanned = int(sampling.get("scanned_records") or loaded)
     complete = str(dataset.metadata.get("analysis_scope") or "").lower() == "full_section"
-    if total > 0 and loaded < total:
+    if total > 0 and scanned < total:
         complete = False
     return {
         "scope": "full_section" if complete else "sampled",
         "complete_section": complete,
         "complete_section_requirement_met": complete,
         "loaded_records": loaded,
+        "scanned_records": scanned,
+        "qc_removed_records": max(scanned - loaded, 0),
         "total_records": total,
-        "fraction_loaded": round(loaded / float(max(total, 1)), 6),
+        "fraction_loaded": round(scanned / float(max(total, 1)), 6),
         "sampling_method": sampling.get("method", "unknown"),
         "validated_claims_allowed": False,
     }
@@ -1336,17 +1364,37 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         "- Dataset: `%s`" % payload["dataset_path"],
         "- Loaded cells: `%d`" % payload["records_loaded"],
         "- Loaded features: `%d`" % payload["features_loaded"],
-        "- Analysis scope: `%s` (%s/%s cells; %.2f%%)"
+        # Tolerate payloads written before scanned/QC counts existed, and
+        # hand-built ones: a report must not crash on a missing key.
+        "- Analysis scope: `%s` (%s of %s cells scanned, %.2f%%; %s analysed after QC removed %s)"
         % (
-            scope["scope"],
-            scope["loaded_records"],
-            scope["total_records"],
-            100.0 * float(scope["fraction_loaded"]),
+            scope.get("scope", "unknown"),
+            scope.get("scanned_records", scope.get("loaded_records", 0)),
+            scope.get("total_records", 0),
+            100.0 * float(scope.get("fraction_loaded", 0.0)),
+            scope.get("loaded_records", 0),
+            scope.get("qc_removed_records", 0),
         ),
         "- QC expression source: `%s`"
         % payload.get("expression_layers", {}).get("source", "source layer unavailable"),
         "",
     ]
+    cell_qc = payload.get("cell_qc") or {}
+    if cell_qc.get("status") == "applied":
+        lines.extend(
+            [
+                "- Cell QC: `%s` — removed %d of %d cells (%d low transcript count, %d high background); %d cells had no detected nucleus and were kept."
+                % (
+                    cell_qc["rule"],
+                    cell_qc["dropped_cell_count"],
+                    cell_qc["input_cell_count"],
+                    cell_qc["dropped_low_transcript_count"],
+                    cell_qc["dropped_high_background_count"],
+                    cell_qc["nucleus_free_cell_count"],
+                ),
+                "",
+            ]
+        )
     lines.extend(_descriptive_markdown(payload))
     if payload["blocking_reasons"]:
         lines.extend(["## What Is Still Needed To Go Further", ""])
@@ -2403,7 +2451,16 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
     label_status = payload.get("label_report", {}).get("status", "unknown")
     region_status = payload.get("region_report", {}).get("status", "unknown")
     items = [
-        "Xenium uses a targeted panel (%s loaded features); absence of a gene means it was not measured, not that it is unexpressed." % feature_count,
+        "Xenium uses a targeted panel (%s measured genes%s); absence of a gene means it was not measured, not that it is unexpressed."
+        % (
+            feature_count,
+            (
+                "; %d control probes were excluded from analysis, identified by %s"
+                % (payload["control_features_loaded"], payload.get("control_feature_source", "name prefix"))
+            )
+            if payload.get("control_features_loaded")
+            else ""
+        ),
         "Cell-type labels status: %s. Validated biological interpretation requires expert-reviewed labels." % label_status,
         "Region labels status: %s. Region summaries use user-provided regions; they are not image-derived or independently validated by this MVP." % region_status,
         "Neighborhood enrichment reflects spatial adjacency only; it does not establish interaction, signaling, causation, or mechanism.",

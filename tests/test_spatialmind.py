@@ -1,7 +1,11 @@
+import importlib
 import math
 import os
 import csv
+import shutil
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,6 +16,8 @@ from spatialmind.agent_loop import SpatialAgent
 from spatialmind.datasets import discover_dataset_candidates, inspect_dataset
 from spatialmind.governance import build_dataset_governance_manifest
 from spatialmind.ingestion import (
+    IngestionValidationError,
+    apply_xenium_cell_qc,
     BatchIngestionConfig,
     BatchIngestionPipeline,
     DataFormat,
@@ -54,10 +60,16 @@ from spatialmind.viz import (
 )
 from spatialmind.storage import StorageLayer
 from spatialmind.storage import index_run_records, replay_run_record, verify_run_record
-from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_mvp_registry
+from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_full_registry, build_mvp_registry
 from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.fusion import ModalityFuser
-from spatialmind.tools.implementations import feature_overlay, marker_detection, reference_label_transfer
+from spatialmind.tools.implementations import (
+    assess_reference_lineage_coverage,
+    describe_lineage_coverage,
+    feature_overlay,
+    marker_detection,
+    reference_label_transfer,
+)
 from spatialmind.workflows import INTEGRATION_MODE, SCATAC_STANDALONE, SCRNA_STANDALONE, XENIUM_STANDALONE
 from spatialmind.contracts import BiologicalClaim, CellByFeatureContract, CoreSpatialObject, ground_claim
 from spatialmind.schemas import SpatialDataset, SpotRecord, ToolResult
@@ -212,7 +224,15 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(infer_data_type(experiment_path), "xenium_experiment_file")
         dataset = DataIngestionLayer().load(experiment_path)
         self.assertEqual(dataset.modality, "spatial_transcriptomics")
-        self.assertEqual(len(dataset.records), 5000)
+        # The scan selects 5000 cells; per-cell QC then removes the unusable ones,
+        # so the retained count is 5000 minus exactly what QC reports dropping.
+        # This lymph node section is genuinely sparse (median 45 transcripts per
+        # cell against 166 in the brain section), so the drop is not negligible.
+        sampling = dataset.metadata["sampling"]
+        cell_qc = dataset.metadata["cell_qc"]
+        self.assertEqual(sampling["scanned_records"], 5000)
+        self.assertEqual(len(dataset.records), 5000 - cell_qc["dropped_cell_count"])
+        self.assertEqual(cell_qc["retained_cell_count"], len(dataset.records))
         self.assertEqual(dataset.source_path, experiment_path)
         self.assertEqual(dataset.sources[0].data_type, "xenium_experiment_file")
         self.assertTrue(dataset.metadata["xenium_files"]["experiment_xenium"])
@@ -1659,6 +1679,454 @@ class LabelTransferTests(unittest.TestCase):
             reference_label_transfer(self._target(), {"reference_dataset": reference, "min_shared_features": 2})
 
 
+class ToolHonestyTests(unittest.TestCase):
+    """A tool must never report work it did not do.
+
+    `_is_scaffold` catches tools that do *nothing* -- it greps their source for
+    `_scaffold_result(`. It cannot catch a tool that does *meaningless* work, which
+    is how four tools shipped as `capability="validated"` while returning hardcoded
+    p-values, a coordinate gradient labelled "pseudotime", label counts labelled
+    "deconvolution", and a list index labelled "TF activity".
+    """
+
+    STAT_KEYS = (
+        "pval", "pvalue", "p_value", "pval_adj", "padj", "score", "zscore", "z_score",
+        "activity_score", "pseudotime", "morans_i", "silhouette", "modularity",
+    )
+    GENES = ("VEGFA", "PTPRC", "EPCAM", "CD8A", "CD3D", "KDR", "FLT1", "MBP", "GFAP", "SNAP25")
+
+    def _dataset(self, modality, subtype, seed):
+        records = []
+        for index in range(40):
+            genes = {gene: float((index * (n + 1) + seed) % 7) for n, gene in enumerate(self.GENES)}
+            records.append(
+                SpotRecord(
+                    "S",
+                    float((index * 3 + seed) % 20),
+                    float((index * 7 + seed) % 20),
+                    ["Tumor cell", "CD8+ T cell", "Endothelial cell"][index % 3],
+                    genes,
+                    region=["r1", "r2"][index % 2],
+                    cell_id="c%d" % index,
+                )
+            )
+        dataset = SpatialDataset(sample_id="S", source_path="p", modality=modality, records=records)
+        dataset.metadata["assay_subtype"] = subtype
+        return dataset
+
+    def _statistics(self, payload, path=""):
+        found = []
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key in self.STAT_KEYS and isinstance(value, (int, float)):
+                    found.append(("%s.%s" % (path, key), round(float(value), 6)))
+                else:
+                    found.extend(self._statistics(value, "%s.%s" % (path, key)))
+        elif isinstance(payload, list):
+            for index, value in enumerate(payload):
+                found.extend(self._statistics(value, "%s[%d]" % (path, index)))
+        return found
+
+    def test_no_plannable_tool_returns_data_independent_statistics(self):
+        """A statistic that survives changing every value was never computed.
+
+        Expression, coordinates and labels all differ between the two datasets, so
+        a tool whose p-values, scores or z-scores come out identical is asserting a
+        test it never ran. Tools that raise are fine: refusing on data they cannot
+        handle is the honest outcome. Tools that emit no statistic at all are fine
+        too -- `annotation` summarises labels and claims nothing more.
+
+        Calls `.callable` rather than `.run` deliberately: `run` attaches quality
+        metrics derived from the dataset, which would make any result look
+        data-dependent and mask exactly what this is looking for.
+        """
+        offenders = []
+        for tool in build_full_registry().list_plannable():
+            for modality, subtype in (
+                ("spatial_transcriptomics", "spatial_transcriptomics"),
+                ("scatac", "scatac_gene_activity"),
+            ):
+                try:
+                    first = tool.callable(self._dataset(modality, subtype, 0), {})
+                    second = tool.callable(self._dataset(modality, subtype, 3), {})
+                except Exception:
+                    continue  # refused this modality; try the next
+                baseline = self._statistics(first.metrics)
+                if baseline and baseline == self._statistics(second.metrics):
+                    offenders.append("%s (%d identical: %s)" % (tool.name, len(baseline), baseline[:2]))
+                break
+        self.assertEqual(
+            offenders,
+            [],
+            "plannable tools returned statistics unchanged by the data: %s" % "; ".join(offenders),
+        )
+
+    def test_known_prototype_tools_are_not_plannable(self):
+        # These four fabricated or mislabelled their output and were reachable by
+        # an LLM planner through to_anthropic_tools(). Two of them
+        # (trajectory_inference, spatial_deconvolution) derive a real number from
+        # the data and so cannot be caught by the check above -- their defect is
+        # that the quantity is not what the name claims. Pin them explicitly.
+        registry = build_full_registry()
+        exposed = {schema["name"] for schema in registry.to_anthropic_tools()}
+        for name in (
+            "ligand_receptor_analysis",
+            "trajectory_inference",
+            "spatial_deconvolution",
+            "motif_tf_activity",
+        ):
+            self.assertEqual(
+                registry.get(name).capability,
+                "unavailable",
+                "%s does no real work and must not be marked usable" % name,
+            )
+            self.assertNotIn(name, exposed, "%s must not be offered to a planner" % name)
+
+
+class XeniumCellQCTests(unittest.TestCase):
+    """Nothing filtered a Xenium load before this.
+
+    `_apply_threshold_qc` is reachable only from the config-driven pipeline, so
+    every statistic in every Xenium report was computed over an unfiltered
+    population.
+    """
+
+    def _cell(self, cell_id, transcripts, background=0.0, nucleus_area=5.0):
+        return SpotRecord(
+            "S", 0.0, 0.0, "Unannotated cell",
+            {
+                "TRANSCRIPT_COUNTS": float(transcripts),
+                "TOTAL_COUNTS": float(transcripts) + float(background),
+                "CELL_AREA": 100.0,
+                "NUCLEUS_AREA": float(nucleus_area),
+                "CONTROL_PROBE_COUNTS": float(background),
+                "CONTROL_CODEWORD_COUNTS": 0.0,
+                "UNASSIGNED_CODEWORD_COUNTS": 0.0,
+                "GENE_A": 1.0,
+            },
+            cell_id=cell_id,
+        )
+
+    def test_low_count_and_high_background_cells_are_removed(self):
+        records = [
+            self._cell("good", 200),
+            self._cell("sparse", 3),
+            self._cell("noisy", 200, background=100.0),
+        ]
+        kept, report = apply_xenium_cell_qc(records)
+        self.assertEqual([r.cell_id for r in kept], ["good"])
+        self.assertEqual(report["dropped_low_transcript_count"], 1)
+        self.assertEqual(report["dropped_high_background_count"], 1)
+        self.assertEqual(report["input_cell_count"], 3)
+        self.assertEqual(report["retained_cell_count"], 1)
+
+    def test_nucleus_free_cells_are_reported_but_kept(self):
+        # A zero nucleus area is a segmentation warning, not proof the cell is
+        # wrong; dropping on it would silently discard whole morphologies.
+        kept, report = apply_xenium_cell_qc([self._cell("anucleate", 200, nucleus_area=0.0)])
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(report["nucleus_free_cell_count"], 1)
+        self.assertEqual(report["dropped_cell_count"], 0)
+
+    def test_filtering_everything_refuses_instead_of_returning_nothing(self):
+        with self.assertRaises(IngestionValidationError) as ctx:
+            apply_xenium_cell_qc([self._cell("a", 1), self._cell("b", 2)])
+        self.assertIn("removed every cell", str(ctx.exception))
+
+    def test_thresholds_are_reported_not_silent(self):
+        _kept, report = apply_xenium_cell_qc([self._cell("good", 200)], min_transcripts=25)
+        self.assertIn("transcript_counts >= 25", report["rule"])
+        self.assertEqual(report["min_transcripts"], 25)
+
+    def test_qc_removals_do_not_make_a_full_section_look_sampled(self):
+        """Coverage is what the scan reached, not what survived QC.
+
+        Regression: `_analysis_scope` recomputed completeness from the post-QC
+        record count, so 44 cells dropped for quality out of 24,406 turned a full
+        section into `blocked_sampled_inference` and blocked validated inference
+        outright. The loader guarded this; the pilot's own recomputation undid it.
+        """
+        from spatialmind.pilot.xenium import _analysis_scope
+
+        dataset = SpatialDataset(
+            sample_id="S", source_path="p", modality="xenium_spatial_rna",
+            records=[self._cell("c%d" % i, 200) for i in range(96)],
+        )
+        dataset.metadata["analysis_scope"] = "full_section"
+        dataset.metadata["sampling"] = {
+            "method": "all", "scanned_records": 100, "loaded_records": 96, "total_records": 100,
+        }
+        scope = _analysis_scope(dataset)
+        self.assertEqual(scope["scope"], "full_section")
+        self.assertTrue(scope["complete_section"])
+        self.assertEqual(scope["qc_removed_records"], 4)
+        self.assertEqual(scope["fraction_loaded"], 1.0)
+
+    def test_a_genuinely_sampled_run_is_still_sampled(self):
+        from spatialmind.pilot.xenium import _analysis_scope
+
+        dataset = SpatialDataset(
+            sample_id="S", source_path="p", modality="xenium_spatial_rna",
+            records=[self._cell("c%d" % i, 200) for i in range(40)],
+        )
+        dataset.metadata["analysis_scope"] = "sampled"
+        dataset.metadata["sampling"] = {
+            "method": "deterministic_even_index", "scanned_records": 40,
+            "loaded_records": 40, "total_records": 100,
+        }
+        scope = _analysis_scope(dataset)
+        self.assertEqual(scope["scope"], "sampled")
+        self.assertFalse(scope["complete_section"])
+
+    def test_background_features_are_never_expression(self):
+        from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES
+
+        for name in ("CONTROL_PROBE_COUNTS", "CONTROL_CODEWORD_COUNTS", "UNASSIGNED_CODEWORD_COUNTS"):
+            self.assertIn(name, NON_EXPRESSION_FEATURE_NAMES)
+
+    def test_the_three_exclusion_sets_cannot_drift(self):
+        # They were three identical literals in three modules. Adding a fourth
+        # feature to one would have silently left the others behind.
+        from spatialmind.ingestion.labels import NON_BIOLOGICAL_FEATURES
+        from spatialmind.ingestion.pipeline import NON_EXPRESSION_FEATURES
+        from spatialmind.tools.implementations import EXPRESSION_EXCLUDED_FEATURES
+
+        self.assertIs(NON_EXPRESSION_FEATURES, NON_BIOLOGICAL_FEATURES)
+        self.assertIs(NON_BIOLOGICAL_FEATURES, EXPRESSION_EXCLUDED_FEATURES)
+
+
+class ScaffoldDetectionTests(unittest.TestCase):
+    def test_a_mention_of_the_scaffold_helper_is_not_a_scaffold(self):
+        """Detection parses the body; it does not search the text.
+
+        The substring check this replaced matched `_scaffold_result(` anywhere in
+        the source, so a working tool that named the helper in a docstring,
+        comment or caveat string was silently marked unavailable and dropped out
+        of `list_plannable()` with no error raised anywhere.
+        """
+        from spatialmind.tools.registry import _is_scaffold
+
+        source = textwrap.dedent(
+            '''
+            from spatialmind.schemas import ToolResult
+            from spatialmind.tools.implementations import _scaffold_result
+
+            def real_tool(dataset, params):
+                """A real tool. Unlike _scaffold_result(), this does the work."""
+                # deliberately mentions _scaffold_result( in a comment
+                return ToolResult(tool_name="real", summary="s",
+                                  metrics={"x": 1}, caveats=["see _scaffold_result("])
+
+            def genuine_scaffold(dataset, params):
+                return _scaffold_result("t", "s", "c", params)
+            '''
+        )
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "scaffold_probe_module.py")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        sys.path.insert(0, directory)
+        try:
+            module = importlib.import_module("scaffold_probe_module")
+            self.assertFalse(_is_scaffold(module.real_tool), "prose mention must not mark a tool unavailable")
+            self.assertTrue(_is_scaffold(module.genuine_scaffold), "a real scaffold return must still be caught")
+        finally:
+            sys.path.remove(directory)
+            sys.modules.pop("scaffold_probe_module", None)
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def test_registered_scaffolds_are_still_detected(self):
+        registry = build_full_registry()
+        summary = registry.capability_summary()
+        self.assertGreaterEqual(summary.get("unavailable", 0), 14)
+        self.assertNotIn("tumor_niche_analysis", {t.name for t in registry.list_plannable()})
+
+
+class PanelAdequacyTests(unittest.TestCase):
+    """P_panel must measure the panel, not match words in a sentence.
+
+    It read marker families out of the claim's English text. The pilot's claims
+    are capability statements that never name a cell type, so it always returned
+    its 0.8 fallback -- and because reliability is a weakest link, 0.8 became the
+    silent ceiling on every claim in every Xenium report.
+    """
+
+    def _payload(self, feature_names, cell_types=("oligodendrocyte",)):
+        return {
+            "contract": {"panel_name": "test_panel", "n_features": len(feature_names)},
+            "features_loaded": len(feature_names),
+            "feature_names": list(feature_names),
+            "cell_types": list(cell_types),
+            "claim_ledger": [
+                {
+                    "claim_text": "Expert-reviewed cell labels are available for the loaded cells.",
+                    "claim_type": "cell_type_annotation",
+                    "status": "supported",
+                }
+            ],
+            "label_report": {"status": "expert_labels_applied", "coverage": 1.0},
+        }
+
+    def _panel_score(self, payload):
+        rows = build_claim_reliability_table(payload, [])
+        return rows[0]["components"]["P_panel"]["score"]
+
+    def test_score_reflects_which_markers_the_panel_measures(self):
+        # LINEAGE_MARKERS["oligodendrocyte"] has 8 canonical markers.
+        from spatialmind.tools.implementations import LINEAGE_MARKERS
+
+        markers = list(LINEAGE_MARKERS["oligodendrocyte"])
+        full = self._panel_score(self._payload(markers))
+        half = self._panel_score(self._payload(markers[: len(markers) // 2]))
+        none = self._panel_score(self._payload(["IRRELEVANT1", "IRRELEVANT2"]))
+        self.assertAlmostEqual(full, 1.0, places=3)
+        self.assertAlmostEqual(half, 0.5, places=3)
+        self.assertAlmostEqual(none, 0.0, places=3)
+
+    def test_score_is_not_pinned_to_the_generic_fallback(self):
+        # The exact defect: a claim naming no cell type used to score 0.8 no
+        # matter what the panel contained.
+        from spatialmind.tools.implementations import LINEAGE_MARKERS
+
+        markers = list(LINEAGE_MARKERS["oligodendrocyte"])
+        scores = {
+            self._panel_score(self._payload(markers)),
+            self._panel_score(self._payload(markers[:2])),
+        }
+        self.assertNotIn(0.8, scores, "P_panel fell back to the constant despite labels being applied")
+        self.assertEqual(len(scores), 2, "P_panel did not vary with panel content")
+
+    def test_label_text_is_not_treated_as_a_measured_gene(self):
+        # `measured` used to be seeded from cell_types, so a cell type sharing a
+        # name with a gene scored as though that gene had been measured.
+        payload = self._payload(["IRRELEVANT"], cell_types=["oligodendrocyte"])
+        payload["cell_types"] = payload["cell_types"] + ["MOG"]
+        self.assertAlmostEqual(self._panel_score(payload), 0.0, places=3)
+
+
+class ReferenceLineageCoverageTests(unittest.TestCase):
+    """A reference can share genes with the panel and still be unable to name the tissue.
+
+    Panel overlap and vote confidence both miss this: a cell whose type is absent
+    from the reference is assigned its nearest available label, usually at high
+    confidence. Only the target's own markers can answer it.
+    """
+
+    LINEAGE_PROFILES = {
+        "myeloid": {"CD68": 6.0, "AIF1": 5.0, "C1QA": 4.0},
+        "lymphoid": {"CD8A": 7.0, "CD3D": 6.0, "PTPRC": 5.0},
+        "neuronal": {"SNAP25": 7.0, "RBFOX3": 6.0, "SYT1": 5.0},
+        "opc": {"PDGFRA": 8.0, "CSPG4": 7.0, "VCAN": 6.0},
+    }
+    ALL_MARKERS = {
+        marker: 0.0 for profile in LINEAGE_PROFILES.values() for marker in profile
+    }
+
+    def _cells(self, lineage, count, prefix):
+        records = []
+        for index in range(count):
+            genes = dict(self.ALL_MARKERS)
+            genes.update(self.LINEAGE_PROFILES[lineage])
+            genes["MBP"] = 0.0
+            records.append(
+                SpotRecord("X", float(index), 0.0, "Unannotated cell", genes, cell_id="%s%d" % (prefix, index))
+            )
+        return records
+
+    def _target(self, composition):
+        records = []
+        for lineage, count in composition.items():
+            records.extend(self._cells(lineage, count, lineage[:3]))
+        return SpatialDataset(sample_id="X", source_path="x", modality="xenium_spatial_rna", records=records)
+
+    def _reference(self):
+        """Oligodendrocyte + neuron classes, so `oligodendrocyte` and `neuronal` are nameable."""
+        records = []
+        for index in range(12):
+            oligo = dict(self.ALL_MARKERS)
+            oligo["MBP"] = 9.0
+            records.append(SpotRecord("R", 0.0, 0.0, "oligodendrocyte", oligo, cell_id="o%d" % index))
+            neuron = dict(self.ALL_MARKERS)
+            neuron.update(self.LINEAGE_PROFILES["neuronal"])
+            neuron["MBP"] = 0.0
+            records.append(SpotRecord("R", 0.0, 0.0, "neuron", neuron, cell_id="n%d" % index))
+        return SpatialDataset(sample_id="R", source_path="ref", modality="scrna", records=records)
+
+    def test_lineages_above_the_evidence_floor_are_reported_as_uncovered(self):
+        target = self._target({"neuronal": 40, "myeloid": 30, "lymphoid": 30})
+        report = assess_reference_lineage_coverage(target, {"neuronal", "oligodendrocyte"})
+        self.assertEqual(set(report["uncovered_lineages"]), {"myeloid", "lymphoid"})
+        self.assertEqual(report["status"], "inadequate")
+        self.assertEqual(report["confident_uncovered_cell_count"], 60)
+
+    def test_a_handful_of_cells_is_not_a_missing_population(self):
+        # Below the evidence floor these are ambiguous calls, not a population,
+        # and must not trigger a refusal.
+        target = self._target({"neuronal": 200, "myeloid": 5})
+        report = assess_reference_lineage_coverage(target, {"neuronal", "oligodendrocyte"})
+        self.assertEqual(report["uncovered_lineages"], [])
+        self.assertEqual(report["uncovered_below_evidence_floor"], {"myeloid": 5})
+        self.assertEqual(report["status"], "adequate")
+
+    def test_counts_are_reported_as_a_floor_not_an_estimate(self):
+        # The strict rule leaves sparse cells unassigned rather than guessing, so
+        # the wording must not present its counts as the true share.
+        target = self._target({"neuronal": 40, "myeloid": 30})
+        report = assess_reference_lineage_coverage(target, {"neuronal"})
+        self.assertIn("floor rather than an estimate", describe_lineage_coverage(report))
+        self.assertIn("floor", report["method"])
+
+    def test_near_lineages_still_count_as_uncovered(self):
+        # COMPATIBLE_LINEAGES suppresses false *disagreement* alarms, a different
+        # question. An OPC labelled `oligodendrocyte` is a wrong label.
+        target = self._target({"neuronal": 40, "opc": 30})
+        report = assess_reference_lineage_coverage(target, {"neuronal", "oligodendrocyte"})
+        self.assertIn("opc", report["uncovered_lineages"])
+
+    def test_transfer_refuses_an_incomplete_reference(self):
+        target = self._target({"neuronal": 40, "myeloid": 30, "lymphoid": 30})
+        with self.assertRaises(MissingPreconditionError) as ctx:
+            reference_label_transfer(target, {"reference_dataset": self._reference(), "min_shared_features": 2})
+        message = str(ctx.exception)
+        self.assertIn("incomplete reference", message)
+        self.assertIn("myeloid", message)
+
+    def test_explicit_override_transfers_and_carries_the_caveat(self):
+        target = self._target({"neuronal": 40, "myeloid": 30, "lymphoid": 30})
+        result = reference_label_transfer(
+            target,
+            {
+                "reference_dataset": self._reference(),
+                "min_shared_features": 2,
+                "allow_incomplete_reference": True,
+            },
+        )
+        self.assertEqual(result.metrics["status"], "transferred")
+        self.assertEqual(result.metrics["lineage_coverage"]["status"], "inadequate")
+        self.assertTrue(
+            any("systematically wrong rather than uncertain" in caveat for caveat in result.caveats),
+            "an overridden coverage failure must still be stated in the caveats",
+        )
+
+    def test_an_adequate_reference_transfers_without_a_coverage_caveat(self):
+        target = self._target({"neuronal": 60})
+        result = reference_label_transfer(
+            target, {"reference_dataset": self._reference(), "min_shared_features": 2}
+        )
+        self.assertEqual(result.metrics["status"], "transferred")
+        self.assertEqual(result.metrics["lineage_coverage"]["status"], "adequate")
+        self.assertFalse(any("systematically wrong" in caveat for caveat in result.caveats))
+
+    def test_refusal_happens_before_the_knn_is_fitted(self):
+        # The check needs only class names and target markers, so a doomed run
+        # must not pay for a full transfer first.
+        target = self._target({"neuronal": 40, "myeloid": 30, "lymphoid": 30})
+        reference = self._reference()
+        reference.records = []  # unusable for KNN; refusal must still fire
+        with self.assertRaises(MissingPreconditionError):
+            reference_label_transfer(target, {"reference_dataset": reference, "min_shared_features": 2})
+
+
 class H5adReferenceLoadingTests(unittest.TestCase):
     def test_scrna_h5ad_without_spatial_coordinates_loads(self):
         try:
@@ -2809,9 +3277,11 @@ class ControlProbeExclusionTests(unittest.TestCase):
         kept = set(expression_feature_names(dataset))
         dropped = set(dataset.genes) - kept
         self.assertTrue(dropped, "expected control probes in a real Xenium panel")
+        from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES
+
         for gene in dropped:
             self.assertTrue(
-                is_control_feature(gene) or gene.upper() in {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"},
+                is_control_feature(gene) or gene.upper() in NON_EXPRESSION_FEATURE_NAMES,
                 "dropped a biological gene: %s" % gene,
             )
 

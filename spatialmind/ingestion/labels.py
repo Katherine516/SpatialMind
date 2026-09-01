@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from ..schemas import SpatialDataset
+from ..schemas import NON_EXPRESSION_FEATURE_NAMES, SpatialDataset
 
 
 CELL_ID_KEYS = ("cell_id", "cell", "barcode", "cell_barcode", "spot_id", "id")
@@ -64,7 +64,7 @@ MARKER_EVIDENCE_FEATURES = (
     "AQP4",
     "MBP",
 )
-NON_BIOLOGICAL_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
+NON_BIOLOGICAL_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
 
 @dataclass
