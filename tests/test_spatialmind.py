@@ -1838,6 +1838,46 @@ class XeniumCellQCTests(unittest.TestCase):
         self.assertIn("transcript_counts >= 25", report["rule"])
         self.assertEqual(report["min_transcripts"], 25)
 
+    def test_qc_removals_do_not_make_a_full_section_look_sampled(self):
+        """Coverage is what the scan reached, not what survived QC.
+
+        Regression: `_analysis_scope` recomputed completeness from the post-QC
+        record count, so 44 cells dropped for quality out of 24,406 turned a full
+        section into `blocked_sampled_inference` and blocked validated inference
+        outright. The loader guarded this; the pilot's own recomputation undid it.
+        """
+        from spatialmind.pilot.xenium import _analysis_scope
+
+        dataset = SpatialDataset(
+            sample_id="S", source_path="p", modality="xenium_spatial_rna",
+            records=[self._cell("c%d" % i, 200) for i in range(96)],
+        )
+        dataset.metadata["analysis_scope"] = "full_section"
+        dataset.metadata["sampling"] = {
+            "method": "all", "scanned_records": 100, "loaded_records": 96, "total_records": 100,
+        }
+        scope = _analysis_scope(dataset)
+        self.assertEqual(scope["scope"], "full_section")
+        self.assertTrue(scope["complete_section"])
+        self.assertEqual(scope["qc_removed_records"], 4)
+        self.assertEqual(scope["fraction_loaded"], 1.0)
+
+    def test_a_genuinely_sampled_run_is_still_sampled(self):
+        from spatialmind.pilot.xenium import _analysis_scope
+
+        dataset = SpatialDataset(
+            sample_id="S", source_path="p", modality="xenium_spatial_rna",
+            records=[self._cell("c%d" % i, 200) for i in range(40)],
+        )
+        dataset.metadata["analysis_scope"] = "sampled"
+        dataset.metadata["sampling"] = {
+            "method": "deterministic_even_index", "scanned_records": 40,
+            "loaded_records": 40, "total_records": 100,
+        }
+        scope = _analysis_scope(dataset)
+        self.assertEqual(scope["scope"], "sampled")
+        self.assertFalse(scope["complete_section"])
+
     def test_background_features_are_never_expression(self):
         from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES
 

@@ -920,16 +920,23 @@ def _analysis_scope(dataset: SpatialDataset) -> Dict[str, Any]:
     sampling = dict(dataset.metadata.get("sampling") or {})
     total = int(sampling.get("total_records") or dataset.metadata.get("n_obs_total") or len(dataset.records))
     loaded = len(dataset.records)
+    # Completeness is about how much of the section was *covered*, not how many
+    # cells survived QC. Comparing the post-QC count against the section total
+    # made 44 cells dropped for quality read as incomplete coverage and block
+    # validated inference on a full section.
+    scanned = int(sampling.get("scanned_records") or loaded)
     complete = str(dataset.metadata.get("analysis_scope") or "").lower() == "full_section"
-    if total > 0 and loaded < total:
+    if total > 0 and scanned < total:
         complete = False
     return {
         "scope": "full_section" if complete else "sampled",
         "complete_section": complete,
         "complete_section_requirement_met": complete,
         "loaded_records": loaded,
+        "scanned_records": scanned,
+        "qc_removed_records": max(scanned - loaded, 0),
         "total_records": total,
-        "fraction_loaded": round(loaded / float(max(total, 1)), 6),
+        "fraction_loaded": round(scanned / float(max(total, 1)), 6),
         "sampling_method": sampling.get("method", "unknown"),
         "validated_claims_allowed": False,
     }
@@ -1357,12 +1364,16 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         "- Dataset: `%s`" % payload["dataset_path"],
         "- Loaded cells: `%d`" % payload["records_loaded"],
         "- Loaded features: `%d`" % payload["features_loaded"],
-        "- Analysis scope: `%s` (%s/%s cells; %.2f%%)"
+        # Tolerate payloads written before scanned/QC counts existed, and
+        # hand-built ones: a report must not crash on a missing key.
+        "- Analysis scope: `%s` (%s of %s cells scanned, %.2f%%; %s analysed after QC removed %s)"
         % (
-            scope["scope"],
-            scope["loaded_records"],
-            scope["total_records"],
-            100.0 * float(scope["fraction_loaded"]),
+            scope.get("scope", "unknown"),
+            scope.get("scanned_records", scope.get("loaded_records", 0)),
+            scope.get("total_records", 0),
+            100.0 * float(scope.get("fraction_loaded", 0.0)),
+            scope.get("loaded_records", 0),
+            scope.get("qc_removed_records", 0),
         ),
         "- QC expression source: `%s`"
         % payload.get("expression_layers", {}).get("source", "source layer unavailable"),
