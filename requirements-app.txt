@@ -1,0 +1,50 @@
+# SpatialMind Studio: only what the packaged app imports.
+#
+# requirements.txt is the full workstation stack (napari, vitessce, chromadb,
+# celery, opencv, dask). None of it is on the Studio's import path, and freezing
+# it into a macOS bundle would add gigabytes and a much larger surface for a
+# broken hidden import. This file is what the app and its CI build install.
+#
+#   python3 -m pip install -r requirements-app.txt
+
+-e .
+setuptools<81
+
+# Web layer
+fastapi
+uvicorn[standard]
+pydantic
+
+# Native desktop window (WKWebView via pyobjc). Without it the app falls back
+# to opening the default browser.
+pywebview; sys_platform == "darwin"
+
+# Numerics and tables
+numpy<2
+scipy
+pandas
+pyarrow
+h5py
+
+# Single-cell and spatial analysis
+anndata
+scanpy
+squidpy
+scikit-learn
+statsmodels
+
+# Clustering and graphs used by scanpy/squidpy
+igraph
+leidenalg
+networkx
+pynndescent
+
+# Figures, morphology metadata, and reports
+matplotlib
+pillow
+tifffile
+reportlab
+
+# Packaging and tests
+pyinstaller
+httpx

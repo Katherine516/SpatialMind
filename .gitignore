@@ -23,3 +23,13 @@ data/**
 
 # Scratch renders from local report checks
 tmp/
+
+# SpatialMind Studio macOS build artifacts
+build/
+dist/
+packaging/*.icns
+packaging/*.iconset/
+packaging/SpatialMindStudio.png
+
+# Agent-local settings; launch.json is shared, this is not
+.claude/settings.local.json

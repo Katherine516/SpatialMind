@@ -1,0 +1,67 @@
+name: Build SpatialMind Studio (macOS)
+
+# One app per architecture, each built on that architecture. PyInstaller freezes
+# installed wheels, and the scientific stack ships thin (single-arch) wheels, so
+# a universal2 bundle cannot be produced from one runner. macos-13 is Intel;
+# macos-14 and later are Apple Silicon.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            arch: x86_64
+            label: Intel (x86_64)
+          - runner: macos-14
+            arch: arm64
+            label: Apple Silicon (arm64)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Confirm the runner architecture
+        run: |
+          echo "uname -m: $(uname -m)"
+          python -c "import platform; assert platform.machine() == '${{ matrix.arch }}', platform.machine()"
+
+      - name: Install the Studio's runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install \
+            fastapi 'uvicorn[standard]' pydantic httpx pywebview \
+            numpy scipy pandas pyarrow h5py \
+            anndata scanpy squidpy scikit-learn \
+            matplotlib igraph leidenalg tifffile pillow reportlab \
+            pyinstaller
+
+      - name: Test
+        run: python -m unittest discover -s tests -p 'test_studio_app.py' -v
+
+      - name: Audit the environment for this architecture
+        run: python scripts/build_macos_app.py --check
+
+      - name: Build the app
+        run: python scripts/build_macos_app.py --clean --dmg
+
+      - name: Smoke-test the built app
+        run: python scripts/smoke_test_macos_app.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpatialMind-Studio-macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
