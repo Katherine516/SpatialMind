@@ -17,6 +17,11 @@ rest of the system trustworthy. What the agent *can* do is make the review as sm
 and well-informed as possible.
 
 
+> **Inventory:** [`cell_label_resources.md`](cell_label_resources.md) lists what
+> this workspace already has and what is still missing, with the preflight
+> evidence. The reference gap described later in this document is now closed for
+> normal lineages; a human malignant reference is still missing.
+
 ## Plan the review before labelling anything
 
 Labels only count when their `cell_id`s are among the cells the run loads, and

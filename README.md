@@ -11,6 +11,58 @@ This repository implements SpatialMind, an agentic spatial omics analysis system
 
 The base path remains dependency-light for fast testing, while the core workstation environment in `requirements.txt` enables real H5AD/Xenium ingestion and Scanpy/Squidpy-backed wrappers. PyTorch-based scVI/cell2location packages live in `requirements-deep-learning.txt` and must be installed in a separate environment to avoid mixed OpenMP runtimes on Intel macOS.
 
+## SpatialMind Studio (desktop app)
+
+The agent packaged as a local application: a browser UI over the same pipeline,
+so a wet-lab scientist can take a Xenium bundle from blocked to a validated
+report without a terminal. Full documentation in
+[docs/spatialmind_studio.md](docs/spatialmind_studio.md).
+
+It runs as an ordinary desktop window — a `WKWebView` over a local server bound
+to `127.0.0.1`, not a browser tab — with dark chrome end to end and the page
+running under a transparent title bar. Run it from a checkout:
+
+```bash
+.venv/bin/python -m spatialmind.app --data-root data
+```
+
+`--browser` and `--headless` switch off the window when you want the old
+behaviour or a bare server.
+
+Seven surfaces -- Datasets, Readiness, Review Studio, Ask, Tool Bench, Runs --
+over the same `pilot_gate()`, `ToolRegistry` and `validate_tool_plan()` the CLI
+uses. Review Studio is the part that did not exist before: click a cell to
+select its 10x cluster and apply a Cell Ontology label, or drag a rectangle to
+define a region. Both write `expert_cell_labels.csv` and `cell_regions.csv` into
+the bundle by merging, never overwriting.
+
+The Readiness screen ends with a live inventory of what expert labelling still
+needs, computed from what is on disk — see
+[docs/cell_label_resources.md](docs/cell_label_resources.md). The seven Human
+Brain Cell Atlas superclusters under `data/` now cover every lineage confidently
+detected in the glioblastoma section; what is still missing is a human reference
+carrying a malignant class (the only tumour reference present is mouse), the
+reviewer time, and the region drawing.
+
+Tools are chosen three ways -- the agent proposes a plan from a question, a
+recipe loads a saved one, or you pick from the Tool Bench -- and all three
+produce a typed plan that the local validator checks before anything runs. The
+18 registered scaffolds stay visible and stay disabled.
+
+Build the macOS app:
+
+```bash
+python3 -m pip install -r requirements-app.txt
+python scripts/build_macos_app.py --clean --dmg   # builds for the HOST architecture
+python scripts/smoke_test_macos_app.py            # launches it and drives the API
+```
+
+PyInstaller freezes installed wheels, and the scientific stack ships
+single-architecture wheels, so **each macOS architecture must be built on that
+architecture**; a universal2 bundle is not achievable with this dependency set.
+`.github/workflows/build-macos.yml` runs the same script on `macos-13` (Intel)
+and `macos-14` (Apple Silicon) and uploads a `.dmg` for each.
+
 ## Architecture
 
 **New here? Read [docs/agent_architecture.md](docs/agent_architecture.md)** — the single end-to-end

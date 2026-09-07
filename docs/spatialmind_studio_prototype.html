@@ -1,0 +1,1257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>SpatialMind Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<style>
+:root{
+  color-scheme:dark;
+  --paper:#080D0F; --surface:#101819; --surface-2:#162023; --surface-3:#1E2A2E;
+  --ink:#E8F0EF; --ink-2:#A6B7B7; --ink-3:#758788;
+  --line:#222F33; --line-2:#314247;
+  --accent:#4FC3CA; --accent-2:#8AE2E7; --accent-soft:#0E3439;
+  --magenta:#E184C9; --magenta-soft:#351330;
+  --ok:#5FBE90; --ok-soft:#123322;
+  --warn:#E0A84E; --warn-soft:#33260E;
+  --stop:#EA7A70; --stop-soft:#361815;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 40px -18px rgba(0,0,0,.9);
+  --sans:"Archivo",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1220px;margin:0 auto;padding:0 24px}
+h1,h2,h3,h4{margin:0;text-wrap:balance;letter-spacing:-.015em}
+p{margin:0}
+a{color:var(--accent)}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+
+/* ---------- masthead ---------- */
+.masthead{padding:44px 0 30px}
+.masthead h1{font-size:clamp(30px,4.4vw,48px);font-weight:700;line-height:1.02;margin:12px 0 14px}
+.thesis{font-family:var(--serif);font-size:19px;line-height:1.5;color:var(--ink-2);max-width:64ch}
+.thesis em{color:var(--ink);font-style:italic}
+.facts{display:flex;flex-wrap:wrap;gap:0;margin-top:26px;border-top:1px solid var(--line);
+  border-bottom:1px solid var(--line)}
+.fact{padding:12px 22px 12px 0;margin-right:22px;border-right:1px solid var(--line)}
+.fact:last-child{border-right:none}
+.fact b{display:block;font-family:var(--mono);font-size:19px;font-weight:500;letter-spacing:-.02em}
+.fact span{font-size:11.5px;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;font-family:var(--mono)}
+
+/* ---------- app shell ---------- */
+.shell{margin:30px 0 8px;border:1px solid var(--line-2);border-radius:10px;overflow:hidden;
+  background:var(--surface);box-shadow:var(--shadow)}
+.chrome{display:flex;align-items:center;gap:14px;padding:9px 14px;background:var(--surface-2);
+  border-bottom:1px solid var(--line)}
+.dots{display:flex;gap:6px}
+.dots i{width:10px;height:10px;border-radius:50%;background:var(--line-2);display:block}
+.crumb{font-family:var(--mono);font-size:12px;color:var(--ink-3);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;flex:1}
+.crumb b{color:var(--ink-2);font-weight:500}
+.sim{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.switch{position:relative;width:38px;height:20px;border-radius:11px;background:var(--line-2);
+  transition:background .18s;flex:none}
+.switch i{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+  background:var(--ink);transition:transform .18s}
+.switch[aria-pressed="true"]{background:var(--magenta)}
+.switch[aria-pressed="true"] i{transform:translateX(18px)}
+
+.body{display:grid;grid-template-columns:184px 1fr;min-height:600px}
+.rail{border-right:1px solid var(--line);background:var(--surface-2);padding:12px 8px;display:flex;
+  flex-direction:column;gap:2px}
+.rail .grp{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-3);padding:14px 10px 6px}
+.navbtn{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:7px 10px;
+  border-radius:6px;font-size:13.5px;color:var(--ink-2);transition:background .12s,color .12s}
+.navbtn:hover{background:var(--surface-3)}
+.navbtn[aria-current="true"]{background:var(--surface);color:var(--ink);font-weight:600;
+  box-shadow:inset 2px 0 0 var(--accent)}
+.navbtn .ic{width:16px;height:16px;flex:none;color:var(--ink-3)}
+.navbtn[aria-current="true"] .ic{color:var(--accent)}
+.navbtn .cnt{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+
+.stage{padding:20px 22px 26px;min-width:0}
+.panel[hidden]{display:none!important}
+.phead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;
+  padding-bottom:12px;border-bottom:1px solid var(--line);margin-bottom:16px;flex-wrap:wrap}
+.phead h2{font-size:20px;font-weight:600}
+.phead p{font-size:13px;color:var(--ink-3);margin-top:3px;max-width:62ch}
+
+/* ---------- shared bits ---------- */
+.pill{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.03em;padding:2.5px 7px;border-radius:4px;white-space:nowrap;font-weight:500}
+.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.stop{background:var(--stop-soft);color:var(--stop)}
+.pill.mute{background:var(--surface-2);color:var(--ink-3)}
+.pill.acc{background:var(--accent-soft);color:var(--accent-2)}
+.pill.mag{background:var(--magenta-soft);color:var(--magenta)}
+.pill i{width:5px;height:5px;border-radius:50%;background:currentColor;display:block}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;
+  border:1px solid var(--line-2);font-size:13px;font-weight:500;color:var(--ink-2);background:var(--surface)}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--paper);font-weight:600}
+.btn.pri:hover{background:var(--accent-2);border-color:var(--accent-2);color:var(--paper)}
+.btn.pri:disabled,.btn:disabled{opacity:.42;cursor:not-allowed;border-color:var(--line-2);
+  background:var(--surface-2);color:var(--ink-3)}
+.meter{height:5px;border-radius:3px;background:var(--surface-3);overflow:hidden}
+.meter b{display:block;height:100%;background:var(--accent);transition:width .3s ease}
+.meter.done b{background:var(--ok)}
+.kv{font-family:var(--mono);font-size:12px;display:flex;justify-content:space-between;gap:12px;
+  padding:5px 0;border-bottom:1px dotted var(--line)}
+.kv:last-child{border-bottom:none}
+.kv span{color:var(--ink-3)}
+.card{border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:14px}
+.scroll{overflow-x:auto}
+
+/* ---------- library ---------- */
+.libgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:12px}
+.ds{border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--surface);
+  display:flex;flex-direction:column;gap:9px}
+.ds.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.ds h4{font-size:14.5px;font-weight:600;line-height:1.25}
+.ds .path{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);word-break:break-all}
+.ds .row{display:flex;gap:6px;flex-wrap:wrap}
+
+/* ---------- gate ---------- */
+.two{display:grid;grid-template-columns:1.25fr 1fr;gap:16px;align-items:start}
+.check{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);align-items:flex-start}
+.check:last-child{border-bottom:none}
+.mark{width:17px;height:17px;border-radius:50%;flex:none;margin-top:1px;display:grid;place-items:center;
+  font-size:10px;font-weight:700;font-family:var(--mono)}
+.mark.pass{background:var(--ok-soft);color:var(--ok)}
+.mark.fail{background:var(--stop-soft);color:var(--stop)}
+.check h5{margin:0;font-size:13.5px;font-weight:500}
+.check p{font-size:12px;color:var(--ink-3);margin-top:2px}
+.check .fix{font-family:var(--mono);font-size:11px;color:var(--magenta);margin-top:3px}
+
+/* ---------- review ---------- */
+.rev{display:grid;grid-template-columns:1fr 244px;gap:14px;align-items:start}
+.canvaswrap{position:relative;border:1px solid var(--line);border-radius:8px;overflow:hidden;
+  background:var(--surface-2)}
+canvas{display:block;width:100%;height:auto;cursor:crosshair}
+.canvasbar{display:flex;gap:6px;padding:8px;border-bottom:1px solid var(--line);background:var(--surface);
+  flex-wrap:wrap;align-items:center}
+.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden}
+.seg button{padding:5px 11px;font-size:12px;color:var(--ink-3);border-right:1px solid var(--line-2)}
+.seg button:last-child{border-right:none}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--paper);font-weight:600}
+.hint{font-family:var(--mono);font-size:11px;color:var(--ink-3);padding:7px 9px;background:var(--surface-2);
+  border-top:1px solid var(--line)}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{padding:4px 9px;border-radius:5px;border:1px solid var(--line-2);font-size:12px;color:var(--ink-2);
+  display:inline-flex;align-items:center;gap:6px}
+.chip:hover:not(:disabled){border-color:var(--magenta);color:var(--magenta)}
+.chip:disabled{opacity:.4;cursor:not-allowed}
+.chip .sw{width:8px;height:8px;border-radius:2px;display:block}
+.side h5{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-3);margin:0 0 7px;font-weight:500}
+.side .blk{border:1px solid var(--line);border-radius:8px;padding:11px;margin-bottom:10px;background:var(--surface)}
+.covrow{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11.5px;margin-bottom:4px}
+
+/* ---------- ask / plan ---------- */
+.ask{display:grid;grid-template-columns:1fr 330px;gap:16px;align-items:start}
+.thread{display:flex;flex-direction:column;gap:11px}
+.msg{border-radius:9px;padding:11px 13px;font-size:13.5px;line-height:1.5;max-width:92%}
+.msg.u{background:var(--accent-soft);color:var(--ink);align-self:flex-end;border:1px solid transparent}
+.msg.a{background:var(--surface);border:1px solid var(--line)}
+.msg.a b{font-weight:600}
+.msg .why{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);margin-top:7px;
+  padding-top:7px;border-top:1px dotted var(--line)}
+.prompts{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;padding-top:13px;border-top:1px solid var(--line)}
+.prompts button{text-align:left;padding:7px 11px;border:1px solid var(--line-2);border-radius:16px;
+  font-size:12.5px;color:var(--ink-2)}
+.prompts button:hover{border-color:var(--accent);color:var(--accent)}
+.step{border:1px solid var(--line);border-left-width:3px;border-radius:6px;padding:9px 11px;background:var(--surface);
+  display:flex;flex-direction:column;gap:5px}
+.step.lane-validated{border-left-color:var(--ok)}
+.step.lane-descriptive{border-left-color:var(--warn)}
+.step.lane-blocked{border-left-color:var(--stop)}
+.step .top{display:flex;align-items:center;gap:8px}
+.step .nm{font-family:var(--mono);font-size:12.5px;font-weight:500;flex:1}
+.step .dep{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.step .x{color:var(--ink-3);font-size:15px;line-height:1;padding:0 2px}
+.step .x:hover{color:var(--stop)}
+.planlist{display:flex;flex-direction:column;gap:7px}
+.autodep{font-family:var(--mono);font-size:10.5px;color:var(--accent-2);background:var(--accent-soft);
+  padding:4px 7px;border-radius:4px}
+
+/* ---------- tools ---------- */
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:13px;align-items:center}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:9px}
+.tool{border:1px solid var(--line);border-radius:7px;padding:11px;background:var(--surface);text-align:left;
+  display:flex;flex-direction:column;gap:6px;transition:border-color .12s}
+.tool:hover{border-color:var(--accent)}
+.tool.dis{opacity:.55;background:var(--surface-2);cursor:not-allowed}
+.tool.dis:hover{border-color:var(--line)}
+.tool.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.tool .nm{font-family:var(--mono);font-size:12.5px;font-weight:500;line-height:1.3}
+.tool .ds2{font-size:11.5px;color:var(--ink-3);line-height:1.4}
+.tool .ft{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:auto}
+.drawer{border:1px solid var(--accent);border-radius:8px;padding:14px;margin-bottom:13px;
+  background:var(--accent-soft)}
+.drawer h4{font-family:var(--mono);font-size:14px;font-weight:600;margin-bottom:3px}
+.params{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:9px;margin:11px 0}
+.param label{display:block;font-family:var(--mono);font-size:10.5px;color:var(--ink-3);
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.param input,.param select{width:100%;padding:5px 8px;border:1px solid var(--line-2);border-radius:5px;
+  background:var(--surface);color:var(--ink);font-family:var(--mono);font-size:12px}
+
+/* ---------- report / claims ---------- */
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:500;padding:0 10px 7px 0;border-bottom:1px solid var(--line-2);white-space:nowrap}
+td{padding:9px 10px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sapr{display:flex;gap:3px}
+.sapr div{width:26px}
+.sapr .bar{height:22px;background:var(--surface-3);border-radius:2px;position:relative;overflow:hidden}
+.sapr .bar b{position:absolute;bottom:0;left:0;right:0;background:var(--accent)}
+.sapr .bar.min b{background:var(--stop)}
+.sapr .lb{font-family:var(--mono);font-size:9px;color:var(--ink-3);text-align:center;margin-top:2px}
+.banner{border-radius:8px;padding:12px 14px;margin-bottom:15px;display:flex;gap:11px;align-items:flex-start}
+.banner.stop{background:var(--stop-soft)}
+.banner.ok{background:var(--ok-soft)}
+.banner h4{font-size:13.5px;font-weight:600;margin-bottom:2px}
+.banner p{font-size:12.5px;color:var(--ink-2);max-width:70ch}
+.banner.stop h4{color:var(--stop)} .banner.ok h4{color:var(--ok)}
+.ledger{display:flex;flex-direction:column;gap:0}
+
+/* ---------- rationale ---------- */
+.rationale{padding:52px 0 30px;border-top:1px solid var(--line);margin-top:40px}
+.rgrid{display:grid;grid-template-columns:200px 1fr;gap:34px;align-items:start;
+  padding:24px 0;border-bottom:1px solid var(--line)}
+.rgrid:last-of-type{border-bottom:none}
+.rgrid > h3{font-size:16px;font-weight:600;position:sticky;top:16px}
+.rgrid > h3 span{display:block;font-family:var(--mono);font-size:10.5px;color:var(--ink-3);
+  letter-spacing:.1em;margin-bottom:5px;font-weight:400}
+.prose{font-family:var(--serif);font-size:16.5px;line-height:1.62;color:var(--ink-2);max-width:66ch}
+.prose p + p{margin-top:13px}
+.prose strong{color:var(--ink);font-weight:600}
+.prose code{font-family:var(--mono);font-size:13.5px;background:var(--surface-2);padding:1px 5px;
+  border-radius:3px;color:var(--ink)}
+.modes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:6px}
+.mode{border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--surface)}
+.mode h4{font-size:14px;font-weight:600;margin-bottom:5px}
+.mode .who{font-family:var(--mono);font-size:10.5px;color:var(--magenta);text-transform:uppercase;
+  letter-spacing:.07em;margin-bottom:8px}
+.mode p{font-size:13px;color:var(--ink-2);line-height:1.5}
+.risk{display:flex;gap:12px;padding:11px 0;border-bottom:1px dotted var(--line)}
+.risk:last-child{border-bottom:none}
+.risk .n{font-family:var(--mono);font-size:11px;color:var(--stop);flex:none;width:60px;padding-top:2px}
+.risk div p{font-size:13.5px;color:var(--ink-2)}
+.risk div b{font-size:13.5px;color:var(--ink);display:block}
+footer{padding:26px 0 44px;font-family:var(--mono);font-size:11.5px;color:var(--ink-3);
+  border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+
+@media (max-width:900px){
+  .body{grid-template-columns:1fr}
+  .rail{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line)}
+  .rail .grp{display:none}
+  .navbtn{white-space:nowrap;width:auto}
+  .two,.rev,.ask,.rgrid,.modes{grid-template-columns:1fr}
+  .rgrid > h3{position:static}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+<style>[hidden]{display:none!important}img{max-width:100%}</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="masthead">
+    <div class="eyebrow">Product prototype · SpatialMind v12 · 3 Sep 2026</div>
+    <h1>SpatialMind Studio</h1>
+    <p class="thesis">Every spatial-omics tool on the market will happily name a cell type it cannot
+      support. This agent refuses to — until a human supplies labels and regions. The app is built around
+      that refusal: <em>the blocked state is the product</em>, and the whole interface is a path out of it.</p>
+    <div class="facts">
+      <div class="fact"><b>30</b><span>registered tools</span></div>
+      <div class="fact"><b>12</b><span>plannable today</span></div>
+      <div class="fact"><b>18</b><span>hidden scaffolds</span></div>
+      <div class="fact"><b>7</b><span>app surfaces</span></div>
+      <div class="fact"><b>3</b><span>tool-routing modes</span></div>
+      <div class="fact"><b>2</b><span>lanes: descriptive · validated</span></div>
+    </div>
+  </header>
+
+  <section class="shell" aria-label="SpatialMind Studio interactive prototype">
+    <div class="chrome">
+      <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="crumb">spatialmind://workspace/<b>Human Brain Glioblastoma (FFPE)</b> · panel hBrain_65g ·
+        <b id="crumbScope">full_section 40,887 cells</b></div>
+      <button class="sim" id="simToggle" aria-pressed="false">
+        <span class="switch" aria-hidden="true"><i></i></span> Simulate reviewed dataset
+      </button>
+    </div>
+
+    <div class="body">
+      <nav class="rail" aria-label="Primary">
+        <div class="grp">Data</div>
+        <button class="navbtn" data-p="library" aria-current="true"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 6v7.5"/></svg>Datasets<span class="cnt" id="cntDs">4</span></button>
+        <button class="navbtn" data-p="gate"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.4 2.4v4c0 3.2-2.2 5.4-5.4 6.1C4.8 13.6 2.6 11.4 2.6 8.2v-4z"/><path d="M5.8 8.1l1.6 1.6 3-3.2"/></svg>Readiness<span class="cnt" id="cntGate">3</span></button>
+        <div class="grp">Human in the loop</div>
+        <button class="navbtn" data-p="review"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.2"/><path d="M8 2v1.6M8 12.4V14M2 8h1.6M12.4 8H14"/></svg>Review Studio<span class="cnt" id="cntRev">0%</span></button>
+        <div class="grp">Analysis</div>
+        <button class="navbtn" data-p="ask"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11v8h-6l-3.2 2.4V11.5H2.5z"/><path d="M5.5 7.5h5"/></svg>Ask</button>
+        <button class="navbtn" data-p="tools"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9.8 2.6a3.2 3.2 0 003.9 4.2l-7 7a1.6 1.6 0 01-2.3-2.3l7-7A3.2 3.2 0 019.8 2.6z"/></svg>Tool Bench<span class="cnt">12</span></button>
+        <div class="grp">Output</div>
+        <button class="navbtn" data-p="report"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 1.8h5l3 3v9.4H4z"/><path d="M9 1.8v3h3M6 8h4M6 10.5h4"/></svg>Report</button>
+        <button class="navbtn" data-p="prov"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="4" r="1.8"/><circle cx="12" cy="8" r="1.8"/><circle cx="4" cy="12" r="1.8"/><path d="M5.6 5.1l4.8 2M5.6 10.9l4.8-2"/></svg>Provenance</button>
+      </nav>
+
+      <div class="stage">
+        <!-- ===== LIBRARY ===== -->
+        <section class="panel" data-panel="library">
+          <div class="phead">
+            <div><h2>Datasets</h2><p>Scanned from the local data root. Readiness comes from the promotion
+              pass — no analysis is run to produce this view.</p></div>
+            <button class="btn">＋ Add dataset folder</button>
+          </div>
+          <div class="libgrid" id="libGrid"></div>
+        </section>
+
+        <!-- ===== GATE ===== -->
+        <section class="panel" data-panel="gate" hidden>
+          <div class="phead">
+            <div><h2>Readiness gate</h2><p>One decision point separates review prep from validated
+              analysis. Every blocker names the file that clears it.</p></div>
+            <span id="gateBadge" class="pill stop"><i></i>blocked_missing_validation_inputs</span>
+          </div>
+          <div class="two">
+            <div>
+              <div class="card">
+                <h5 style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin:0 0 8px;font-weight:500">Six conditions</h5>
+                <div id="gateChecks"></div>
+              </div>
+            </div>
+            <div>
+              <div class="card" style="margin-bottom:12px">
+                <h5 style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin:0 0 8px;font-weight:500">Assets read</h5>
+                <div class="kv"><span>experiment.xenium</span><b>1.4 KB</b></div>
+                <div class="kv"><span>cells.csv.gz</span><b>2.1 MB</b></div>
+                <div class="kv"><span>cell_feature_matrix.h5</span><b>4.0 MB</b></div>
+                <div class="kv"><span>cell_boundaries.parquet</span><b>2.5 MB</b></div>
+                <div class="kv"><span>morphology.ome.tif</span><b>451 MB · pyramid L3</b></div>
+                <div class="kv"><span>transcripts.zarr.zip</span><b>not parsed</b></div>
+              </div>
+              <div class="card">
+                <h5 style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin:0 0 8px;font-weight:500">Instrument QC</h5>
+                <div class="kv"><span>median transcripts / cell</span><b>128</b></div>
+                <div class="kv"><span>median genes / cell</span><b>61</b></div>
+                <div class="kv"><span>decoded Q20 fraction</span><b>0.947</b></div>
+                <div class="kv"><span>negative-probe rate</span><b>0.0061</b></div>
+                <div class="kv"><span>panel features</span><b>540 (targeted)</b></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== REVIEW ===== -->
+        <section class="panel" data-panel="review" hidden>
+          <div class="phead">
+            <div><h2>Review Studio</h2><p>The only screen where a human creates truth. Assignments here write
+              <span class="mono">expert_cell_labels.csv</span> and <span class="mono">cell_regions.csv</span> back to the bundle.</p></div>
+            <button class="btn" id="exportCsv">↓ Export CSVs</button>
+          </div>
+          <div class="rev">
+            <div class="canvaswrap">
+              <div class="canvasbar">
+                <div class="seg" role="group" aria-label="Assignment mode">
+                  <button id="modeLabel" aria-pressed="true">Label cells</button>
+                  <button id="modeRegion" aria-pressed="false">Paint regions</button>
+                </div>
+                <div class="seg" role="group" aria-label="Overlay">
+                  <button id="ovMorph" aria-pressed="false">Morphology</button>
+                  <button id="ovBound" aria-pressed="false">Boundaries</button>
+                </div>
+                <span class="mono" style="font-size:11px;color:var(--ink-3);margin-left:auto" id="selInfo">nothing selected</span>
+              </div>
+              <canvas id="map" width="1240" height="760" role="img"
+                aria-label="Spatial cell map of the glioblastoma section, coloured by cluster"></canvas>
+              <div class="hint" id="mapHint">Click a cell population to select it, then assign a reviewed label →</div>
+            </div>
+            <div class="side">
+              <div class="blk">
+                <div class="covrow"><span>Label coverage</span><b id="covL">0.0%</b></div>
+                <div class="meter" id="meterL"><b style="width:0%"></b></div>
+                <div class="covrow" style="margin-top:11px"><span>Region coverage</span><b id="covR">0.0%</b></div>
+                <div class="meter" id="meterR"><b style="width:0%"></b></div>
+                <div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:9px">
+                  gate threshold 70.0% each</div>
+              </div>
+              <div class="blk" id="assignBlk">
+                <h5 id="assignTitle">Assign reviewed label</h5>
+                <div class="chips" id="assignChips"></div>
+                <div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:9px" id="assignNote">
+                  Ontology-guided. Marker-rule labels shown on the map are review display only, never truth.</div>
+              </div>
+              <div class="blk">
+                <h5>Populations</h5>
+                <div id="popList"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== ASK ===== -->
+        <section class="panel" data-panel="ask" hidden>
+          <div class="phead">
+            <div><h2>Ask</h2><p>The agent proposes a typed plan. It never runs one you have not seen —
+              and it will decline rather than reach for a tool that does no work.</p></div>
+            <span class="pill acc"><i></i>planner: local deterministic</span>
+          </div>
+          <div class="ask">
+            <div>
+              <div class="thread" id="thread"></div>
+              <div class="prompts" id="prompts"></div>
+            </div>
+            <div>
+              <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                  <h5 style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin:0;font-weight:500">Proposed plan</h5>
+                  <span class="mono" style="font-size:10.5px;color:var(--ink-3)" id="planRuntime">—</span>
+                </div>
+                <div class="planlist" id="planList"></div>
+                <div id="planMsg" style="margin-top:10px"></div>
+                <button class="btn pri" id="runPlan" style="width:100%;justify-content:center;margin-top:11px" disabled>Run plan</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== TOOLS ===== -->
+        <section class="panel" data-panel="tools" hidden>
+          <div class="phead">
+            <div><h2>Tool Bench</h2><p>All 30 registered tools. Scaffolds stay visible and stay disabled —
+              hiding them would make the catalog look richer than the software is.</p></div>
+            <span class="pill mute" id="toolCount"></span>
+          </div>
+          <div id="toolDrawer"></div>
+          <div class="filters" id="toolFilters"></div>
+          <div class="tgrid" id="toolGrid"></div>
+        </section>
+
+        <!-- ===== REPORT ===== -->
+        <section class="panel" data-panel="report" hidden>
+          <div class="phead">
+            <div><h2>Report</h2><p>Each claim carries four evidence components and a weakest-link score.
+              A missing evidence class pins the claim at 0.00 — it does not average away.</p></div>
+            <div style="display:flex;gap:6px"><button class="btn">HTML</button><button class="btn">PDF</button></div>
+          </div>
+          <div id="reportBody"></div>
+        </section>
+
+        <!-- ===== PROVENANCE ===== -->
+        <section class="panel" data-panel="prov" hidden>
+          <div class="phead">
+            <div><h2>Provenance</h2><p>Every run writes a hashed record. Replay re-executes from stored
+              inputs and versions, then diffs the result against what was reported.</p></div>
+            <button class="btn">⟳ Replay selected run</button>
+          </div>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Run</th><th>Started</th><th>Scope</th><th>Tools</th><th>Outcome</th><th>Input hash</th><th>Replay</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">run_7f3a91c4</td><td class="num">2026-09-02 14:22</td><td class="num">full_section 40,887</td><td class="num">5</td><td><span class="pill stop"><i></i>blocked</span></td><td class="num">a91c…4de2</td><td><span class="pill ok"><i></i>exact</span></td></tr>
+                <tr><td class="mono">run_6b1e07af</td><td class="num">2026-08-29 09:41</td><td class="num">sampled 5,000</td><td class="num">4</td><td><span class="pill warn"><i></i>descriptive</span></td><td class="num">6b1e…88fa</td><td><span class="pill ok"><i></i>exact</span></td></tr>
+                <tr><td class="mono">run_5c92dd10</td><td class="num">2026-08-26 17:03</td><td class="num">sampled 800</td><td class="num">3</td><td><span class="pill warn"><i></i>descriptive</span></td><td class="num">5c92…1077</td><td><span class="pill warn"><i></i>scanpy 1.10.2→1.10.3</span></td></tr>
+                <tr><td class="mono">run_4a08bb63</td><td class="num">2026-08-26 11:15</td><td class="num">readiness only</td><td class="num">0</td><td><span class="pill mute"><i></i>gate check</span></td><td class="num">4a08…b3c1</td><td><span class="pill ok"><i></i>exact</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card" style="margin-top:14px">
+            <h5 style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin:0 0 8px;font-weight:500">run_7f3a91c4 · captured environment</h5>
+            <div class="two">
+              <div>
+                <div class="kv"><span>scanpy</span><b>1.10.3</b></div>
+                <div class="kv"><span>squidpy</span><b>1.6.1</b></div>
+                <div class="kv"><span>anndata</span><b>0.10.9</b></div>
+                <div class="kv"><span>numpy</span><b>1.26.4</b></div>
+              </div>
+              <div>
+                <div class="kv"><span>strict_engine</span><b>true</b></div>
+                <div class="kv"><span>leiden resolution</span><b>1.0</b></div>
+                <div class="kv"><span>moran n_perms</span><b>100 / gene</b></div>
+                <div class="kv"><span>genes tested</span><b>50 of 540</b></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
+  <p class="mono" style="font-size:11px;color:var(--ink-3);margin-bottom:8px">
+    Interactive prototype. Figures are drawn from the local Human Brain Glioblastoma bundle where they
+    exist; cell positions on the map are synthetic stand-ins for the real 40,887 centroids.</p>
+</div>
+
+<div class="wrap">
+  <section class="rationale">
+
+    <div class="rgrid">
+      <h3><span>The read</span>What we are actually shipping</h3>
+      <div class="prose">
+        <p>The engineering is done: ingestion, a strict Scanpy/Squidpy backend, a typed planner, a claim
+        ledger, hashed replay. What is missing is not capability — it is a <strong>surface where a
+        wet-lab scientist can meet the gate without a terminal</strong>. Today unblocking a dataset means
+        hand-authoring a CSV of 40,887 cell IDs. No pathologist will ever do that.</p>
+        <p>So Studio has one job: <strong>turn the six gate conditions into work a human can finish in an
+        afternoon.</strong> Review Studio is therefore the centre of the app, not a utility hanging off it.
+        Everything else — the library, the planner, the tool bench, the report — is arranged around
+        getting a dataset into that room and out the other side.</p>
+        <p>The second job is honesty at the surface. Eighteen of thirty registered tools are scaffolds
+        that return a placeholder. They stay in the catalog, visible and disabled, because a user who
+        discovers on their own that <code>cnv_inference</code> does nothing loses trust in the twelve
+        tools that work.</p>
+      </div>
+    </div>
+
+    <div class="rgrid">
+      <h3><span>The core ask</span>Three ways to choose a tool</h3>
+      <div>
+        <div class="modes">
+          <div class="mode">
+            <div class="who">Ask · default</div>
+            <h4>The agent picks</h4>
+            <p>Question in, typed plan out. Each step shows the tool, why it was selected, its dependencies,
+            its lane, and its runtime. Nothing runs before you approve it. When no implemented tool answers
+            the question, the agent says so instead of substituting a near-miss.</p>
+          </div>
+          <div class="mode">
+            <div class="who">Recipes · guided</div>
+            <h4>Pick a known lane</h4>
+            <p>Four saved plans that map to what the repo already runs end to end: descriptive QC lane,
+            validated Xenium pilot, reference-assist, healthy-vs-disease comparison. Same validator, same
+            gate — you are choosing a starting plan, not a bypass.</p>
+          </div>
+          <div class="mode">
+            <div class="who">Tool Bench · manual</div>
+            <h4>Drive it yourself</h4>
+            <p>The full catalog with capability, backend, runtime and preconditions. Select a tool, fill its
+            parameters, add it to the plan. Dependencies are inserted for you and flagged; scaffolds cannot
+            be selected at all.</p>
+          </div>
+        </div>
+        <div class="prose" style="margin-top:16px">
+          <p>All three converge on the same object — <strong>a typed plan the local validator checks before
+          anything executes</strong>. That separation is the reason a hosted LLM can be allowed to propose
+          plans at all: it suggests, the validator decides. Plan validation checks structure; the gate checks
+          inputs. Keeping them apart is why a blocked run still shows a valid plan rather than inventing
+          fake plan errors.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="rgrid">
+      <h3><span>Structure</span>Seven surfaces</h3>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Surface</th><th>Job to be done</th><th>Backed by</th><th>State it changes</th></tr></thead>
+          <tbody>
+            <tr><td><b>Datasets</b></td><td>"What do I have, and how far is each one from an answer?"</td><td class="mono">promote_local_agent</td><td>selection</td></tr>
+            <tr><td><b>Readiness</b></td><td>"Why can't this run, and what exactly clears it?"</td><td class="mono">pilot_gate()</td><td>read-only</td></tr>
+            <tr><td><b>Review Studio</b></td><td>"Let me label cells and draw regions without writing a CSV."</td><td class="mono">explorer_lite + labels</td><td class="mono">expert_cell_labels.csv · cell_regions.csv</td></tr>
+            <tr><td><b>Ask</b></td><td>"Answer my question, or tell me you can't."</td><td class="mono">SpatialAgent.run()</td><td>plan</td></tr>
+            <tr><td><b>Tool Bench</b></td><td>"I know the method I want."</td><td class="mono">ToolRegistry</td><td>plan</td></tr>
+            <tr><td><b>Report</b></td><td>"What can I put in a paper, and how sure am I?"</td><td class="mono">claim ledger + S/A/P/R</td><td>artifacts</td></tr>
+            <tr><td><b>Provenance</b></td><td>"Reproduce this six months from now."</td><td class="mono">run_store + replay</td><td>read-only</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="rgrid">
+      <h3><span>Sequencing</span>What ships when</h3>
+      <div class="prose">
+        <p><strong>v1 — the afternoon.</strong> Datasets, Readiness, Review Studio, Report. One dataset,
+        one user, local. Success is a single scientist taking a bundle from blocked to a validated report
+        without opening a terminal. Ask and Tool Bench ship read-only in v1: they show the plan the pilot
+        would run, and cannot be edited yet.</p>
+        <p><strong>v2 — the agent.</strong> Ask becomes interactive, Tool Bench becomes editable, recipes
+        land. This is where hosted LLM planning is switched on, behind the same validator.</p>
+        <p><strong>v3 — the lab.</strong> Multi-user is where the real work is, and the README already names
+        the gaps: auth, dataset allowlists, job-queue hardening, audit logs. Review assignment and reviewer
+        agreement belong here too — two reviewers labelling the same section is how the claim-truth set for
+        a calibrated reliability model finally gets built.</p>
+      </div>
+    </div>
+
+    <div class="rgrid">
+      <h3><span>Risks</span>What could sink this</h3>
+      <div>
+        <div class="risk"><div class="n">R1</div><div><b>Review is still too much work.</b>
+          <p>Even with a canvas, labelling 40,887 cells one population at a time may take longer than a
+          reviewer will give. Mitigation: cluster-level assignment as the default unit (what the prototype
+          does), ontology prefill, and the astrocyte-suggestion pass already in the repo. Measure median
+          time-to-70%-coverage before building anything else in v2.</p></div></div>
+        <div class="risk"><div class="n">R2</div><div><b>The blocked state reads as a broken product.</b>
+          <p>Most first sessions end blocked. If that feels like failure, users churn before they ever see
+          a validated report. Mitigation: the descriptive lane always returns something real on first run,
+          and every blocker is phrased as a next action, never as an error.</p></div></div>
+        <div class="risk"><div class="n">R3</div><div><b>Reliability scores get read as accuracy.</b>
+          <p>A 0.62 is a weakest-link floor over four evidence classes, not a probability the claim is true.
+          The combiner is explicitly <code>not_fit</code>. Mitigation: always show the four components and
+          which one is binding — never the composite alone.</p></div></div>
+        <div class="risk"><div class="n">R4</div><div><b>Two lanes confuse people.</b>
+          <p>"Cluster 4 is enriched near cluster 7" and "myeloid cells are enriched near neurons" look alike
+          and mean very different things. Mitigation: the lane is a persistent property of every step, every
+          figure and every claim — not a footnote in the report.</p></div></div>
+      </div>
+    </div>
+
+    <div class="rgrid">
+      <h3><span>Measurement</span>How we know it worked</h3>
+      <div class="prose">
+        <p>Not sessions, not runs. <strong>Time from bundle to first validated claim</strong>, and the share
+        of datasets that ever cross the gate. A user who runs the descriptive lane forty times and never
+        unblocks is a product failure that looks like engagement.</p>
+        <p>Secondary: median time-to-70%-coverage in Review Studio; the fraction of proposed plans a user
+        edits before approving — near zero means the planner is trusted, near one means Ask is theatre;
+        and reviewer agreement on doubly-labelled sections, which is the input the calibrated reliability
+        model has been waiting for.</p>
+      </div>
+    </div>
+
+  </section>
+
+  <footer>
+    <span>SpatialMind Studio · prototype for internal review · toggle the reviewed-dataset switch to see
+      both states</span>
+    <span>Grounded in repo @ reference-lineage-coverage</span>
+  </footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+var TOTAL = 40887;
+
+/* ---------------- populations, zones, synthetic section ---------------- */
+var POPS = [
+  {id:"g1", name:"Neural/Glial cell",      n:26803, c:"#5B9FD6", cx:.40, cy:.44, sx:.26, sy:.27},
+  {id:"g2", name:"Myeloid cell",           n:5623,  c:"#E09553", cx:.60, cy:.36, sx:.12, sy:.13},
+  {id:"g3", name:"Unannotated cell",       n:5567,  c:"#8B999C", cx:.50, cy:.50, sx:.33, sy:.33},
+  {id:"g4", name:"Endothelial cell",       n:1960,  c:"#D177B8", cx:.30, cy:.68, sx:.15, sy:.09},
+  {id:"g5", name:"Fibroblast/Stromal cell",n:792,   c:"#4FB98C", cx:.75, cy:.66, sx:.09, sy:.08},
+  {id:"g6", name:"T/NK cell",              n:142,   c:"#E5766C", cx:.57, cy:.57, sx:.06, sy:.05}
+];
+var ZONES = [
+  {id:"z1", nm:"tumor_core"},
+  {id:"z2", nm:"infiltrating_edge"},
+  {id:"z3", nm:"cortex_normal"}
+];
+var TUMOR = {x:.56, y:.41};
+
+var seed = 20260903;
+function rnd(){ seed = (seed*1664525 + 1013904223) % 4294967296; return seed/4294967296; }
+function gauss(){ return (rnd()+rnd()+rnd()+rnd()-2)/1.4; }
+
+var CELLS = [], N_SAMPLE = 7200;
+(function build(){
+  var i, p, pi, cum = [], run = 0, r, x, y, d, z;
+  for (i=0;i<POPS.length;i++){ run += POPS[i].n; cum.push(run); }
+  for (i=0;i<N_SAMPLE;i++){
+    r = rnd()*TOTAL; pi = 0;
+    while (pi < cum.length-1 && r > cum[pi]) pi++;
+    p = POPS[pi];
+    x = p.cx + gauss()*p.sx*0.55;
+    y = p.cy + gauss()*p.sy*0.55;
+    if (x<.03||x>.97||y<.04||y>.96) { i--; continue; }
+    d = Math.sqrt(Math.pow(x-TUMOR.x,2) + Math.pow((y-TUMOR.y)*1.15,2));
+    z = d < .19 ? "z1" : (d < .35 ? "z2" : "z3");
+    CELLS.push({x:x, y:y, p:pi, z:z});
+  }
+})();
+var ZCOUNT = {z1:0,z2:0,z3:0};
+CELLS.forEach(function(c){ ZCOUNT[c.z]++; });
+Object.keys(ZCOUNT).forEach(function(k){ ZCOUNT[k] = Math.round(ZCOUNT[k]/CELLS.length*TOTAL); });
+
+var ONTOLOGY = [
+  {t:"Astrocyte", id:"CL:0000127"}, {t:"Oligodendrocyte", id:"CL:0000128"},
+  {t:"Microglial cell", id:"CL:0000129"}, {t:"Malignant glioma cell", id:"—"},
+  {t:"Endothelial cell", id:"CL:0000115"}, {t:"Fibroblast", id:"CL:0000057"},
+  {t:"T cell", id:"CL:0000084"}
+];
+var REGION_NAMES = ["tumor_core","infiltrating_edge","cortex_normal","peritumoral_white_matter"];
+
+/* ---------------- tool registry (mirrors build_default_registry) ---------------- */
+function T(name, cap, lane, backend, rt, cat, deps, desc, params){
+  return {name:name, cap:cap, lane:lane, backend:backend, rt:rt, cat:cat, deps:deps||[],
+          desc:desc, params:params||[]};
+}
+var TOOLS = [
+  T("qc_and_cluster","validated","descriptive","Scanpy","medium 1–10 min","Structure",[],
+    "Per-cell QC, then normalize → log1p → PCA → neighbours → Leiden on expression.",
+    [["resolution","1.0"],["n_pcs","30"],["cluster_on","expression"]]),
+  T("spatial_clustering","validated","descriptive","Scanpy","medium 1–10 min","Structure",[],
+    "Unsupervised spatial tissue domains from coordinates plus expression.",
+    [["resolution","0.8"],["n_neighbors","15"]]),
+  T("spatial_variable_genes","validated","descriptive","Squidpy","medium 1–10 min · 17.1 s measured","Spatial statistics",["qc_and_cluster"],
+    "Moran's I over a spatial kNN graph. Genes are screened before permutation testing.",
+    [["n_perms","100"],["min_cells_detected","50"],["screen_top_n","50"]]),
+  T("feature_overlay","validated","descriptive","—","fast <1 min","Expression",[],
+    "Single-feature spatial values, guarded against features absent from the panel.",
+    [["feature","GFAP"],["basis","spatial"]]),
+  T("marker_detection","validated","descriptive","Scanpy","fast <1 min","Expression",["qc_and_cluster"],
+    "One-vs-rest markers per group; explicit group1 + group2 gives a pairwise contrast.",
+    [["group_by","leiden"],["method","wilcoxon"],["top_n","25"]]),
+  T("cell_neighborhood_enrichment","validated","descriptive","Squidpy","medium 1–10 min","Spatial statistics",["qc_and_cluster"],
+    "Permutation z-scores for adjacency between groups on the cell graph.",
+    [["n_neighs","6"],["n_perms","1000"]]),
+  T("annotation","validated","gated","—","fast <1 min","Labels",["qc_and_cluster"],
+    "Summarises applied expert labels with assay-aware caveats.",
+    [["source","expert_cell_labels.csv"]]),
+  T("cell_type_annotation","validated","gated","CellTypist","fast <1 min","Labels",["qc_and_cluster"],
+    "Assign or validate a cell-type label for every cell.",[["model","Human_Brain"],["min_prob","0.6"]]),
+  T("reference_label_transfer","validated","gated","Scanpy ingest","medium 1–10 min","Labels",["qc_and_cluster"],
+    "Transfer labels from a scRNA reference over shared features, with confidence.",
+    [["reference","allen_brain_m1"],["min_shared_features","120"]]),
+  T("region_summary","validated","gated","—","fast <1 min","Spatial statistics",["annotation"],
+    "Cell-type composition and feature means per user-defined region.",[["min_cells_per_region","50"]]),
+  T("neighborhood_enrichment","validated","gated","Squidpy","medium 1–10 min","Spatial statistics",["annotation"],
+    "Test which cell-type pairs are spatial neighbours or co-localized.",[["n_perms","1000"]]),
+  T("differential_expression","validated","gated","Scanpy","fast <1 min","Expression",["annotation"],
+    "Genes upregulated between two named groups.",[["group1","Malignant glioma cell"],["group2","Astrocyte"]]),
+
+  T("cnv_inference","unavailable",null,"inferCNVpy","slow >10 min","Not implemented",[],"Infer copy number from expression to identify aneuploid or malignant cells."),
+  T("tumor_niche_analysis","unavailable",null,"—","medium 1–10 min","Not implemented",[],"Characterize tumour microenvironment composition, exclusion and vascular proximity."),
+  T("ligand_receptor_analysis","unavailable",null,"CellPhoneDB","slow >10 min","Not implemented",[],"Predict cell–cell communication through ligand–receptor co-expression."),
+  T("spatial_communication_flow","unavailable",null,"—","slow >10 min","Not implemented",[],"Consensus directional communication analysis with cross-method confidence."),
+  T("spatial_deconvolution","unavailable",null,"cell2location","slow >10 min","Not implemented",[],"Estimate cell-type proportions per spot or region."),
+  T("pathway_activity","unavailable",null,"decoupler","medium 1–10 min","Not implemented",[],"Pathway activity scores such as MAPK, PI3K, TGFb and immune signalling."),
+  T("transcription_factor_activity","unavailable",null,"decoupler","medium 1–10 min","Not implemented",[],"Infer TF activity from target-gene expression networks."),
+  T("motif_tf_activity","unavailable",null,"chromVAR","medium 1–10 min","Not implemented",[],"Estimate TF motif activity from scATAC gene-activity or peak features."),
+  T("motif_enrichment_spatial","unavailable",null,"—","medium 1–10 min","Not implemented",[],"Enriched TF motifs in differentially accessible peaks per region."),
+  T("chromatin_accessibility_spatial","unavailable",null,"—","medium 1–10 min","Not implemented",[],"Differentially accessible chromatin by spatial region or cluster."),
+  T("trajectory_inference","unavailable",null,"—","medium 1–10 min","Not implemented",[],"Pseudotime-like progression anchored to tissue space."),
+  T("spatial_gene_programs","unavailable",null,"NMF","medium 1–10 min","Not implemented",[],"Decompose spatial expression into co-expressed gene programs."),
+  T("niche_differential_analysis","unavailable",null,"—","medium 1–10 min","Not implemented",[],"Compare expression within matched spatial niches across conditions."),
+  T("multi_sample_comparison","unavailable",null,"—","medium 1–10 min","Not implemented",[],"Compare a spatial metric across samples with sample-level statistics."),
+  T("protein_coexpression","unavailable",null,"—","fast <1 min","Not implemented",[],"Pairwise protein marker co-expression and marker modules for IMC/CODEX."),
+  T("cell_phenotyping_spatial","unavailable",null,"—","medium 1–10 min","Not implemented",[],"Assign protein-imaging phenotypes from marker intensity and map them."),
+  T("tissue_segmentation","unavailable",null,"—","slow >10 min","Not implemented",[],"Segment cells or tissue regions from H&E or immunofluorescence."),
+  T("cell_abundance_heatmap_regions","unavailable",null,"—","fast <1 min","Not implemented",[],"Cell-type or marker abundance within defined tissue regions."),
+  T("spatial_gene_programs_2","unavailable",null,"—","medium 1–10 min","Not implemented",[],"placeholder")
+];
+TOOLS = TOOLS.filter(function(t){ return t.name !== "spatial_gene_programs_2"; });
+var TMAP = {}; TOOLS.forEach(function(t){ TMAP[t.name] = t; });
+
+/* ---------------- state ---------------- */
+var S = { panel:"library", mode:"label", selPop:null, selZone:null,
+          labels:{}, regions:{}, plan:[], selTool:null, filter:"all",
+          morph:false, bound:false, ds:"gbm" };
+
+function labelCoverage(){
+  var s = 0; POPS.forEach(function(p){ if (S.labels[p.id]) s += p.n; });
+  return s / TOTAL;
+}
+function regionCoverage(){
+  var s = 0; ZONES.forEach(function(z){ if (S.regions[z.id]) s += ZCOUNT[z.id]; });
+  return s / TOTAL;
+}
+function nClasses(){
+  var seen = {}; Object.keys(S.labels).forEach(function(k){ seen[S.labels[k]] = 1; });
+  return Object.keys(seen).length;
+}
+function nRegions(){
+  var seen = {}; Object.keys(S.regions).forEach(function(k){ seen[S.regions[k]] = 1; });
+  return Object.keys(seen).length;
+}
+function gateChecks(){
+  var lc = labelCoverage(), rc = regionCoverage();
+  return [
+    {ok:true, h:"Core assets present",
+     p:"Cell table, feature matrix, morphology metadata and boundaries all resolved.", fix:""},
+    {ok:Object.keys(S.labels).length>0 && lc>=.70, h:"Expert labels applied at ≥ 70%",
+     p:"Coverage " + (lc*100).toFixed(1) + "% of 40,887 cells.",
+     fix:"Assign reviewed labels in Review Studio → writes expert_cell_labels.csv"},
+    {ok:Object.keys(S.regions).length>0 && rc>=.70, h:"User regions applied at ≥ 70%",
+     p:"Coverage " + (rc*100).toFixed(1) + "% of 40,887 cells.",
+     fix:"Paint regions in Review Studio → writes cell_regions.csv"},
+    {ok:nClasses()>=2, h:"At least two biological cell classes",
+     p:nClasses() + " reviewed " + (nClasses()===1?"class":"classes") + " present.",
+     fix:"Marker and neighbourhood validation need a contrast"},
+    {ok:nRegions()>=2, h:"At least two user-defined regions",
+     p:nRegions() + " reviewed " + (nRegions()===1?"region":"regions") + " present.",
+     fix:"A region summary needs something to compare against"},
+    {ok:true, h:"Complete-section scope",
+     p:"full_section · 40,887 of 40,887 cells · sampling_method all.", fix:""}
+  ];
+}
+function gatePass(){ return gateChecks().every(function(c){ return c.ok; }); }
+function laneOf(t){
+  if (t.cap === "unavailable") return "blocked";
+  if (t.lane === "gated") return gatePass() ? "validated" : "blocked";
+  return gatePass() ? "validated" : "descriptive";
+}
+var $ = function(s){ return document.querySelector(s); };
+var $$ = function(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); };
+function el(tag, cls, html){ var e = document.createElement(tag); if (cls) e.className = cls;
+  if (html !== undefined) e.innerHTML = html; return e; }
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+
+/* ---------------- navigation ---------------- */
+$$(".navbtn").forEach(function(b){
+  b.addEventListener("click", function(){
+    S.panel = b.dataset.p;
+    $$(".navbtn").forEach(function(x){ x.setAttribute("aria-current", String(x === b)); });
+    $$(".panel").forEach(function(p){ p.hidden = p.dataset.panel !== S.panel; });
+    if (S.panel === "review") draw();
+  });
+});
+
+/* ---------------- datasets ---------------- */
+var DATASETS = [
+  {k:"gbm", h:"Human Brain Glioblastoma (FFPE)", path:"data/Xenium Human Brain/…Glioblastoma_With_Addon_outs",
+   cells:"40,887 cells", feat:"540 features · hBrain_65g", gov:["public","consent: n/a","PHI: none"]},
+  {k:"healthy", h:"Human Brain Healthy (FFPE)", path:"data/Xenium Human Brain/…Healthy_outs",
+   cells:"32,110 cells", feat:"540 features · hBrain_65g", gov:["public","consent: n/a","PHI: none"]},
+  {k:"breast", h:"Human Breast Biomarkers S1", path:"data/Human_Breast_Biomarkers_S1_Top_outs",
+   cells:"118,752 cells", feat:"313 features · hBreast_280g", gov:["public","consent: n/a","PHI: none"]},
+  {k:"lymph", h:"Xenium Lymph Node", path:"data/Xenium lymph",
+   cells:"24,406 cells", feat:"377 features", gov:["internal","consent: on file","PHI: review"]}
+];
+function renderLib(){
+  var g = $("#libGrid"); g.innerHTML = "";
+  DATASETS.forEach(function(d){
+    var isMe = d.k === "gbm";
+    var st = isMe ? (gatePass()
+        ? '<span class="pill ok"><i></i>validated_ready</span>'
+        : '<span class="pill stop"><i></i>blocked · ' + gateChecks().filter(function(c){return !c.ok;}).length + ' conditions</span>')
+      : (d.k === "lymph" ? '<span class="pill warn"><i></i>descriptive complete</span>'
+                         : '<span class="pill stop"><i></i>blocked · 4 conditions</span>');
+    var cov = isMe ? labelCoverage() : (d.k === "lymph" ? .31 : 0);
+    var c = el("div", "ds" + (isMe ? " active" : ""));
+    c.innerHTML = '<div class="row">' + st + (isMe ? '<span class="pill acc"><i></i>open</span>' : '') + '</div>'
+      + '<h4>' + esc(d.h) + '</h4>'
+      + '<div class="path">' + esc(d.path) + '</div>'
+      + '<div class="mono" style="font-size:11.5px;color:var(--ink-2)">' + d.cells + ' · ' + d.feat + '</div>'
+      + '<div><div class="covrow"><span>label coverage</span><b>' + (cov*100).toFixed(1) + '%</b></div>'
+      + '<div class="meter' + (cov >= .7 ? ' done' : '') + '"><b style="width:' + (cov*100) + '%"></b></div></div>'
+      + '<div class="row">' + d.gov.map(function(x){ return '<span class="pill mute">' + esc(x) + '</span>'; }).join("") + '</div>';
+    g.appendChild(c);
+  });
+}
+
+/* ---------------- gate ---------------- */
+function renderGate(){
+  var host = $("#gateChecks"); host.innerHTML = "";
+  gateChecks().forEach(function(c){
+    var d = el("div", "check");
+    d.innerHTML = '<span class="mark ' + (c.ok ? "pass" : "fail") + '">' + (c.ok ? "✓" : "!") + '</span>'
+      + '<div><h5>' + c.h + '</h5><p>' + c.p + '</p>'
+      + (!c.ok && c.fix ? '<div class="fix">→ ' + esc(c.fix) + '</div>' : '') + '</div>';
+    host.appendChild(d);
+  });
+  var n = gateChecks().filter(function(c){ return !c.ok; }).length;
+  var b = $("#gateBadge");
+  b.className = "pill " + (n ? "stop" : "ok");
+  b.innerHTML = '<i></i>' + (n ? "blocked_missing_validation_inputs" : "validated_ready");
+  $("#cntGate").textContent = n ? String(n) : "✓";
+}
+
+/* ---------------- review studio ---------------- */
+var cv = $("#map"), ctx = cv.getContext("2d");
+function px(x){ return x * cv.width; }
+function py(y){ return y * cv.height; }
+function draw(){
+  var css = getComputedStyle(document.body);
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.fillStyle = css.getPropertyValue("--surface-2").trim() || "#162023";
+  ctx.fillRect(0,0,cv.width,cv.height);
+
+  if (S.morph){
+    for (var m=0;m<70;m++){
+      var mx = (m*97 % 100)/100, my = (m*53 % 100)/100;
+      var g = ctx.createRadialGradient(px(mx),py(my),0,px(mx),py(my),90);
+      g.addColorStop(0,"rgba(150,175,180,0.20)"); g.addColorStop(1,"rgba(150,175,180,0)");
+      ctx.fillStyle = g; ctx.fillRect(px(mx)-90,py(my)-90,180,180);
+    }
+  }
+  ZONES.forEach(function(z, i){
+    if (!S.regions[z.id] && S.selZone !== z.id) return;
+    var on = S.selZone === z.id;
+    ctx.save(); ctx.beginPath();
+    var rOut = [ .19, .35, .95 ][i], rIn = i === 0 ? 0 : [ 0, .19, .35 ][i];
+    ctx.ellipse(px(TUMOR.x), py(TUMOR.y), px(rOut), py(rOut/1.15), 0, 0, Math.PI*2);
+    if (rIn) { ctx.ellipse(px(TUMOR.x), py(TUMOR.y), px(rIn), py(rIn/1.15), 0, 0, Math.PI*2, true); }
+    ctx.fillStyle = on ? "rgba(225,132,201,0.16)" : "rgba(79,195,202,0.09)";
+    ctx.fill();
+    ctx.strokeStyle = on ? "rgba(225,132,201,0.9)" : "rgba(79,195,202,0.6)";
+    ctx.lineWidth = on ? 3 : 1.5; ctx.stroke(); ctx.restore();
+  });
+  CELLS.forEach(function(c){
+    var p = POPS[c.p], lab = S.labels[p.id], sel = S.selPop === p.id;
+    ctx.beginPath();
+    ctx.arc(px(c.x), py(c.y), sel ? 3.9 : 3.0, 0, Math.PI*2);
+    ctx.globalAlpha = lab ? .94 : (S.mode === "region" ? .34 : .58);
+    ctx.fillStyle = p.c; ctx.fill();
+    if (sel){ ctx.globalAlpha = .9; ctx.lineWidth = .8;
+      ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  });
+  if (S.bound){
+    ctx.strokeStyle = "rgba(140,165,170,0.42)"; ctx.lineWidth = .6;
+    for (var i=0;i<CELLS.length;i+=11){
+      var c2 = CELLS[i]; ctx.beginPath();
+      for (var k=0;k<6;k++){
+        var a = k/6*Math.PI*2, xx = px(c2.x)+Math.cos(a)*5.5, yy = py(c2.y)+Math.sin(a)*5.5;
+        k ? ctx.lineTo(xx,yy) : ctx.moveTo(xx,yy);
+      }
+      ctx.closePath(); ctx.stroke();
+    }
+  }
+  ZONES.forEach(function(z,i){
+    if (!S.regions[z.id]) return;
+    var ry = [ .41, .17, .90 ][i], rx = [ .56, .56, .13 ][i];
+    ctx.font = "500 15px 'IBM Plex Mono', monospace";
+    ctx.fillStyle = "rgba(138,226,231,0.95)"; ctx.textAlign = "center";
+    ctx.fillText(S.regions[z.id], px(rx), py(ry));
+  });
+}
+function renderReview(){
+  $("#modeLabel").setAttribute("aria-pressed", String(S.mode === "label"));
+  $("#modeRegion").setAttribute("aria-pressed", String(S.mode === "region"));
+  $("#ovMorph").setAttribute("aria-pressed", String(S.morph));
+  $("#ovBound").setAttribute("aria-pressed", String(S.bound));
+  var lc = labelCoverage(), rc = regionCoverage();
+  $("#covL").textContent = (lc*100).toFixed(1) + "%";
+  $("#covR").textContent = (rc*100).toFixed(1) + "%";
+  $("#meterL").className = "meter" + (lc >= .7 ? " done" : "");
+  $("#meterR").className = "meter" + (rc >= .7 ? " done" : "");
+  $("#meterL").firstElementChild.style.width = (lc*100) + "%";
+  $("#meterR").firstElementChild.style.width = (rc*100) + "%";
+  $("#cntRev").textContent = (Math.min(lc,rc)*100).toFixed(0) + "%";
+
+  var sel = S.mode === "label"
+    ? (S.selPop ? POPS.filter(function(p){ return p.id === S.selPop; })[0] : null)
+    : (S.selZone ? ZONES.filter(function(z){ return z.id === S.selZone; })[0] : null);
+  $("#selInfo").textContent = S.mode === "label"
+    ? (sel ? sel.name + " · " + sel.n.toLocaleString() + " cells" : "nothing selected")
+    : (sel ? sel.nm + " · ~" + ZCOUNT[sel.id].toLocaleString() + " cells" : "nothing selected");
+  $("#mapHint").textContent = S.mode === "label"
+    ? "Click a cell population to select it, then assign a reviewed label. Assignment is by population — nobody labels 40,887 cells individually."
+    : "Click a tissue zone — core, infiltrating edge, or normal cortex — then name it.";
+  $("#assignTitle").textContent = S.mode === "label" ? "Assign reviewed label" : "Name this region";
+  $("#assignNote").textContent = S.mode === "label"
+    ? "Cell Ontology guided. The marker-rule colours on the map are review display only, never truth."
+    : "Free text in the real app; these are the four names already used in the review packet.";
+
+  var ch = $("#assignChips"); ch.innerHTML = "";
+  (S.mode === "label" ? ONTOLOGY : REGION_NAMES.map(function(r){ return {t:r, id:""}; }))
+    .forEach(function(o){
+      var b = el("button", "chip");
+      b.innerHTML = (S.mode === "label" ? '<span class="sw" style="background:' + labColor(o.t) + '"></span>' : "")
+        + esc(o.t) + (o.id ? ' <span class="mono" style="font-size:9.5px;color:var(--ink-3)">' + o.id + '</span>' : "");
+      b.disabled = !sel;
+      b.addEventListener("click", function(){
+        if (S.mode === "label") S.labels[S.selPop] = o.t; else S.regions[S.selZone] = o.t;
+        renderAll();
+      });
+      ch.appendChild(b);
+    });
+
+  var pl = $("#popList"); pl.innerHTML = "";
+  POPS.forEach(function(p){
+    var d = el("div", "kv");
+    d.innerHTML = '<span style="display:flex;gap:6px;align-items:center"><span class="sw" style="width:8px;height:8px;border-radius:2px;background:' + p.c + '"></span>'
+      + (S.labels[p.id] ? esc(S.labels[p.id]) : '<span style="opacity:.7">' + esc(p.name) + '</span>') + '</span>'
+      + '<b>' + p.n.toLocaleString() + (S.labels[p.id] ? ' ✓' : '') + '</b>';
+    pl.appendChild(d);
+  });
+  draw();
+}
+function labColor(t){
+  var m = {"Astrocyte":"#5B9FD6","Oligodendrocyte":"#8290DD","Microglial cell":"#E09553",
+    "Malignant glioma cell":"#8B999C","Endothelial cell":"#D177B8","Fibroblast":"#4FB98C","T cell":"#E5766C"};
+  return m[t] || "#888";
+}
+$("#modeLabel").addEventListener("click", function(){ S.mode = "label"; S.selZone = null; renderReview(); });
+$("#modeRegion").addEventListener("click", function(){ S.mode = "region"; S.selPop = null; renderReview(); });
+$("#ovMorph").addEventListener("click", function(){ S.morph = !S.morph; renderReview(); });
+$("#ovBound").addEventListener("click", function(){ S.bound = !S.bound; renderReview(); });
+cv.addEventListener("click", function(e){
+  var r = cv.getBoundingClientRect();
+  var x = (e.clientX - r.left)/r.width, y = (e.clientY - r.top)/r.height;
+  if (S.mode === "label"){
+    var best = null, bd = 1e9;
+    CELLS.forEach(function(c){
+      var d = Math.pow(c.x-x,2) + Math.pow(c.y-y,2);
+      if (d < bd){ bd = d; best = c; }
+    });
+    if (best && bd < .002) S.selPop = POPS[best.p].id;
+  } else {
+    var d2 = Math.sqrt(Math.pow(x-TUMOR.x,2) + Math.pow((y-TUMOR.y)*1.15,2));
+    S.selZone = d2 < .19 ? "z1" : (d2 < .35 ? "z2" : "z3");
+  }
+  renderAll();
+});
+$("#exportCsv").addEventListener("click", function(){
+  var n = Object.keys(S.labels).length, m = Object.keys(S.regions).length;
+  $("#mapHint").textContent = n || m
+    ? "Wrote expert_cell_labels.csv (" + Math.round(labelCoverage()*TOTAL).toLocaleString()
+      + " rows) and cell_regions.csv (" + Math.round(regionCoverage()*TOTAL).toLocaleString()
+      + " rows) into the bundle."
+    : "Nothing to export yet — assign at least one label or region first.";
+});
+
+/* ---------------- ask / plan ---------------- */
+var PROMPTS = [
+  {q:"Which cell types sit next to each other in the tumour core?",
+   plan:["qc_and_cluster","annotation","cell_neighborhood_enrichment","region_summary"],
+   ok:"Four steps. Neighbourhood enrichment answers the adjacency question; the region summary restricts it to <b>tumor_core</b>. Both depend on reviewed labels, so they run in the validated lane.",
+   no:"I can plan this, but two of the four steps need reviewed labels and regions, which this dataset does not have. I can run the descriptive half now — clustering and cluster-level adjacency — which tells you which <b>data-derived groups</b> sit together, not which cell types.",
+   why:"Selected from: neighborhood_enrichment (cell-type pairs) over cell_neighborhood_enrichment (any grouping) because the question names cell types."},
+  {q:"Which genes are spatially structured across this section?",
+   plan:["qc_and_cluster","spatial_variable_genes"],
+   ok:"Two steps, both runnable now. Moran's I over a spatial kNN graph. Genes are screened before permutation testing, so FDR is corrected over the 50 tested — not all 540.",
+   no:"Two steps, both runnable right now. This is a property of the expression field itself, so it needs no labels. FDR is corrected over the 50 genes actually tested, not the whole 540-gene panel — the report says so on every run.",
+   why:"No label dependency; spatial_variable_genes runs in the descriptive lane."},
+  {q:"Find the malignant cells by copy number.",
+   plan:[],
+   ok:"I can't do this. <b>cnv_inference</b> is registered but is a scaffold — it returns a placeholder and does no work, so it is excluded from planning. Nothing else in the registry infers copy number.",
+   no:"I can't do this. <b>cnv_inference</b> is registered but is a scaffold — it returns a placeholder and does no work, so it is excluded from planning. Nothing else in the registry infers copy number. Marker detection against reviewed labels is the nearest real thing, and it is not the same claim.",
+   why:"12 of 30 tools are plannable. The other 18 are hidden from the planner rather than substituted."},
+  {q:"Compare this section against the healthy brain sample.",
+   plan:["qc_and_cluster","annotation","differential_expression"],
+   ok:"Partly. <b>multi_sample_comparison</b> is a scaffold, so there is no sample-level statistical test. I can run a per-cell-type contrast within this section, which is a weaker claim than a cross-sample one — the report will say so.",
+   no:"Partly, and not yet. <b>multi_sample_comparison</b> is a scaffold, so cross-sample statistics do not exist in this build. The contrast I can plan needs reviewed labels first.",
+   why:"Declines the cross-sample framing rather than passing off a within-section contrast as one."}
+];
+function renderPrompts(){
+  var h = $("#prompts"); h.innerHTML = "";
+  PROMPTS.forEach(function(p, i){
+    var b = el("button", null, esc(p.q));
+    b.addEventListener("click", function(){ askIt(i); });
+    h.appendChild(b);
+  });
+}
+var lastAsk = 1;
+function askIt(i){
+  lastAsk = i;
+  S.plan = PROMPTS[i].plan.slice();
+  renderThread(); renderPlan();
+}
+function renderThread(){
+  var p = PROMPTS[lastAsk], t = $("#thread"); t.innerHTML = "";
+  t.appendChild(el("div", "msg u", esc(p.q)));
+  var a = el("div", "msg a");
+  a.innerHTML = (gatePass() ? p.ok : p.no) + '<div class="why">why this plan · ' + esc(p.why) + '</div>';
+  t.appendChild(a);
+}
+function addTool(name){
+  var t = TMAP[name], added = [];
+  (t.deps || []).forEach(function(d){
+    if (S.plan.indexOf(d) === -1){ S.plan.push(d); added.push(d); }
+  });
+  if (S.plan.indexOf(name) === -1) S.plan.push(name);
+  return added;
+}
+var lastAdded = [];
+function renderPlan(){
+  var host = $("#planList"); host.innerHTML = "";
+  if (!S.plan.length){
+    host.innerHTML = '<p class="mono" style="font-size:11.5px;color:var(--ink-3)">No plan. Ask a question, or add tools from the Tool Bench.</p>';
+  }
+  var mins = 0;
+  S.plan.forEach(function(n, i){
+    var t = TMAP[n], lane = laneOf(t);
+    mins += t.rt.indexOf("fast") === 0 ? 0.5 : (t.rt.indexOf("slow") === 0 ? 12 : 4);
+    var d = el("div", "step lane-" + lane);
+    var pill = lane === "validated" ? '<span class="pill ok"><i></i>validated</span>'
+      : lane === "descriptive" ? '<span class="pill warn"><i></i>descriptive</span>'
+      : '<span class="pill stop"><i></i>gate-blocked</span>';
+    d.innerHTML = '<div class="top"><span class="mono" style="font-size:10.5px;color:var(--ink-3)">'
+      + (i+1) + '</span><span class="nm">' + t.name + '</span>' + pill
+      + '<button class="x" aria-label="Remove ' + t.name + '">×</button></div>'
+      + '<div class="dep">' + t.backend + ' · ' + t.rt
+      + (t.deps.length ? ' · after ' + t.deps.join(", ") : "") + '</div>';
+    d.querySelector(".x").addEventListener("click", function(){
+      S.plan = S.plan.filter(function(x){
+        return x !== n && (TMAP[x].deps || []).indexOf(n) === -1;
+      });
+      renderPlan();
+    });
+    host.appendChild(d);
+  });
+  $("#planRuntime").textContent = S.plan.length ? "≈ " + (mins < 1 ? "<1" : Math.round(mins)) + " min" : "—";
+
+  var blocked = S.plan.filter(function(n){ return laneOf(TMAP[n]) === "blocked"; });
+  var msg = $("#planMsg"); msg.innerHTML = "";
+  if (lastAdded.length){
+    msg.appendChild(el("div", "autodep", "＋ added dependency: " + lastAdded.join(", ")));
+  }
+  if (blocked.length){
+    var m = el("div", "autodep");
+    m.style.background = "var(--stop-soft)"; m.style.color = "var(--stop)"; m.style.marginTop = "6px";
+    m.textContent = blocked.length + " step" + (blocked.length>1?"s":"") + " need reviewed labels and regions. Clear the gate in Review Studio.";
+    msg.appendChild(m);
+  }
+  var btn = $("#runPlan"), runnable = S.plan.length - blocked.length;
+  btn.disabled = runnable === 0;
+  btn.textContent = !S.plan.length ? "Run plan"
+    : blocked.length ? "Run " + runnable + " descriptive step" + (runnable===1?"":"s")
+    : "Run plan · " + S.plan.length + " step" + (S.plan.length===1?"":"s");
+}
+$("#runPlan").addEventListener("click", function(){
+  S.panel = "report";
+  $$(".navbtn").forEach(function(x){ x.setAttribute("aria-current", String(x.dataset.p === "report")); });
+  $$(".panel").forEach(function(p){ p.hidden = p.dataset.panel !== "report"; });
+});
+
+/* ---------------- tool bench ---------------- */
+var CATS = ["all","Structure","Expression","Labels","Spatial statistics","Not implemented"];
+function renderFilters(){
+  var h = $("#toolFilters"); h.innerHTML = "";
+  CATS.forEach(function(c){
+    var b = el("button", "chip");
+    b.textContent = c === "all" ? "All 30" : c;
+    if (S.filter === c){ b.style.borderColor = "var(--accent)"; b.style.color = "var(--accent)";
+      b.style.background = "var(--accent-soft)"; }
+    b.addEventListener("click", function(){ S.filter = c; renderTools(); });
+    h.appendChild(b);
+  });
+}
+function renderTools(){
+  renderFilters();
+  $("#toolCount").textContent = "12 plannable · 18 scaffolds";
+  var g = $("#toolGrid"); g.innerHTML = "";
+  TOOLS.filter(function(t){ return S.filter === "all" || t.cat === S.filter; }).forEach(function(t){
+    var dis = t.cap === "unavailable", lane = laneOf(t);
+    var b = el("button", "tool" + (dis ? " dis" : "") + (S.selTool === t.name ? " sel" : ""));
+    b.innerHTML = '<span class="nm">' + t.name + '</span>'
+      + '<span class="ds2">' + esc(t.desc) + '</span>'
+      + '<span class="ft"><span class="pill ' + (dis ? "mute" : lane === "validated" ? "ok" : lane === "descriptive" ? "warn" : "stop") + '"><i></i>'
+      + (dis ? "unavailable" : lane) + '</span>'
+      + '<span class="mono" style="font-size:10px;color:var(--ink-3)">' + esc(t.rt.split(" · ")[0]) + '</span></span>';
+    if (!dis) b.addEventListener("click", function(){
+      S.selTool = S.selTool === t.name ? null : t.name; renderTools();
+    });
+    else b.setAttribute("aria-disabled","true");
+    g.appendChild(b);
+  });
+  var dr = $("#toolDrawer"); dr.innerHTML = "";
+  if (S.selTool){
+    var t2 = TMAP[S.selTool], lane2 = laneOf(t2);
+    var d = el("div", "drawer");
+    d.innerHTML = '<h4>' + t2.name + '</h4>'
+      + '<p style="font-size:13px;color:var(--ink-2)">' + esc(t2.desc) + '</p>'
+      + '<div class="params">' + t2.params.map(function(p){
+          return '<div class="param"><label>' + p[0] + '</label><input value="' + esc(p[1]) + '"></div>';
+        }).join("") + '</div>'
+      + '<div class="mono" style="font-size:11px;color:var(--ink-2);margin-bottom:10px">backend ' + t2.backend
+      + ' · ' + esc(t2.rt) + (t2.deps.length ? ' · requires ' + t2.deps.join(", ") : ' · no dependencies')
+      + ' · lane ' + lane2 + '</div>'
+      + '<div style="display:flex;gap:8px"><button class="btn pri" id="addTool">＋ Add to plan</button>'
+      + '<button class="btn" id="closeTool">Close</button></div>';
+    dr.appendChild(d);
+    $("#addTool").addEventListener("click", function(){
+      lastAdded = addTool(t2.name);
+      S.panel = "ask";
+      $$(".navbtn").forEach(function(x){ x.setAttribute("aria-current", String(x.dataset.p === "ask")); });
+      $$(".panel").forEach(function(p){ p.hidden = p.dataset.panel !== "ask"; });
+      renderPlan();
+    });
+    $("#closeTool").addEventListener("click", function(){ S.selTool = null; renderTools(); });
+  }
+}
+
+/* ---------------- report ---------------- */
+var CLAIMS_OPEN = [
+  {c:"Microglial cells are enriched adjacent to malignant glioma cells within tumor_core (z = 6.41, permutation n = 1000, FDR 0.004).",
+   s:[0.86,0.82,0.71,0.74], t:"neighborhood_enrichment"},
+  {c:"GFAP expression is spatially structured across the section (Moran's I = 0.41, FDR 0.002 over 50 genes tested of 540 in panel).",
+   s:[0.91,0.86,0.62,0.78], t:"spatial_variable_genes"},
+  {c:"T-cell abundance is higher in infiltrating_edge than in cortex_normal (2.1× , n = 142 T/NK cells total).",
+   s:[0.55,0.82,0.71,0.44], t:"region_summary"},
+  {c:"The dataset meets the complete-section, asset and coverage requirements for validated inference.",
+   s:[0.75,0.75,0.75,0.75], t:"readiness"}
+];
+function saprBars(v){
+  var min = Math.min.apply(null, v), lbl = ["S","A","P","R"];
+  return '<div class="sapr">' + v.map(function(x, i){
+    return '<div><div class="bar' + (x === min ? " min" : "") + '"><b style="height:' + (x*100) + '%"></b></div>'
+      + '<div class="lb">' + lbl[i] + '</div></div>';
+  }).join("") + '</div>';
+}
+function renderReport(){
+  var host = $("#reportBody"), open = gatePass();
+  host.innerHTML = "";
+  if (!open){
+    host.innerHTML =
+      '<div class="banner stop"><span class="mark fail" style="width:20px;height:20px">!</span>'
+      + '<div><h4>blocked_missing_validation_inputs</h4>'
+      + '<p>The descriptive lane ran and produced real results. No biological claim is made, and none is '
+      + 'scored — a claim missing an evidence class stays at 0.00 rather than averaging up to something '
+      + 'that looks defensible.</p></div></div>'
+      + '<div class="two"><div><div class="card"><h5 style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin:0 0 9px;font-weight:500">Descriptive outputs produced</h5>'
+      + '<div class="kv"><span>QC + Leiden clustering</span><b>11 clusters</b></div>'
+      + '<div class="kv"><span>per-cluster markers</span><b>275 genes</b></div>'
+      + "<div class=\"kv\"><span>Moran's I, screened</span><b>50 of 540 tested</b></div>"
+      + '<div class="kv"><span>cluster neighbourhoods</span><b>11 × 11 z-scores</b></div>'
+      + '<div class="kv"><span>figures</span><b>4 PNG · 2 SVG · 1 HTML</b></div>'
+      + '<div class="kv"><span>wall clock</span><b>72.0 s</b></div>'
+      + '<div class="mono" style="font-size:11px;color:var(--warn);margin-top:10px">These name data-derived groups. They never name a cell type.</div></div></div>'
+      + '<div><div class="card"><h5 style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin:0 0 9px;font-weight:500">Claim ledger</h5>'
+      + '<table><tbody>'
+      + '<tr><td>Dataset readiness for validated inference is <b>not</b> met.</td><td class="num"><span class="pill ok"><i></i>0.75</span></td></tr>'
+      + '<tr><td>Any cell-type-level spatial relationship in this section.</td><td class="num"><span class="pill stop"><i></i>refused</span></td></tr>'
+      + '</tbody></table>'
+      + '<div class="mono" style="font-size:11px;color:var(--ink-3);margin-top:10px">1 supported readiness claim · 1 refused</div></div></div></div>';
+    return;
+  }
+  host.innerHTML =
+    '<div class="banner ok"><span class="mark pass" style="width:20px;height:20px">✓</span>'
+    + '<div><h4>validated_ready · 3 biological claims, 1 readiness claim</h4>'
+    + '<p>Weakest-link scoring: the composite equals the lowest of the four components, shown in red. '
+    + 'The panel component (P) caps two of these — a 540-gene targeted panel can only support so much.</p></div></div>'
+    + '<div class="scroll"><table><thead><tr><th>Claim</th><th>Evidence S · A · P · R</th><th>Reliability</th><th>Source tool</th></tr></thead><tbody>'
+    + CLAIMS_OPEN.map(function(c){
+        var min = Math.min.apply(null, c.s);
+        return '<tr><td style="max-width:44ch">' + esc(c.c) + '</td>'
+          + '<td>' + saprBars(c.s) + '</td>'
+          + '<td class="num"><span class="pill ' + (min >= .7 ? "ok" : min >= .5 ? "warn" : "stop") + '"><i></i>'
+          + min.toFixed(2) + '</span></td>'
+          + '<td class="mono" style="font-size:11px">' + c.t + '</td></tr>';
+      }).join("")
+    + '</tbody></table></div>'
+    + '<div class="card" style="margin-top:14px"><div class="mono" style="font-size:11.5px;color:var(--ink-2);line-height:1.6">'
+    + 'calibrated_combiner: <b>not_fit</b> — no expert-reviewed claim truth set exists yet.<br>'
+    + 'Until it does, these are conservative floors, not probabilities that the claim is true.</div></div>';
+}
+
+/* ---------------- simulate toggle ---------------- */
+$("#simToggle").addEventListener("click", function(){
+  var on = this.getAttribute("aria-pressed") === "true";
+  this.setAttribute("aria-pressed", String(!on));
+  if (!on){
+    S.labels = {g1:"Astrocyte", g2:"Microglial cell", g4:"Endothelial cell",
+                g5:"Fibroblast", g6:"T cell"};
+    S.regions = {z1:"tumor_core", z2:"infiltrating_edge", z3:"cortex_normal"};
+  } else { S.labels = {}; S.regions = {}; S.selPop = null; S.selZone = null; }
+  renderAll();
+});
+
+/* ---------------- boot ---------------- */
+function renderAll(){
+  renderLib(); renderGate(); renderReview(); renderThread(); renderPlan(); renderTools(); renderReport();
+  lastAdded = [];
+}
+renderPrompts();
+askIt(1);
+renderAll();
+})();
+</script>
+</body>
+</html>
