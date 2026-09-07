@@ -27,31 +27,37 @@ PLANNABLE_CAPABILITIES = ("validated", "descriptive", "experimental")
 def _is_scaffold(func: Any) -> bool:
     """True when the tool actually returns a registered scaffold placeholder.
 
-    Parses the body rather than searching its text. A substring search matched
-    `_scaffold_result(` wherever it appeared -- including in a comment, a
+    Reads the function's *bytecode*, not its text. A substring search over the
+    source matched `_scaffold_result(` wherever it appeared -- in a comment, a
     docstring, or a caveat string -- so a working tool that merely *mentioned*
     the scaffold helper was silently marked unavailable and vanished from
-    `list_plannable()` with no error anywhere.
+    `list_plannable()` with no error anywhere. A name only enters `co_names` by
+    being referenced as a global, so prose can never trip this.
 
-    Detects a real `return _scaffold_result(...)`. A scaffold return sitting in
-    unreachable code still counts; that is pathological enough to be worth
-    flagging as a scaffold rather than quietly trusting.
+    Bytecode rather than the AST because source is not available everywhere this
+    runs: inside a PyInstaller bundle modules load from a compiled archive and
+    `inspect.getsource` raises, which made every scaffold read as `validated` in
+    the packaged app -- the exact failure the capability field exists to prevent.
+    Code objects are always present.
+
+    Nested code objects are walked too, so a scaffold return inside a branch or
+    comprehension still counts; that is pathological enough to be worth flagging
+    rather than quietly trusting.
     """
-    try:
-        import ast
-        import inspect
-        import textwrap
-
-        tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
-    except (OSError, TypeError, SyntaxError, IndentationError):
+    code = getattr(func, "__code__", None)
+    if code is None:
         return False
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Call):
+    code_type = type(code)
+    pending = [code]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
             continue
-        called = node.value.func
-        name = called.id if isinstance(called, ast.Name) else getattr(called, "attr", "")
-        if name == "_scaffold_result":
+        seen.add(id(current))
+        if "_scaffold_result" in current.co_names:
             return True
+        pending.extend(const for const in current.co_consts if isinstance(const, code_type))
     return False
 
 

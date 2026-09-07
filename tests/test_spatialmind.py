@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import math
 import os
 import csv
@@ -1934,6 +1935,40 @@ class ScaffoldDetectionTests(unittest.TestCase):
             sys.path.remove(directory)
             sys.modules.pop("scaffold_probe_module", None)
             shutil.rmtree(directory, ignore_errors=True)
+
+    def test_scaffold_detection_survives_having_no_source(self):
+        """Detection must not depend on source being readable on disk.
+
+        Inside a PyInstaller bundle, modules load from a compiled archive and
+        `inspect.getsource` raises. A source-reading check therefore returned
+        False for every scaffold, and the packaged app advertised all 30 tools
+        as usable -- including the 18 that return a placeholder and do no work.
+        """
+        from spatialmind.tools.registry import _is_scaffold
+
+        source = textwrap.dedent(
+            '''
+            from spatialmind.schemas import ToolResult
+            from spatialmind.tools.implementations import _scaffold_result
+
+            def hidden_scaffold(dataset, params):
+                return _scaffold_result("t", "s", "c", params)
+
+            def hidden_real(dataset, params):
+                return ToolResult(tool_name="real", summary="s", metrics={"x": 1})
+            '''
+        )
+        namespace = {}
+        # A filename that does not exist on disk: exactly the situation in a
+        # frozen bundle, where the code object is present and the file is not.
+        exec(compile(source, "<frozen spatialmind.tools.implementations>", "exec"), namespace)
+
+        with self.assertRaises((OSError, TypeError)):
+            inspect.getsource(namespace["hidden_scaffold"])
+        self.assertTrue(_is_scaffold(namespace["hidden_scaffold"]),
+                        "a scaffold must still be detected with no source available")
+        self.assertFalse(_is_scaffold(namespace["hidden_real"]),
+                         "a real tool must not be marked unavailable")
 
     def test_registered_scaffolds_are_still_detected(self):
         registry = build_full_registry()
