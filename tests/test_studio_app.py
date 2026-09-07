@@ -1,0 +1,304 @@
+"""End-to-end checks for SpatialMind Studio, the packaged app.
+
+These run against a synthetic Xenium bundle in a temp directory rather than the
+real sections, because the interesting assertions here are about the *gate*
+opening and closing as a reviewer works, and a test that mutated a real bundle
+would leave label tables behind in the user's data folder.
+
+What matters most: the app must never open the gate on its own, and the tool
+catalog must never present a scaffold as usable.
+"""
+
+import gzip
+import json
+import os
+import shutil
+import tempfile
+import unittest
+
+from fastapi.testclient import TestClient
+
+from spatialmind.app.server import create_studio_app
+
+N_CELLS = 600
+
+
+def write_bundle(root, name="Synthetic_Section_outs"):
+    """A minimal bundle: the four assets the gate checks, plus a cell table."""
+    bundle = os.path.join(root, name)
+    os.makedirs(bundle, exist_ok=True)
+    with open(os.path.join(bundle, "experiment.xenium"), "w") as handle:
+        json.dump({"run_name": name, "panel_name": "synthetic_20g", "pixel_size": 0.2125}, handle)
+    with gzip.open(os.path.join(bundle, "cells.csv.gz"), "wt", newline="") as handle:
+        handle.write("cell_id,x_centroid,y_centroid,transcript_counts\n")
+        for i in range(N_CELLS):
+            # Two spatial halves, so a rectangle can select exactly half the section.
+            x = (i % 30) * 10.0
+            y = float(i // 30) * 10.0
+            handle.write("cell-%d,%.2f,%.2f,%d\n" % (i, x, y, 50 + (i % 40)))
+    for asset in ("cell_feature_matrix.h5", "morphology_focus.ome.tif", "cell_boundaries.parquet"):
+        with open(os.path.join(bundle, asset), "wb") as handle:
+            handle.write(b"\0")
+    return bundle
+
+
+class StudioAppTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="spatialmind-studio-test-")
+        cls.data_root = os.path.join(cls.root, "data")
+        cls.output_root = os.path.join(cls.root, "outputs")
+        os.makedirs(cls.data_root)
+        cls.bundle = write_bundle(cls.data_root)
+        cls.app = create_studio_app(data_root=cls.data_root, output_root=cls.output_root)
+        cls.client = TestClient(cls.app)
+        payload = cls.client.get("/api/datasets").json()
+        cls.dataset_id = payload["datasets"][0]["dataset_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def setUp(self):
+        for kind in ("labels", "regions"):
+            self.client.post("/api/datasets/%s/clear" % self.dataset_id, json={"kind": kind})
+
+    # ------------------------------------------------------------------ basics
+
+    def test_health_reports_roots_and_registry(self):
+        body = self.client.get("/api/health").json()
+        self.assertEqual(body["status"], "ok")
+        self.assertGreaterEqual(body["capability_summary"].get("validated", 0), 1)
+        self.assertGreaterEqual(body["capability_summary"].get("unavailable", 0), 1)
+
+    def test_startup_defers_the_folder_scan(self):
+        """The app must bind a port before it reads any folder.
+
+        On macOS the first read of ~/Documents, ~/Desktop or ~/Downloads blocks
+        until the user answers a consent prompt. Scanning during startup blocked
+        the packaged app before it served anything: no window, no error, and a
+        log that stopped mid-boot.
+        """
+        app = create_studio_app(data_root=self.data_root, output_root=self.output_root)
+        client = TestClient(app)
+        body = client.get("/api/health").json()
+        self.assertFalse(body["scanned"], "startup must not scan the data root")
+        self.assertEqual(body["datasets"], 0)
+        listing = client.get("/api/datasets").json()
+        self.assertEqual(len(listing["datasets"]), 1, "the first listing performs the scan")
+        self.assertTrue(client.get("/api/health").json()["scanned"])
+
+    def test_health_reports_window_mode_so_the_page_need_not_guess(self):
+        """The page leaves room for the traffic lights only in a native window.
+
+        It used to infer that from the user agent, which is guesswork that breaks
+        whenever WebKit changes its string. The launcher sets the flag; the page
+        reads it.
+        """
+        body = self.client.get("/api/health").json()
+        self.assertIn("window_mode", body)
+        self.assertFalse(body["window_mode"], "a bare server is not a window")
+
+    def test_dataset_names_are_readable_without_losing_the_original(self):
+        listing = self.client.get("/api/datasets").json()["datasets"][0]
+        self.assertEqual(listing["name"], "Synthetic_Section_outs")
+        self.assertEqual(listing["display_name"], "Synthetic Section")
+        self.assertIn("relative_path", listing)
+
+    def test_resources_endpoint_reports_what_labelling_still_needs(self):
+        body = self.client.get("/api/resources").json()
+        ids = {r["id"] for r in body["requirements"]}
+        self.assertIn("reviewer", ids)
+        self.assertIn("reference_malignant", ids)
+        for requirement in body["requirements"]:
+            self.assertIn(requirement["status"], {"have", "partial", "missing"})
+            if requirement["status"] != "have":
+                self.assertTrue(requirement["action"], "%s must say what to do" % requirement["id"])
+        # No references in the fixture folder, so the normal-lineage row cannot claim coverage.
+        self.assertEqual(body["references"], [])
+        self.assertIn("reference_normal", body["outstanding"])
+
+    def test_scan_status_flags_a_permission_protected_root(self):
+        from spatialmind.app.server import _is_protected_folder
+
+        home = os.path.expanduser("~")
+        self.assertTrue(_is_protected_folder(os.path.join(home, "Documents", "x")))
+        self.assertTrue(_is_protected_folder(os.path.join(home, "Desktop")))
+        self.assertFalse(_is_protected_folder(os.path.join(home, "SpatialMind", "data")))
+        self.assertFalse(_is_protected_folder(self.data_root))
+
+    def test_discovery_finds_the_bundle_and_marks_it_reviewable(self):
+        body = self.client.get("/api/datasets").json()
+        self.assertEqual(len(body["datasets"]), 1)
+        self.assertTrue(body["datasets"][0]["reviewable"])
+        self.assertEqual(body["datasets"][0]["data_type"], "xenium_directory")
+
+    def test_unknown_dataset_is_404(self):
+        self.assertEqual(self.client.get("/api/datasets/nope-00000000").status_code, 404)
+
+    def test_cells_endpoint_returns_aligned_arrays(self):
+        body = self.client.get("/api/datasets/%s/cells" % self.dataset_id).json()
+        self.assertEqual(body["n_cells"], N_CELLS)
+        for key in ("x", "y", "cluster", "label", "region"):
+            self.assertEqual(len(body[key]), body["displayed"], "%s is out of step" % key)
+        self.assertIn("x_min", body["bounds"])
+
+    # ------------------------------------------------------------------ the gate
+
+    def test_gate_starts_blocked_with_actionable_reasons(self):
+        body = self.client.get("/api/datasets/%s" % self.dataset_id).json()
+        gate = body["gate"]
+        self.assertEqual(gate["status"], "blocked_missing_validation_inputs")
+        self.assertTrue(gate["blocking_reasons"])
+        failed = [c for c in gate["checks"] if not c["ok"]]
+        self.assertTrue(failed, "a blocked gate must fail at least one check")
+        for check in failed:
+            self.assertTrue(check["action"], "every blocker must name the action that clears it")
+
+    def test_assigning_labels_and_regions_opens_the_gate(self):
+        cells = self.client.get("/api/datasets/%s/cells" % self.dataset_id).json()
+        ids = ["cell-%d" % i for i in range(N_CELLS)]
+
+        first = self.client.post(
+            "/api/datasets/%s/assign" % self.dataset_id,
+            json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2]},
+        ).json()
+        self.assertEqual(first["assignment"]["cells_written"], N_CELLS // 2)
+        # One class over half the section is not enough on either count.
+        self.assertNotEqual(first["gate"]["status"], "validated_ready")
+
+        self.client.post(
+            "/api/datasets/%s/assign" % self.dataset_id,
+            json={"kind": "labels", "value": "Oligodendrocyte", "cell_ids": ids[N_CELLS // 2:]},
+        )
+        bounds = cells["bounds"]
+        mid = (bounds["y_min"] + bounds["y_max"]) / 2.0
+        self.client.post(
+            "/api/datasets/%s/assign" % self.dataset_id,
+            json={"kind": "regions", "value": "tumor_core",
+                  "bounds": {"x0": bounds["x_min"], "y0": bounds["y_min"], "x1": bounds["x_max"], "y1": mid}},
+        )
+        final = self.client.post(
+            "/api/datasets/%s/assign" % self.dataset_id,
+            json={"kind": "regions", "value": "cortex_normal",
+                  "bounds": {"x0": bounds["x_min"], "y0": mid, "x1": bounds["x_max"], "y1": bounds["y_max"]}},
+        ).json()
+
+        self.assertEqual(final["gate"]["status"], "validated_ready")
+        self.assertGreaterEqual(final["label_coverage"]["coverage"], 0.7)
+        self.assertGreaterEqual(final["region_coverage"]["coverage"], 0.7)
+        self.assertTrue(os.path.exists(os.path.join(self.bundle, "expert_cell_labels.csv")))
+        self.assertTrue(os.path.exists(os.path.join(self.bundle, "cell_regions.csv")))
+
+    def test_clearing_closes_the_gate_again(self):
+        ids = ["cell-%d" % i for i in range(N_CELLS)]
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids})
+        body = self.client.post("/api/datasets/%s/clear" % self.dataset_id, json={"kind": "labels"}).json()
+        self.assertEqual(body["label_coverage"]["coverage"], 0.0)
+        self.assertNotEqual(body["gate"]["status"], "validated_ready")
+        self.assertFalse(os.path.exists(os.path.join(self.bundle, "expert_cell_labels.csv")))
+
+    def test_assignment_merges_rather_than_overwrites(self):
+        ids = ["cell-%d" % i for i in range(N_CELLS)]
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[:100]})
+        second = self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                                  json={"kind": "labels", "value": "T cell", "cell_ids": ids[100:150]}).json()
+        self.assertEqual(second["assignment"]["rows_total"], 150)
+        self.assertEqual(sorted(second["assignment"]["distinct_values"]), ["Astrocyte", "T cell"])
+
+    def test_empty_selection_is_rejected(self):
+        response = self.client.post(
+            "/api/datasets/%s/assign" % self.dataset_id,
+            json={"kind": "labels", "value": "Astrocyte",
+                  "bounds": {"x0": 1e9, "y0": 1e9, "x1": 1e9 + 1, "y1": 1e9 + 1}},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_blank_value_is_rejected(self):
+        response = self.client.post(
+            "/api/datasets/%s/assign" % self.dataset_id,
+            json={"kind": "labels", "value": "   ", "cell_ids": ["cell-1"]},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    # ------------------------------------------------------------------ tools
+
+    def test_catalog_lists_scaffolds_but_never_marks_them_plannable(self):
+        body = self.client.get("/api/tools?dataset_id=%s" % self.dataset_id).json()
+        tools = body["tools"]
+        self.assertGreaterEqual(len(tools), 20)
+        scaffolds = [t for t in tools if t["capability"] == "unavailable"]
+        self.assertTrue(scaffolds)
+        for tool in scaffolds:
+            self.assertFalse(tool["plannable"], "%s is a scaffold and must not be plannable" % tool["name"])
+            self.assertEqual(tool["lane"], "unavailable")
+
+    def test_lane_is_blocked_for_label_gated_tools_while_the_gate_is_shut(self):
+        body = self.client.get("/api/tools?dataset_id=%s" % self.dataset_id).json()
+        by_name = {t["name"]: t for t in body["tools"]}
+        self.assertEqual(by_name["region_summary"]["lane"], "blocked")
+        self.assertEqual(by_name["annotation"]["lane"], "blocked")
+        self.assertEqual(by_name["qc_and_cluster"]["lane"], "descriptive")
+        self.assertEqual(by_name["spatial_variable_genes"]["lane"], "descriptive")
+
+    # ------------------------------------------------------------------ planning
+
+    def test_plan_inserts_missing_dependencies_in_order(self):
+        body = self.client.post("/api/plan", json={"dataset_id": self.dataset_id, "tools": ["marker_detection"]}).json()
+        names = [s["tool"] for s in body["steps"]]
+        self.assertEqual(names[0], "qc_and_cluster")
+        self.assertIn("annotation", names)
+        self.assertEqual(names[-1], "marker_detection")
+        self.assertEqual(body["plan_status"], "valid")
+
+    def test_blocked_plan_still_validates_as_structurally_sound(self):
+        body = self.client.post("/api/plan", json={"dataset_id": self.dataset_id, "tools": ["region_summary"]}).json()
+        self.assertEqual(body["plan_status"], "valid", "the gate blocks inputs; it must not fake plan errors")
+        self.assertGreaterEqual(body["blocked_steps"], 1)
+
+    def test_cluster_grouping_keeps_marker_detection_in_the_descriptive_lane(self):
+        body = self.client.post(
+            "/api/plan",
+            json={"dataset_id": self.dataset_id, "tools": ["marker_detection"],
+                  "overrides": {"marker_detection": {"group_key": "leiden"}}},
+        ).json()
+        marker = [s for s in body["steps"] if s["tool"] == "marker_detection"][0]
+        self.assertEqual(marker["lane"], "descriptive")
+
+    # ------------------------------------------------------------------ ask
+
+    def test_ask_refuses_when_the_only_tool_is_a_scaffold(self):
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id, "question": "Find the malignant cells by copy number."}).json()
+        self.assertEqual(body["tools"], [])
+        self.assertIsNotNone(body["refusal"])
+        self.assertIn("cnv_inference", body["refusal"])
+
+    def test_ask_routes_a_spatial_question_to_the_descriptive_lane(self):
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id, "question": "Which genes are spatially structured?"}).json()
+        self.assertIn("spatial_variable_genes", body["tools"])
+        lanes = {s["tool"]: s["lane"] for s in body["plan"]["steps"]}
+        self.assertEqual(lanes["spatial_variable_genes"], "descriptive")
+
+    def test_ask_says_so_rather_than_guessing(self):
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id, "question": "What is the weather in Oslo?"}).json()
+        self.assertEqual(body["tools"], [])
+
+    # ------------------------------------------------------------------ runs
+
+    def test_run_requires_at_least_one_tool(self):
+        response = self.client.post("/api/runs", json={"dataset_id": self.dataset_id, "kind": "plan", "tools": []})
+        self.assertEqual(response.status_code, 400)
+
+    def test_static_app_is_served(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("SpatialMind Studio", response.text)
+
+
+if __name__ == "__main__":
+    unittest.main()

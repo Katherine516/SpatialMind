@@ -1,0 +1,1220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>SpatialMind Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  color-scheme:dark;
+  --paper:#080D0F; --surface:#101819; --surface-2:#162023; --surface-3:#1E2A2E;
+  --ink:#E8F0EF; --ink-2:#A6B7B7; --ink-3:#758788;
+  --line:#222F33; --line-2:#314247;
+  --accent:#4FC3CA; --accent-2:#8AE2E7; --accent-soft:#0E3439;
+  --magenta:#E184C9; --magenta-soft:#351330;
+  --ok:#5FBE90; --ok-soft:#123322;
+  --warn:#E0A84E; --warn-soft:#33260E;
+  --stop:#EA7A70; --stop-soft:#361815;
+  --sans:"Archivo",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14px;
+  line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden}
+h1,h2,h3,h4,h5{margin:0;letter-spacing:-.015em}
+p{margin:0}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:none}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--surface);
+  border:1px solid var(--line-2);border-radius:5px;padding:6px 9px}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+[hidden]{display:none!important}
+
+/* shell */
+.app{display:flex;flex-direction:column;height:100vh}
+.topbar{display:flex;align-items:center;gap:14px;padding:9px 14px;background:var(--surface-2);
+  border-bottom:1px solid var(--line);flex:none}
+/* In the native window the page runs under a transparent title bar. Start the
+   bar's content below the traffic lights, leaving that strip draggable. */
+body.native-window .topbar{padding-top:32px}
+body.native-window .rail{padding-top:6px}
+.brand{font-weight:700;font-size:14.5px;letter-spacing:-.02em;white-space:nowrap}
+.brand span{color:var(--accent)}
+.topbar .ctx{font-family:var(--mono);font-size:12px;color:var(--ink-3);flex:1 1 0;min-width:0;
+  display:flex;align-items:baseline;gap:8px;overflow:hidden}
+.topbar .ctx .nm{color:var(--ink);font-weight:600;font-family:var(--sans);font-size:13.5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34ch;flex:0 1 auto}
+.topbar .ctx .meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0}
+.topbar .brand{flex:none}
+.main{display:grid;grid-template-columns:190px 1fr;flex:1;min-height:0}
+.rail{border-right:1px solid var(--line);background:var(--surface-2);padding:10px 8px;
+  display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+.rail .grp{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-3);padding:13px 10px 5px}
+.navbtn{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:7px 10px;
+  border-radius:6px;font-size:13.5px;color:var(--ink-2)}
+.navbtn:hover{background:var(--surface-3)}
+.navbtn[aria-current="true"]{background:var(--surface);color:var(--ink);font-weight:600;
+  box-shadow:inset 2px 0 0 var(--accent)}
+.navbtn .cnt{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.stage{overflow-y:auto;padding:18px 20px 28px;min-width:0}
+.phead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding-bottom:11px;
+  border-bottom:1px solid var(--line);margin-bottom:15px;flex-wrap:wrap}
+.phead h2{font-size:19px;font-weight:600}
+.phead p{font-size:12.5px;color:var(--ink-3);margin-top:3px;max-width:64ch}
+
+/* atoms */
+.pill{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10.5px;
+  padding:2.5px 7px;border-radius:4px;white-space:nowrap;font-weight:500}
+.pill i{width:5px;height:5px;border-radius:50%;background:currentColor;display:block;flex:none}
+.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.stop{background:var(--stop-soft);color:var(--stop)}
+.pill.mute{background:var(--surface-3);color:var(--ink-3)}
+.pill.acc{background:var(--accent-soft);color:var(--accent-2)}
+.pill.mag{background:var(--magenta-soft);color:var(--magenta)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;
+  border:1px solid var(--line-2);font-size:13px;font-weight:500;color:var(--ink-2);background:var(--surface)}
+.btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--paper);font-weight:600}
+.btn.pri:hover:not(:disabled){background:var(--accent-2);border-color:var(--accent-2);color:var(--paper)}
+.btn.danger:hover:not(:disabled){border-color:var(--stop);color:var(--stop)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.card{border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:13px}
+.card h5,.blk h5{font-family:var(--mono);font-size:10px;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--ink-3);margin:0 0 8px;font-weight:500}
+.kv{font-family:var(--mono);font-size:11.5px;display:flex;justify-content:space-between;gap:12px;
+  padding:5px 0;border-bottom:1px dotted var(--line)}
+.kv:last-child{border-bottom:none}
+.kv span{color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kv b{font-weight:500;white-space:nowrap}
+.meter{height:5px;border-radius:3px;background:var(--surface-3);overflow:hidden}
+.meter b{display:block;height:100%;background:var(--accent);transition:width .3s}
+.meter.done b{background:var(--ok)}
+.covrow{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11.5px;margin-bottom:4px}
+.two{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;align-items:start}
+.scroll{overflow-x:auto}
+.empty{padding:34px 20px;text-align:center;color:var(--ink-3);font-size:13px;
+  border:1px dashed var(--line-2);border-radius:8px}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--line-2);
+  border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
+@keyframes sp{to{transform:rotate(360deg)}}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:500;padding:0 10px 7px 0;border-bottom:1px solid var(--line-2);white-space:nowrap}
+td{padding:8px 10px 8px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td.num{font-family:var(--mono);white-space:nowrap}
+
+/* datasets */
+.libgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(262px,1fr));gap:11px}
+.ds{border:1px solid var(--line);border-radius:8px;padding:13px;background:var(--surface);
+  display:flex;flex-direction:column;gap:8px;text-align:left;width:100%}
+.ds:hover{border-color:var(--accent)}
+.ds.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.ds h4{font-size:14px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.ds .raw{font-family:var(--mono);font-size:10px;color:var(--ink-3);overflow-wrap:anywhere;
+  line-height:1.35;opacity:.85}
+.ds .path{font-family:var(--mono);font-size:10px;color:var(--ink-3);line-height:1.35;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
+.ds .row{display:flex;gap:5px;flex-wrap:wrap}
+
+/* gate */
+.check{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);align-items:flex-start}
+.check:last-child{border-bottom:none}
+.mark{width:17px;height:17px;border-radius:50%;flex:none;margin-top:1px;display:grid;place-items:center;
+  font-size:10px;font-weight:700;font-family:var(--mono)}
+.mark.pass{background:var(--ok-soft);color:var(--ok)}
+.mark.fail{background:var(--stop-soft);color:var(--stop)}
+.check h5{margin:0;font-size:13px;font-weight:500;font-family:var(--sans);letter-spacing:0;
+  text-transform:none;color:var(--ink)}
+.check p{font-size:12px;color:var(--ink-3);margin-top:2px}
+.check .fix{font-family:var(--mono);font-size:11px;color:var(--magenta);margin-top:3px}
+
+/* review */
+.rev{display:grid;grid-template-columns:1fr 262px;gap:13px;align-items:start}
+.canvaswrap{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface-2)}
+.canvasbar{display:flex;gap:6px;padding:7px 8px;border-bottom:1px solid var(--line);
+  background:var(--surface);flex-wrap:wrap;align-items:center}
+canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--surface-2)}
+.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden}
+.seg button{padding:5px 10px;font-size:12px;color:var(--ink-3);border-right:1px solid var(--line-2)}
+.seg button:last-child{border-right:none}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--paper);font-weight:600}
+.hint{font-family:var(--mono);font-size:11px;color:var(--ink-3);padding:7px 9px;
+  background:var(--surface-2);border-top:1px solid var(--line)}
+.blk{border:1px solid var(--line);border-radius:8px;padding:11px;margin-bottom:10px;background:var(--surface)}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{padding:4px 9px;border-radius:5px;border:1px solid var(--line-2);font-size:12px;color:var(--ink-2);
+  display:inline-flex;align-items:center;gap:6px}
+.chip:hover:not(:disabled){border-color:var(--magenta);color:var(--magenta)}
+.chip:disabled{opacity:.4;cursor:not-allowed}
+.chip .sw{width:8px;height:8px;border-radius:2px;display:block;flex:none}
+.legend{display:flex;flex-wrap:wrap;gap:4px 10px;font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend i{width:8px;height:8px;border-radius:2px;display:block}
+
+/* ask + plan */
+.ask{display:grid;grid-template-columns:1fr 336px;gap:15px;align-items:start}
+.thread{display:flex;flex-direction:column;gap:10px;min-height:80px}
+.msg{border-radius:9px;padding:10px 13px;font-size:13.5px;line-height:1.5;max-width:92%}
+.msg.u{background:var(--accent-soft);align-self:flex-end}
+.msg.a{background:var(--surface);border:1px solid var(--line)}
+.msg .why{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-top:7px;padding-top:7px;
+  border-top:1px dotted var(--line)}
+.askform{display:flex;gap:7px;margin-top:12px}
+.askform input{flex:1}
+.prompts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.prompts button{text-align:left;padding:6px 11px;border:1px solid var(--line-2);border-radius:16px;
+  font-size:12.5px;color:var(--ink-2)}
+.prompts button:hover{border-color:var(--accent);color:var(--accent)}
+.planlist{display:flex;flex-direction:column;gap:7px}
+.step{border:1px solid var(--line);border-left-width:3px;border-radius:6px;padding:8px 10px;
+  background:var(--surface);display:flex;flex-direction:column;gap:4px}
+.step.lane-validated{border-left-color:var(--ok)}
+.step.lane-descriptive{border-left-color:var(--warn)}
+.step.lane-blocked{border-left-color:var(--stop)}
+.step .top{display:flex;align-items:center;gap:8px}
+.step .nm{font-family:var(--mono);font-size:12px;font-weight:500;flex:1}
+.step .dep{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.step .x{color:var(--ink-3);font-size:15px;line-height:1;padding:0 2px}
+.step .x:hover{color:var(--stop)}
+.note{font-family:var(--mono);font-size:10.5px;padding:5px 8px;border-radius:4px;margin-top:7px}
+.note.acc{background:var(--accent-soft);color:var(--accent-2)}
+.note.stop{background:var(--stop-soft);color:var(--stop)}
+.note.warn{background:var(--warn-soft);color:var(--warn)}
+
+/* tools */
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:9px}
+.tool{border:1px solid var(--line);border-radius:7px;padding:11px;background:var(--surface);
+  text-align:left;display:flex;flex-direction:column;gap:6px}
+.tool:hover:not(.dis){border-color:var(--accent)}
+.tool.dis{opacity:.5;background:var(--surface-2);cursor:not-allowed}
+.tool.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.tool .nm{font-family:var(--mono);font-size:12px;font-weight:500;line-height:1.3}
+.tool .ds2{font-size:11.5px;color:var(--ink-3);line-height:1.4}
+.tool .ft{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:auto}
+.drawer{border:1px solid var(--accent);border-radius:8px;padding:13px;margin-bottom:12px;
+  background:var(--accent-soft)}
+.drawer h4{font-family:var(--mono);font-size:13.5px;font-weight:600;margin-bottom:3px}
+.params{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:9px;margin:11px 0}
+.param label{display:block;font-family:var(--mono);font-size:10px;color:var(--ink-3);
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.param input{width:100%;font-family:var(--mono);font-size:12px;padding:5px 8px}
+.recipes{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px;margin-bottom:14px}
+.recipe{border:1px solid var(--line);border-radius:7px;padding:11px;background:var(--surface);text-align:left}
+.recipe:hover{border-color:var(--magenta)}
+.recipe h4{font-size:13px;font-weight:600;margin-bottom:4px}
+.recipe p{font-size:11.5px;color:var(--ink-3);line-height:1.4}
+
+/* runs */
+.joblog{font-family:var(--mono);font-size:11px;color:var(--ink-3);background:var(--surface-2);
+  border-radius:6px;padding:9px;max-height:180px;overflow:auto;white-space:pre-wrap;line-height:1.5}
+.banner{border-radius:8px;padding:11px 13px;margin-bottom:13px;display:flex;gap:10px;align-items:flex-start}
+.banner.stop{background:var(--stop-soft)}
+.banner.ok{background:var(--ok-soft)}
+.banner.warn{background:var(--warn-soft)}
+.banner h4{font-size:13px;font-weight:600;margin-bottom:2px}
+.banner p{font-size:12.5px;color:var(--ink-2);max-width:74ch}
+.banner.stop h4{color:var(--stop)} .banner.ok h4{color:var(--ok)} .banner.warn h4{color:var(--warn)}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--surface-3);
+  border:1px solid var(--line-2);border-radius:7px;padding:9px 15px;font-size:13px;z-index:50;
+  box-shadow:0 10px 30px -12px rgba(0,0,0,.9);max-width:70ch}
+#toast.err{border-color:var(--stop);color:var(--stop)}
+@media (max-width:1000px){
+  .main{grid-template-columns:1fr}
+  .rail{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line)}
+  .rail .grp{display:none}
+  .navbtn{white-space:nowrap;width:auto}
+  .two,.rev,.ask{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">Spatial<span>Mind</span> Studio</div>
+    <div class="ctx" id="ctx">Loading workspace…</div>
+    <span id="gatePill" class="pill mute"><i></i>no dataset</span>
+    <button class="btn" id="refreshBtn">Rescan</button>
+  </header>
+  <div class="main">
+    <nav class="rail" aria-label="Primary">
+      <div class="grp">Data</div>
+      <button class="navbtn" data-p="datasets" aria-current="true">Datasets<span class="cnt" id="cDs">–</span></button>
+      <button class="navbtn" data-p="gate">Readiness<span class="cnt" id="cGate">–</span></button>
+      <div class="grp">Human in the loop</div>
+      <button class="navbtn" data-p="review">Review Studio<span class="cnt" id="cRev">–</span></button>
+      <div class="grp">Analysis</div>
+      <button class="navbtn" data-p="ask">Ask</button>
+      <button class="navbtn" data-p="tools">Tool Bench<span class="cnt" id="cTools">–</span></button>
+      <div class="grp">Output</div>
+      <button class="navbtn" data-p="runs">Runs<span class="cnt" id="cRuns">–</span></button>
+    </nav>
+    <div class="stage" id="stage">
+
+      <section class="panel" data-panel="datasets">
+        <div class="phead">
+          <div><h2>Datasets</h2><p id="dsSub">Scanned from the data root. Xenium bundles can be reviewed and
+            gated; other formats are listed but cannot drive the review flow.</p></div>
+          <form id="rootForm" style="display:flex;gap:6px;align-items:center">
+            <label class="mono" style="font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)">Data root</label>
+            <input id="rootInput" class="mono" style="font-size:11.5px;width:290px" placeholder="/path/to/data" spellcheck="false">
+            <button class="btn" type="submit">Use</button>
+          </form>
+        </div>
+        <div class="libgrid" id="libGrid"><div class="empty">Scanning…</div></div>
+      </section>
+
+      <section class="panel" data-panel="gate" hidden>
+        <div class="phead">
+          <div><h2>Readiness gate</h2><p>Evaluated by the same <span class="mono">pilot_gate()</span> the pipeline
+            uses. Every blocker names the action that clears it.</p></div>
+          <span id="gateBadge" class="pill mute"><i></i>–</span>
+        </div>
+        <div id="gateBody"><div class="empty">Select a dataset first.</div></div>
+      </section>
+
+      <section class="panel" data-panel="review" hidden>
+        <div class="phead">
+          <div><h2>Review Studio</h2><p>The only screen where a human creates truth. Assignments write
+            <span class="mono">expert_cell_labels.csv</span> and <span class="mono">cell_regions.csv</span> into the bundle.</p></div>
+          <div style="display:flex;gap:6px">
+            <button class="btn danger" id="clearLabels">Clear labels</button>
+            <button class="btn danger" id="clearRegions">Clear regions</button>
+          </div>
+        </div>
+        <div id="reviewBody"><div class="empty">Select a Xenium dataset first.</div></div>
+      </section>
+
+      <section class="panel" data-panel="ask" hidden>
+        <div class="phead">
+          <div><h2>Ask</h2><p>The agent proposes a typed plan and nothing runs before you approve it.
+            When no implemented tool answers the question, it says so and names the missing one.</p></div>
+        </div>
+        <div class="ask">
+          <div>
+            <div class="thread" id="thread"></div>
+            <form class="askform" id="askForm">
+              <input id="askInput" placeholder="Which genes are spatially structured across this section?" autocomplete="off">
+              <button class="btn pri" type="submit">Ask</button>
+            </form>
+            <div class="prompts" id="prompts"></div>
+          </div>
+          <div>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px">
+                <h5 style="margin:0">Plan</h5>
+                <span class="mono" style="font-size:10.5px;color:var(--ink-3)" id="planRuntime">—</span>
+              </div>
+              <div class="planlist" id="planList"></div>
+              <div id="planMsg"></div>
+              <div style="display:flex;gap:6px;margin-top:10px">
+                <button class="btn pri" id="runPlan" style="flex:1;justify-content:center" disabled>Run plan</button>
+                <button class="btn" id="clearPlan">Clear</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="tools" hidden>
+        <div class="phead">
+          <div><h2>Tool Bench</h2><p>Every registered tool. Scaffolds stay visible and disabled — hiding them
+            would make the catalog look richer than the software is.</p></div>
+          <span class="pill mute" id="toolCount">–</span>
+        </div>
+        <h5 style="font-family:var(--mono);font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3);margin:0 0 8px">Recipes</h5>
+        <div class="recipes" id="recipeGrid"></div>
+        <div id="toolDrawer"></div>
+        <div class="filters" id="toolFilters"></div>
+        <div class="tgrid" id="toolGrid"></div>
+      </section>
+
+      <section class="panel" data-panel="runs" hidden>
+        <div class="phead">
+          <div><h2>Runs</h2><p>Each run writes a hashed record with tool trace, parameters, input digests and
+            captured library versions.</p></div>
+          <button class="btn" id="refreshRuns">Refresh</button>
+        </div>
+        <div id="runsBody"><div class="empty">No runs yet.</div></div>
+      </section>
+
+    </div>
+  </div>
+</div>
+<div id="toast" hidden></div>
+<script>
+(function(){
+"use strict";
+
+/* ------------------------------------------------------------------ api */
+async function api(path, options){
+  const res = await fetch(path, Object.assign({headers:{"Content-Type":"application/json"}}, options||{}));
+  const text = await res.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch (e) { body = {detail:text}; }
+  if (!res.ok) throw new Error((body && body.detail) || ("HTTP " + res.status));
+  return body;
+}
+const get = (p) => api(p);
+const post = (p, payload) => api(p, {method:"POST", body:JSON.stringify(payload||{})});
+
+// Inside the native window a WKWebView drops target="_blank" without a word, so
+// a report link would appear to do nothing. Route it through the app instead.
+function openExternal(url){
+  const absolute = url.startsWith("http") ? url : (window.location.origin + url);
+  const bridge = window.pywebview && window.pywebview.api && window.pywebview.api.open_external;
+  if (bridge){ window.pywebview.api.open_external(absolute); return; }
+  window.open(absolute, "_blank", "noopener");
+}
+window.addEventListener("click", (event) => {
+  const link = event.target.closest && event.target.closest("a[data-external]");
+  if (!link) return;
+  event.preventDefault();
+  openExternal(link.getAttribute("href"));
+});
+
+let toastTimer = null;
+function toast(message, isError){
+  const el = document.getElementById("toast");
+  el.textContent = message; el.hidden = false;
+  el.className = isError ? "err" : "";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, isError ? 7000 : 3400);
+}
+
+/* ------------------------------------------------------------------ state */
+const S = {
+  datasets:[], dsId:null, detail:null, cells:null,
+  tools:[], recipes:[], capability:{}, gateOpen:false,
+  plan:[], overrides:{}, planInfo:null, selTool:null, filter:"all",
+  mode:"label", colorBy:"cluster", selCluster:null, drag:null, rect:null,
+  thread:[], jobs:[], job:null, poll:null, panel:"datasets", dataRoot:"", resources:null, scanning:false, waitingOnPermission:false, scanRetry:null
+};
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+const esc = (s) => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const num = (n) => (typeof n === "number" ? n.toLocaleString() : n);
+const pct = (v) => (v * 100).toFixed(1) + "%";
+
+const ONTOLOGY = [
+  ["Astrocyte","CL:0000127"], ["Oligodendrocyte","CL:0000128"], ["Microglial cell","CL:0000129"],
+  ["Malignant glioma cell",""], ["Neuron","CL:0000540"], ["Endothelial cell","CL:0000115"],
+  ["Fibroblast","CL:0000057"], ["T cell","CL:0000084"], ["Macrophage","CL:0000235"],
+  ["B cell","CL:0000236"], ["Epithelial cell","CL:0000066"]
+];
+const REGION_SUGGESTIONS = ["tumor_core","infiltrating_edge","cortex_normal","peritumoral_white_matter","stroma","vessel_rich"];
+
+function hueColor(key){
+  // Golden-angle hues: sequential cluster ids land far apart instead of
+  // hashing to neighbouring yellows, which made 24 clusters read as one blob.
+  const text = String(key);
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) hash = (hash * 131 + text.charCodeAt(i)) >>> 0;
+  const n = /^\d+$/.test(text) ? parseInt(text, 10) : hash;
+  const h = Math.round((n * 137.508) % 360);
+  const s = 56 + (hash % 20);
+  const l = 52 + (hash % 14);
+  return "hsl(" + h + "," + s + "%," + l + "%)";
+}
+
+/* ------------------------------------------------------------------ nav */
+$$(".navbtn").forEach((btn) => btn.addEventListener("click", () => showPanel(btn.dataset.p)));
+function showPanel(name){
+  S.panel = name;
+  $$(".navbtn").forEach((b) => b.setAttribute("aria-current", String(b.dataset.p === name)));
+  $$(".panel").forEach((p) => { p.hidden = p.dataset.panel !== name; });
+  if (name === "review") drawMap();
+  if (name === "runs") loadRuns();
+}
+
+/* ------------------------------------------------------------------ boot */
+async function boot(){
+  try {
+    const health = await get("/api/health");
+    // The server knows whether it opened a window; sniffing the user agent for
+    // a WKWebView is guesswork that breaks on the next OS release.
+    if (health.window_mode) document.body.classList.add("native-window");
+    S.capability = health.capability_summary || {};
+    S.dataRoot = health.data_root;
+    $("#rootInput").value = health.data_root;
+    $("#ctx").innerHTML = '<span class="meta">data root ' + esc(health.data_root) + '</span>';
+    await loadDatasets();
+  } catch (err) {
+    $("#ctx").textContent = "Cannot reach the Studio API: " + err.message;
+    toast(err.message, true);
+  }
+}
+
+async function loadDatasets(refresh){
+  const payload = await get("/api/datasets" + (refresh ? "?refresh=true" : ""));
+  applyDatasets(payload);
+  // macOS blocks the first read of a protected folder until the user answers a
+  // consent prompt. Say so, and keep checking rather than spinning in silence.
+  if (payload.scanning){
+    S.scanning = true;
+    S.waitingOnPermission = !!payload.waiting_on_permission;
+    renderDatasets();
+    clearTimeout(S.scanRetry);
+    S.scanRetry = setTimeout(() => loadDatasets(false), 2000);
+    return;
+  }
+  S.scanning = false;
+  if (payload.scan_error) toast("Could not read the data root: " + payload.scan_error, true);
+}
+function applyDatasets(payload){
+  S.datasets = payload.datasets || [];
+  if (payload.data_root){
+    S.dataRoot = payload.data_root;
+    const input = $("#rootInput");
+    if (input && document.activeElement !== input) input.value = payload.data_root;
+  }
+  $("#cDs").textContent = S.datasets.length;
+  renderDatasets();
+  if (!S.dsId || !S.datasets.some((d) => d.dataset_id === S.dsId)){
+    S.dsId = null;
+    const first = S.datasets.filter((d) => d.reviewable)[0];
+    if (first) selectDataset(first.dataset_id);
+    else { S.detail = null; S.cells = null; renderAll(); }
+  }
+}
+
+document.getElementById("rootForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const value = $("#rootInput").value.trim();
+  if (!value) return;
+  try {
+    const payload = await post("/api/config", {data_root: value});
+    S.dsId = null;
+    applyDatasets(payload);
+    toast("Data root set to " + payload.data_root + " — " + payload.datasets.length + " datasets found.");
+  } catch (err) { toast(err.message, true); }
+});
+
+async function selectDataset(datasetId){
+  S.dsId = datasetId;
+  // Drop the previous dataset's detail first, or its coverage bar renders on the
+  // newly selected card for as long as the fetch takes.
+  S.detail = null; S.cells = null; S.gateOpen = false;
+  S.selCluster = null; S.rect = null; S.plan = []; S.overrides = {}; S.planInfo = null; S.thread = [];
+  renderDatasets();
+  $("#gatePill").className = "pill mute"; $("#gatePill").innerHTML = "<i></i>loading";
+  try {
+    S.detail = await get("/api/datasets/" + datasetId);
+    S.gateOpen = !!(S.detail.gate && S.detail.gate.status === "validated_ready");
+    const entry = S.detail.dataset;
+    const meta = S.detail.n_cells
+      ? num(S.detail.n_cells) + " cells · " + Object.keys(S.detail.cluster_sizes || {}).length +
+        " clusters · " + esc(S.detail.cluster_method)
+      : esc(entry.data_type);
+    $("#ctx").innerHTML =
+      '<span class="nm" title="' + esc(entry.relative_path) + '">' + esc(entry.display_name || entry.name) + '</span>' +
+      '<span class="meta">' + meta + '</span>';
+    await Promise.all([loadCells(), loadTools(), loadResources()]);
+    renderAll();
+  } catch (err) {
+    toast(err.message, true);
+    $("#gatePill").className = "pill stop"; $("#gatePill").innerHTML = "<i></i>error";
+  }
+}
+
+async function loadCells(){
+  if (!S.detail || !S.detail.reviewable) { S.cells = null; return; }
+  S.cells = await get("/api/datasets/" + S.dsId + "/cells");
+}
+async function loadResources(){
+  try {
+    S.resources = await get("/api/resources?dataset_id=" + encodeURIComponent(S.dsId || ""));
+  } catch (err) { S.resources = null; }
+}
+async function loadTools(){
+  const payload = await get("/api/tools?dataset_id=" + encodeURIComponent(S.dsId || ""));
+  S.tools = payload.tools || [];
+  S.recipes = payload.recipes || [];
+  S.capability = payload.capability_summary || S.capability;
+}
+
+function renderAll(){
+  renderDatasets(); renderGate(); renderReview(); renderThread(); renderPlan(); renderTools();
+}
+
+/* ------------------------------------------------------------------ datasets */
+function renderDatasets(){
+  const grid = $("#libGrid");
+  if (S.scanning){
+    grid.innerHTML = '<div class="empty"><span class="spin"></span> Reading <span class="mono">' +
+      esc(S.dataRoot || "the data root") + '</span>…' +
+      (S.waitingOnPermission
+        ? '<br><br>macOS is asking for permission to read this folder. Allow it in the dialog and the list fills in.' +
+          '<br>If you dismissed it: System Settings → Privacy &amp; Security → Files and Folders → SpatialMind Studio.'
+        : '') + '</div>';
+    return;
+  }
+  if (!S.datasets.length){
+    grid.innerHTML = '<div class="empty">No datasets under <span class="mono">' + esc(S.dataRoot || "the data root") +
+      '</span>.<br><br>Point the Data root above at a folder containing Xenium output bundles ' +
+      '(a folder with <span class="mono">experiment.xenium</span> in it).</div>';
+    return;
+  }
+  grid.innerHTML = "";
+  S.datasets.forEach((d) => {
+    const active = d.dataset_id === S.dsId;
+    const detail = active ? S.detail : null;
+    const btn = document.createElement("button");
+    btn.className = "ds" + (active ? " active" : "");
+    let status;
+    if (!d.reviewable) status = '<span class="pill mute"><i></i>' + esc(d.data_type) + '</span>';
+    else if (!detail) status = '<span class="pill mute"><i></i>xenium bundle</span>';
+    else if (detail.gate && detail.gate.status === "validated_ready") status = '<span class="pill ok"><i></i>validated_ready</span>';
+    else status = '<span class="pill stop"><i></i>blocked · ' + ((detail.gate && detail.gate.blocking_reasons) || []).length + '</span>';
+    const cov = detail && detail.label_coverage ? detail.label_coverage.coverage : 0;
+    btn.title = d.relative_path;
+    btn.innerHTML =
+      '<div class="row">' + status + (active ? '<span class="pill acc"><i></i>open</span>' : '') + '</div>' +
+      '<h4>' + esc(d.display_name || d.name) + '</h4>' +
+      '<div class="raw">' + esc(d.name) + '</div>' +
+      (detail && detail.n_cells ? '<div class="mono" style="font-size:11px;color:var(--ink-2)">' +
+        num(detail.n_cells) + ' cells · ' + Object.keys(detail.cluster_sizes || {}).length + ' clusters</div>' : '') +
+      (d.reviewable ? '<div><div class="covrow"><span>label coverage</span><b>' + pct(cov) + '</b></div>' +
+        '<div class="meter' + (cov >= 0.7 ? ' done' : '') + '"><b style="width:' + (cov*100) + '%"></b></div></div>' : '');
+    if (d.reviewable) btn.addEventListener("click", () => selectDataset(d.dataset_id));
+    else btn.addEventListener("click", () => toast(d.name + " is a " + d.data_type + " dataset. The review and gate flow needs a Xenium bundle."));
+    grid.appendChild(btn);
+  });
+}
+
+/* ------------------------------------------------------------------ gate */
+function renderGate(){
+  const detail = S.detail;
+  const pill = $("#gatePill"), badge = $("#gateBadge"), body = $("#gateBody");
+  if (!detail || !detail.reviewable){
+    pill.className = "pill mute"; pill.innerHTML = "<i></i>not reviewable";
+    body.innerHTML = '<div class="empty">Select a Xenium bundle to evaluate the gate.</div>';
+    $("#cGate").textContent = "–";
+    return;
+  }
+  const gate = detail.gate || {};
+  const failed = (gate.checks || []).filter((c) => !c.ok).length;
+  const open = gate.status === "validated_ready";
+  const cls = open ? "ok" : "stop";
+  pill.className = "pill " + cls; pill.innerHTML = "<i></i>" + esc(gate.status || "");
+  badge.className = "pill " + cls; badge.innerHTML = "<i></i>" + esc(gate.status || "");
+  $("#cGate").textContent = failed ? failed : "✓";
+
+  const assets = gate.asset_readiness || {};
+  const resourcesHtml = renderResources();
+  body.innerHTML =
+    '<div class="two"><div><div class="card"><h5>Six conditions</h5><div id="checkList"></div></div></div>' +
+    '<div><div class="card" style="margin-bottom:12px"><h5>Assets</h5>' +
+      row("cell table", assets.has_cell_table) + row("feature matrix", assets.has_feature_matrix) +
+      row("morphology", assets.has_morphology) + row("boundaries", assets.has_boundaries) +
+      '<div class="kv"><span>10x analysis clusters</span><b>' + (assets.has_10x_analysis_clusters ? "yes" : "no") + '</b></div>' +
+    '</div>' +
+    '<div class="card"><h5>Scope and labels</h5>' +
+      '<div class="kv"><span>cells indexed</span><b>' + num(detail.n_cells) + '</b></div>' +
+      '<div class="kv"><span>cluster method</span><b>' + esc(detail.cluster_method) + '</b></div>' +
+      '<div class="kv"><span>label coverage</span><b>' + pct(gate.label_coverage || 0) + '</b></div>' +
+      '<div class="kv"><span>region coverage</span><b>' + pct(gate.region_coverage || 0) + '</b></div>' +
+      '<div class="kv"><span>cell classes</span><b>' + (gate.cell_classes || []).length + '</b></div>' +
+      '<div class="kv"><span>regions</span><b>' + (gate.regions || []).length + '</b></div>' +
+      '<div class="kv"><span>index build</span><b>' + (detail.index_build_seconds || 0) + ' s</b></div>' +
+    '</div></div></div>' + resourcesHtml;
+
+  const list = $("#checkList");
+  (gate.checks || []).forEach((c) => {
+    const div = document.createElement("div");
+    div.className = "check";
+    div.innerHTML = '<span class="mark ' + (c.ok ? "pass" : "fail") + '">' + (c.ok ? "✓" : "!") + '</span>' +
+      '<div><h5>' + esc(c.title) + '</h5><p>' + esc(c.detail) + '</p>' +
+      (!c.ok && c.action ? '<div class="fix">→ ' + esc(c.action) + '</div>' : '') + '</div>';
+    list.appendChild(div);
+  });
+  function row(label, ok){
+    return '<div class="kv"><span>' + label + '</span><b style="color:' + (ok ? "var(--ok)" : "var(--stop)") + '">' +
+      (ok ? "present" : "missing") + '</b></div>';
+  }
+}
+
+/* ------------------------------------------------------------------ review */
+function renderResources(){
+  const inv = S.resources;
+  if (!inv) return '';
+  const cov = inv.lineage_coverage || {};
+  const rows = (inv.requirements || []).map((r) => {
+    const cls = r.status === "have" ? "ok" : (r.status === "partial" ? "warn" : "stop");
+    const mark = r.status === "have" ? "pass" : "fail";
+    return '<div class="check"><span class="mark ' + mark + '">' + (r.status === "have" ? "✓" : "!") + '</span>' +
+      '<div><h5>' + esc(r.title) + ' <span class="pill ' + cls + '"><i></i>' + esc(r.status) + '</span></h5>' +
+      '<p>' + esc(r.detail) + '</p>' +
+      (r.action ? '<div class="fix">→ ' + esc(r.action) + '</div>' : '') +
+      '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:3px">unblocks: ' +
+        esc(r.unblocks) + '</div></div></div>';
+  }).join("");
+  const refs = (inv.references || []).map((r) =>
+    '<div class="kv"><span title="' + esc(r.relative_path) + '">' + esc(r.display_name) + '</span>' +
+    '<b>' + r.size_gb + ' GB</b></div>').join("");
+  return '<div class="two" style="margin-top:16px">' +
+    '<div class="card"><h5>What expert labels still need</h5>' + rows + '</div>' +
+    '<div><div class="card" style="margin-bottom:12px"><h5>Reference atlases on disk</h5>' +
+      (refs || '<p style="font-size:12px;color:var(--ink-3)">None found under the data root.</p>') +
+      '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:9px">lineages covered: ' +
+        esc((cov.covered || []).join(", ") || "none") +
+        ((cov.missing || []).length ? '<br><span style="color:var(--stop)">not covered: ' +
+          esc(cov.missing.join(", ")) + '</span>' : '') + '</div></div>' +
+    '<div class="card"><h5>Vocabulary</h5>' +
+      '<div class="kv"><span>Cell Ontology terms cached</span><b>' + (inv.ontology_terms || []).length + '</b></div>' +
+      '<div class="kv"><span>labels file</span><b>' + ((inv.dataset_state || {}).has_labels ? "present" : "absent") + '</b></div>' +
+      '<div class="kv"><span>regions file</span><b>' + ((inv.dataset_state || {}).has_regions ? "present" : "absent") + '</b></div>' +
+    '</div></div></div>';
+}
+
+function renderReview(){
+  const body = $("#reviewBody");
+  if (!S.detail || !S.detail.reviewable || !S.cells){
+    body.innerHTML = '<div class="empty">Select a Xenium dataset first.</div>';
+    $("#cRev").textContent = "–"; return;
+  }
+  const lab = S.detail.label_coverage || {coverage:0}, reg = S.detail.region_coverage || {coverage:0};
+  $("#cRev").textContent = Math.round(Math.min(lab.coverage, reg.coverage) * 100) + "%";
+
+  if (!body.querySelector("canvas")){
+    body.innerHTML =
+      '<div class="rev"><div class="canvaswrap">' +
+        '<div class="canvasbar">' +
+          '<div class="seg" role="group" aria-label="Mode">' +
+            '<button id="modeLabel" aria-pressed="true">Label cells</button>' +
+            '<button id="modeRegion" aria-pressed="false">Draw regions</button></div>' +
+          '<div class="seg" role="group" aria-label="Colour by">' +
+            '<button data-color="cluster" aria-pressed="true">Cluster</button>' +
+            '<button data-color="label" aria-pressed="false">Label</button>' +
+            '<button data-color="region" aria-pressed="false">Region</button></div>' +
+          '<span class="mono" style="font-size:11px;color:var(--ink-3);margin-left:auto" id="selInfo"></span>' +
+        '</div>' +
+        '<canvas id="map" width="1400" height="900" role="img" aria-label="Spatial cell map"></canvas>' +
+        '<div class="hint" id="mapHint"></div>' +
+      '</div>' +
+      '<div><div class="blk">' +
+        '<div class="covrow"><span>Label coverage</span><b id="covL"></b></div><div class="meter" id="meterL"><b></b></div>' +
+        '<div class="covrow" style="margin-top:10px"><span>Region coverage</span><b id="covR"></b></div><div class="meter" id="meterR"><b></b></div>' +
+        '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:8px">gate threshold 70.0% each</div>' +
+      '</div>' +
+      '<div class="blk"><h5 id="assignTitle">Assign reviewed label</h5>' +
+        '<div style="display:flex;gap:6px;margin-bottom:8px"><input id="assignValue" placeholder="Astrocyte" style="flex:1"><button class="btn pri" id="assignGo">Apply</button></div>' +
+        '<div class="chips" id="assignChips"></div>' +
+        '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:8px" id="assignNote"></div>' +
+      '</div>' +
+      '<div class="blk"><h5>Legend</h5><div class="legend" id="legend"></div></div>' +
+      '</div></div>';
+    wireReview();
+  }
+
+  $("#covL").textContent = pct(lab.coverage);
+  $("#covR").textContent = pct(reg.coverage);
+  $("#meterL").className = "meter" + (lab.coverage >= 0.7 ? " done" : "");
+  $("#meterR").className = "meter" + (reg.coverage >= 0.7 ? " done" : "");
+  $("#meterL").firstElementChild.style.width = (lab.coverage * 100) + "%";
+  $("#meterR").firstElementChild.style.width = (reg.coverage * 100) + "%";
+  $("#modeLabel").setAttribute("aria-pressed", String(S.mode === "label"));
+  $("#modeRegion").setAttribute("aria-pressed", String(S.mode === "region"));
+  $$("[data-color]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.color === S.colorBy)));
+
+  const sizes = S.detail.cluster_sizes || {};
+  $("#selInfo").textContent = S.mode === "label"
+    ? (S.selCluster ? "cluster " + S.selCluster + " · " + num(sizes[S.selCluster] || 0) + " cells" : "no cluster selected")
+    : (S.rect ? "rectangle selected" : "drag on the map to draw a region");
+  $("#mapHint").textContent = S.mode === "label"
+    ? "Click a cell to select its whole cluster, then apply a label. Assignment covers every cell in the cluster, not just the drawn sample."
+    : "Drag a rectangle over the tissue, then name the region. Every cell inside is written, including cells not drawn.";
+  $("#assignTitle").textContent = S.mode === "label" ? "Assign reviewed label" : "Name this region";
+  $("#assignNote").textContent = S.mode === "label"
+    ? "Writes expert_cell_labels.csv. Cluster colours are data-derived groups, never cell types."
+    : "Writes cell_regions.csv. Regions are yours to define; the gate needs at least two.";
+  $("#assignValue").placeholder = S.mode === "label" ? "Astrocyte" : "tumor_core";
+
+  const chips = $("#assignChips"); chips.innerHTML = "";
+  const options = S.mode === "label" ? ONTOLOGY : REGION_SUGGESTIONS.map((r) => [r, ""]);
+  options.forEach(([name, id]) => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.innerHTML = (S.mode === "label" ? '<span class="sw" style="background:' + hueColor(name) + '"></span>' : "") +
+      esc(name) + (id ? ' <span class="mono" style="font-size:9.5px;color:var(--ink-3)">' + id + '</span>' : "");
+    b.addEventListener("click", () => { $("#assignValue").value = name; applyAssignment(); });
+    chips.appendChild(b);
+  });
+
+  const legend = $("#legend"); legend.innerHTML = "";
+  const keys = legendKeys();
+  keys.slice(0, 24).forEach((k) => {
+    const s = document.createElement("span");
+    s.innerHTML = '<i style="background:' + hueColor(k) + '"></i>' + esc(k);
+    legend.appendChild(s);
+  });
+  if (!keys.length) legend.textContent = "nothing assigned yet";
+  drawMap();
+}
+
+function legendKeys(){
+  if (!S.cells) return [];
+  const field = S.colorBy === "cluster" ? S.cells.cluster : (S.colorBy === "label" ? S.cells.label : S.cells.region);
+  const seen = [];
+  for (let i = 0; i < field.length; i++){
+    const v = field[i];
+    if (v && seen.indexOf(v) === -1) seen.push(v);
+  }
+  return seen.sort();
+}
+
+function wireReview(){
+  $("#modeLabel").addEventListener("click", () => { S.mode = "label"; S.rect = null; renderReview(); });
+  $("#modeRegion").addEventListener("click", () => { S.mode = "region"; S.selCluster = null; renderReview(); });
+  $$("[data-color]").forEach((b) => b.addEventListener("click", () => { S.colorBy = b.dataset.color; renderReview(); }));
+  $("#assignGo").addEventListener("click", applyAssignment);
+  $("#assignValue").addEventListener("keydown", (e) => { if (e.key === "Enter"){ e.preventDefault(); applyAssignment(); } });
+  const cv = $("#map");
+  cv.addEventListener("mousedown", onCanvasDown);
+  cv.addEventListener("mousemove", onCanvasMove);
+  window.addEventListener("mouseup", onCanvasUp);
+}
+
+/* --- canvas projection over real micron coordinates --- */
+let VIEW = {sx:1, sy:1, ox:0, oy:0};
+function computeView(cv){
+  const b = S.cells.bounds;
+  const pad = 18;
+  const w = Math.max(b.x_max - b.x_min, 1), h = Math.max(b.y_max - b.y_min, 1);
+  const scale = Math.min((cv.width - pad*2)/w, (cv.height - pad*2)/h);
+  VIEW = {
+    sx: scale, sy: scale,
+    ox: pad + ((cv.width - pad*2) - w*scale)/2 - b.x_min*scale,
+    oy: pad + ((cv.height - pad*2) - h*scale)/2 - b.y_min*scale
+  };
+}
+const toPx = (x, y) => [x*VIEW.sx + VIEW.ox, y*VIEW.sy + VIEW.oy];
+const toData = (px, py) => [(px - VIEW.ox)/VIEW.sx, (py - VIEW.oy)/VIEW.sy];
+
+function drawMap(){
+  const cv = $("#map");
+  if (!cv || !S.cells) return;
+  const ctx = cv.getContext("2d");
+  computeView(cv);
+  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--surface-2").trim() || "#162023";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  const field = S.colorBy === "cluster" ? S.cells.cluster : (S.colorBy === "label" ? S.cells.label : S.cells.region);
+  const xs = S.cells.x, ys = S.cells.y, clusters = S.cells.cluster;
+  for (let i = 0; i < xs.length; i++){
+    const value = field[i];
+    const selected = S.mode === "label" && S.selCluster && clusters[i] === S.selCluster;
+    const p = toPx(xs[i], ys[i]);
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], selected ? 2.6 : 1.7, 0, Math.PI*2);
+    ctx.fillStyle = value ? hueColor(value) : "#3B4A4E";
+    ctx.globalAlpha = value ? (selected ? 1 : 0.82) : 0.4;
+    ctx.fill();
+    if (selected){ ctx.globalAlpha = 0.9; ctx.lineWidth = 0.7; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.stroke(); }
+  }
+  ctx.globalAlpha = 1;
+
+  if (S.rect){
+    const a = toPx(S.rect.x0, S.rect.y0), b = toPx(S.rect.x1, S.rect.y1);
+    ctx.strokeStyle = "rgba(225,132,201,.95)"; ctx.lineWidth = 2;
+    ctx.fillStyle = "rgba(225,132,201,.13)";
+    ctx.fillRect(a[0], a[1], b[0]-a[0], b[1]-a[1]);
+    ctx.strokeRect(a[0], a[1], b[0]-a[0], b[1]-a[1]);
+  }
+  // scale bar in microns -- the coordinate system the instrument reports
+  const target = 500;
+  const px = target * VIEW.sx;
+  ctx.strokeStyle = "rgba(166,183,183,.75)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(20, cv.height-22); ctx.lineTo(20+px, cv.height-22); ctx.stroke();
+  ctx.fillStyle = "rgba(166,183,183,.9)";
+  ctx.font = "500 15px 'IBM Plex Mono', monospace";
+  ctx.fillText(target + " µm", 20, cv.height-30);
+}
+
+function canvasPoint(event){
+  const cv = $("#map"), rect = cv.getBoundingClientRect();
+  const px = (event.clientX - rect.left) * (cv.width / rect.width);
+  const py = (event.clientY - rect.top) * (cv.height / rect.height);
+  return toData(px, py);
+}
+function onCanvasDown(event){
+  if (!S.cells) return;
+  const [x, y] = canvasPoint(event);
+  if (S.mode === "region"){
+    S.drag = {x0:x, y0:y};
+    S.rect = {x0:x, y0:y, x1:x, y1:y};
+  } else {
+    let best = -1, bestDist = Infinity;
+    const xs = S.cells.x, ys = S.cells.y;
+    for (let i = 0; i < xs.length; i++){
+      const d = (xs[i]-x)*(xs[i]-x) + (ys[i]-y)*(ys[i]-y);
+      if (d < bestDist){ bestDist = d; best = i; }
+    }
+    const tolerance = 40 / VIEW.sx;
+    S.selCluster = (best >= 0 && Math.sqrt(bestDist) < tolerance) ? S.cells.cluster[best] : null;
+    renderReview();
+  }
+}
+function onCanvasMove(event){
+  if (!S.drag) return;
+  const [x, y] = canvasPoint(event);
+  S.rect = {x0:S.drag.x0, y0:S.drag.y0, x1:x, y1:y};
+  drawMap();
+}
+function onCanvasUp(){
+  if (!S.drag) return;
+  S.drag = null;
+  renderReview();
+}
+
+async function applyAssignment(){
+  const value = ($("#assignValue").value || "").trim();
+  if (!value){ toast("Type a name, or pick one of the suggestions.", true); return; }
+  const payload = {kind: S.mode === "label" ? "labels" : "regions", value: value, confidence: 0.9};
+  if (S.mode === "label"){
+    if (!S.selCluster){ toast("Click a cell on the map to select its cluster first.", true); return; }
+    payload.cluster = S.selCluster;
+  } else {
+    if (!S.rect){ toast("Drag a rectangle on the map first.", true); return; }
+    payload.bounds = {x0:S.rect.x0, y0:S.rect.y0, x1:S.rect.x1, y1:S.rect.y1};
+  }
+  try {
+    const result = await post("/api/datasets/" + S.dsId + "/assign", payload);
+    S.detail.label_coverage = result.label_coverage;
+    S.detail.region_coverage = result.region_coverage;
+    S.detail.gate = result.gate;
+    S.gateOpen = result.gate.status === "validated_ready";
+    toast(result.assignment.cells_written.toLocaleString() + " cells written as “" + value + "” (" + result.scope + ").");
+    $("#assignValue").value = "";
+    S.rect = null;
+    await loadCells(); await loadTools(); await loadResources();
+    renderAll();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function clearKind(kind){
+  if (!S.dsId) return;
+  if (!window.confirm("Delete the whole " + (kind === "labels" ? "expert_cell_labels.csv" : "cell_regions.csv") + " file for this dataset?")) return;
+  try {
+    const result = await post("/api/datasets/" + S.dsId + "/clear", {kind:kind});
+    S.detail.label_coverage = result.label_coverage;
+    S.detail.region_coverage = result.region_coverage;
+    S.detail.gate = result.gate;
+    S.gateOpen = result.gate.status === "validated_ready";
+    toast("Cleared " + kind + ".");
+    await loadCells(); await loadTools(); await loadResources();
+    renderAll();
+  } catch (err) { toast(err.message, true); }
+}
+$("#clearLabels").addEventListener("click", () => clearKind("labels"));
+$("#clearRegions").addEventListener("click", () => clearKind("regions"));
+$("#refreshBtn").addEventListener("click", async () => { await loadDatasets(true); toast("Rescanned the data root."); });
+
+/* ------------------------------------------------------------------ ask */
+const SUGGESTED = [
+  "Which cell types sit next to each other?",
+  "Which genes are spatially structured across this section?",
+  "What are the markers of each cluster?",
+  "Summarise composition per region",
+  "Find the malignant cells by copy number",
+  "Predict ligand-receptor communication"
+];
+function renderPrompts(){
+  const host = $("#prompts"); host.innerHTML = "";
+  SUGGESTED.forEach((q) => {
+    const b = document.createElement("button");
+    b.textContent = q;
+    b.addEventListener("click", () => { $("#askInput").value = q; askQuestion(q); });
+    host.appendChild(b);
+  });
+}
+$("#askForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = $("#askInput").value.trim();
+  if (q) askQuestion(q);
+});
+async function askQuestion(question){
+  if (!S.dsId){ toast("Select a dataset first.", true); return; }
+  S.thread.push({role:"u", text:question});
+  renderThread();
+  try {
+    const reply = await post("/api/ask", {question:question, dataset_id:S.dsId});
+    S.thread.push({role:"a", text:reply.answer, why:reply.rationale, refusal:reply.refusal});
+    if (reply.tools && reply.tools.length){ S.plan = reply.tools.slice(); await refreshPlan(); }
+    renderThread();
+    $("#askInput").value = "";
+  } catch (err) { toast(err.message, true); }
+}
+function renderThread(){
+  const host = $("#thread"); host.innerHTML = "";
+  if (!S.thread.length){
+    host.innerHTML = '<div class="empty">Ask a question about this section, or pick one below.</div>';
+    return;
+  }
+  S.thread.forEach((m) => {
+    const div = document.createElement("div");
+    div.className = "msg " + m.role;
+    div.innerHTML = esc(m.text) + (m.why ? '<div class="why">why · ' + esc(m.why) + '</div>' : "");
+    host.appendChild(div);
+  });
+  host.lastElementChild.scrollIntoView({block:"nearest"});
+}
+
+/* ------------------------------------------------------------------ plan */
+async function refreshPlan(){
+  if (!S.dsId || !S.plan.length){ S.planInfo = null; renderPlan(); return; }
+  try {
+    S.planInfo = await post("/api/plan", {dataset_id:S.dsId, tools:S.plan, overrides:S.overrides});
+    S.plan = S.planInfo.steps.map((s) => s.tool);
+  } catch (err) { toast(err.message, true); }
+  renderPlan();
+}
+function renderPlan(){
+  const host = $("#planList"), msg = $("#planMsg"), btn = $("#runPlan");
+  host.innerHTML = ""; msg.innerHTML = "";
+  const info = S.planInfo;
+  if (!info || !info.steps.length){
+    host.innerHTML = '<p class="mono" style="font-size:11.5px;color:var(--ink-3)">No plan. Ask a question, pick a recipe, or add tools from the Tool Bench.</p>';
+    $("#planRuntime").textContent = "—";
+    btn.disabled = true; btn.textContent = "Run plan";
+    return;
+  }
+  info.steps.forEach((step) => {
+    const div = document.createElement("div");
+    div.className = "step lane-" + step.lane;
+    const pill = step.lane === "validated" ? '<span class="pill ok"><i></i>validated</span>'
+      : step.lane === "descriptive" ? '<span class="pill warn"><i></i>descriptive</span>'
+      : '<span class="pill stop"><i></i>gate-blocked</span>';
+    div.innerHTML = '<div class="top"><span class="mono" style="font-size:10.5px;color:var(--ink-3)">' + step.index +
+      '</span><span class="nm">' + esc(step.tool) + '</span>' + pill +
+      '<button class="x" aria-label="Remove ' + esc(step.tool) + '">×</button></div>' +
+      '<div class="dep">' + esc(step.method || "") + ' · ' + esc(step.estimated_runtime) +
+      (step.requires.length ? ' · needs ' + esc(step.requires.join(", ")) : "") + '</div>';
+    div.querySelector(".x").addEventListener("click", async () => {
+      S.plan = S.plan.filter((t) => t !== step.tool);
+      await refreshPlan();
+    });
+    host.appendChild(div);
+  });
+  $("#planRuntime").textContent = "≈ " + info.estimated_minutes + " min";
+  if (info.plan_status !== "valid"){
+    msg.innerHTML = '<div class="note stop">' + esc(info.plan_errors.join(" ")) + '</div>';
+  }
+  if (info.blocked_steps){
+    msg.innerHTML += '<div class="note stop">' + info.blocked_steps + ' step' + (info.blocked_steps > 1 ? "s" : "") +
+      ' need reviewed labels or regions. Clear the gate in Review Studio.</div>';
+  } else if (!S.gateOpen){
+    msg.innerHTML += '<div class="note warn">Runs in the descriptive lane: results describe data-derived groups and never name a cell type.</div>';
+  }
+  const runnable = info.runnable_steps;
+  btn.disabled = runnable === 0 || (S.job && ["queued","running"].indexOf(S.job.state) >= 0);
+  btn.textContent = info.blocked_steps
+    ? "Run " + runnable + " runnable step" + (runnable === 1 ? "" : "s")
+    : "Run plan · " + info.steps.length + " step" + (info.steps.length === 1 ? "" : "s");
+}
+$("#clearPlan").addEventListener("click", async () => { S.plan = []; S.overrides = {}; await refreshPlan(); });
+$("#runPlan").addEventListener("click", startPlanRun);
+
+async function startPlanRun(){
+  const info = S.planInfo;
+  if (!info) return;
+  const tools = info.steps.filter((s) => s.runnable_now).map((s) => s.tool);
+  if (!tools.length){ toast("Nothing in this plan can run yet.", true); return; }
+  try {
+    const job = await post("/api/runs", {
+      dataset_id:S.dsId, kind:"plan", tools:tools, overrides:S.overrides,
+      label:"Studio plan: " + tools.join(" → "), max_records:0
+    });
+    S.job = job; showPanel("runs"); pollJob(job.job_id);
+    toast("Run started on the full section. This takes minutes.");
+  } catch (err) { toast(err.message, true); }
+}
+
+/* ------------------------------------------------------------------ tools */
+function renderTools(){
+  const summary = S.capability || {};
+  const plannable = summary.validated || 0, hidden = summary.unavailable || 0;
+  $("#toolCount").textContent = plannable + " plannable · " + hidden + " scaffolds";
+  $("#cTools").textContent = plannable;
+
+  const recipeHost = $("#recipeGrid"); recipeHost.innerHTML = "";
+  S.recipes.forEach((r) => {
+    const b = document.createElement("button");
+    b.className = "recipe";
+    b.innerHTML = '<h4>' + esc(r.title) + '</h4><p>' + esc(r.summary) + '</p>' +
+      '<div class="mono" style="font-size:10px;color:var(--ink-3);margin-top:7px">' + r.tools.length + ' steps</div>';
+    b.addEventListener("click", async () => {
+      S.plan = r.tools.slice(); S.overrides = Object.assign({}, r.overrides || {});
+      await refreshPlan(); showPanel("ask");
+      toast("Loaded recipe: " + r.title);
+    });
+    recipeHost.appendChild(b);
+  });
+
+  const cats = ["all", "plannable", "scaffolds"];
+  const filters = $("#toolFilters"); filters.innerHTML = "";
+  cats.forEach((c) => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.textContent = c === "all" ? "All " + S.tools.length : (c === "plannable" ? "Plannable " + plannable : "Scaffolds " + hidden);
+    if (S.filter === c){ b.style.borderColor = "var(--accent)"; b.style.color = "var(--accent)"; b.style.background = "var(--accent-soft)"; }
+    b.addEventListener("click", () => { S.filter = c; renderTools(); });
+    filters.appendChild(b);
+  });
+
+  const grid = $("#toolGrid"); grid.innerHTML = "";
+  S.tools.filter((t) => S.filter === "all" || (S.filter === "plannable" ? t.plannable : !t.plannable)).forEach((t) => {
+    const b = document.createElement("button");
+    b.className = "tool" + (t.plannable ? "" : " dis") + (S.selTool === t.name ? " sel" : "");
+    const laneClass = !t.plannable ? "mute" : (t.lane === "validated" ? "ok" : t.lane === "descriptive" ? "warn" : "stop");
+    b.innerHTML = '<span class="nm">' + esc(t.name) + '</span>' +
+      '<span class="ds2">' + esc(t.description) + '</span>' +
+      '<span class="ft"><span class="pill ' + laneClass + '"><i></i>' + esc(t.plannable ? t.lane : "unavailable") + '</span>' +
+      '<span class="mono" style="font-size:10px;color:var(--ink-3)">' + esc((t.estimated_runtime || "").split(" ")[0]) + '</span></span>';
+    if (t.plannable) b.addEventListener("click", () => { S.selTool = S.selTool === t.name ? null : t.name; renderTools(); });
+    else b.addEventListener("click", () => toast(t.name + " is a registered scaffold: it returns a placeholder and does no work, so it cannot be planned."));
+    grid.appendChild(b);
+  });
+
+  const drawer = $("#toolDrawer"); drawer.innerHTML = "";
+  if (S.selTool){
+    const t = S.tools.filter((x) => x.name === S.selTool)[0];
+    if (!t) return;
+    const div = document.createElement("div");
+    div.className = "drawer";
+    const params = Object.assign({}, t.params, S.overrides[t.name] || {});
+    div.innerHTML = '<h4>' + esc(t.name) + '</h4>' +
+      '<p style="font-size:12.5px;color:var(--ink-2)">' + esc(t.when_to_use || t.description) + '</p>' +
+      '<div class="params">' + Object.keys(params).map((k) =>
+        '<div class="param"><label>' + esc(k) + '</label><input data-param="' + esc(k) + '" value="' + esc(params[k]) + '"></div>').join("") + '</div>' +
+      '<div class="mono" style="font-size:11px;color:var(--ink-2);margin-bottom:9px">' +
+        esc(t.method || "—") + ' · ' + esc(t.estimated_runtime) +
+        (t.requires.length ? ' · needs ' + esc(t.requires.join(", ")) : ' · no dependencies') +
+        ' · lane ' + esc(t.lane) +
+        (t.preconditions.length ? '<br>preconditions: ' + esc(t.preconditions.join("; ")) : "") + '</div>' +
+      '<div style="display:flex;gap:8px"><button class="btn pri" id="addTool">Add to plan</button>' +
+      '<button class="btn" id="closeTool">Close</button></div>';
+    drawer.appendChild(div);
+    $("#addTool").addEventListener("click", async () => {
+      const overrides = {};
+      div.querySelectorAll("[data-param]").forEach((input) => {
+        const raw = input.value.trim();
+        const original = params[input.dataset.param];
+        overrides[input.dataset.param] = typeof original === "number" && raw !== "" && !isNaN(Number(raw))
+          ? Number(raw) : (raw === "true" ? true : raw === "false" ? false : raw);
+      });
+      S.overrides[t.name] = overrides;
+      if (S.plan.indexOf(t.name) === -1) S.plan.push(t.name);
+      await refreshPlan();
+      showPanel("ask");
+      toast("Added " + t.name + " to the plan.");
+    });
+    $("#closeTool").addEventListener("click", () => { S.selTool = null; renderTools(); });
+  }
+}
+
+/* ------------------------------------------------------------------ runs */
+async function loadRuns(){
+  try {
+    const payload = await get("/api/runs");
+    S.jobs = payload.jobs || [];
+    $("#cRuns").textContent = S.jobs.length;
+    renderRuns();
+  } catch (err) { toast(err.message, true); }
+}
+$("#refreshRuns").addEventListener("click", loadRuns);
+
+function pollJob(jobId){
+  clearInterval(S.poll);
+  S.poll = setInterval(async () => {
+    try {
+      const job = await get("/api/runs/" + jobId);
+      S.job = job;
+      const known = S.jobs.filter((j) => j.job_id === jobId)[0];
+      if (known) Object.assign(known, job); else S.jobs.unshift(job);
+      renderRuns();
+      if (["succeeded","failed","cancelled"].indexOf(job.state) >= 0){
+        clearInterval(S.poll); S.poll = null;
+        toast(job.state === "succeeded" ? "Run finished." : ("Run failed: " + job.error), job.state !== "succeeded");
+        if (job.state === "succeeded" && S.dsId) {
+          S.detail = await get("/api/datasets/" + S.dsId);
+          renderAll();
+        }
+      }
+    } catch (err) { clearInterval(S.poll); S.poll = null; toast(err.message, true); }
+  }, 1500);
+}
+
+function renderRuns(){
+  const host = $("#runsBody");
+  if (!S.jobs.length){ host.innerHTML = '<div class="empty">No runs yet. Approve a plan in Ask to start one.</div>'; return; }
+  const active = S.jobs.filter((j) => ["queued","running"].indexOf(j.state) >= 0)[0];
+  let html = "";
+  if (active){
+    const pctDone = active.steps_total ? Math.round(active.steps_done / active.steps_total * 100) : 0;
+    html += '<div class="banner warn"><span class="spin"></span><div><h4>' + esc(active.label) + '</h4>' +
+      '<p>' + esc(active.progress) + '</p>' +
+      '<div class="meter" style="margin-top:8px"><b style="width:' + pctDone + '%"></b></div></div></div>';
+  }
+  const latest = S.jobs.filter((j) => j.state === "succeeded")[0];
+  if (latest && latest.result) html += renderResult(latest);
+  html += '<div class="card" style="margin-top:14px"><h5>Run history</h5><div class="scroll"><table>' +
+    '<thead><tr><th>Run</th><th>Started</th><th>Kind</th><th>Steps</th><th>State</th><th>Artifacts</th></tr></thead><tbody>' +
+    S.jobs.map((j) =>
+      '<tr><td class="mono">' + esc(j.job_id) + '</td><td class="num">' + esc((j.started_at || j.created_at || "").replace("T"," ").replace("+00:00","")) + '</td>' +
+      '<td class="mono">' + esc(j.kind) + '</td><td class="num">' + (j.steps_total || "–") + '</td>' +
+      '<td><span class="pill ' + (j.state === "succeeded" ? "ok" : j.state === "failed" ? "stop" : "warn") + '"><i></i>' + esc(j.state) + '</span></td>' +
+      '<td><a href="/api/runs/' + esc(j.job_id) + '/report" data-external>report</a></td></tr>').join("") +
+    '</tbody></table></div></div>';
+  host.innerHTML = html;
+}
+
+function renderResult(job){
+  const r = job.result || {};
+  if (job.kind === "plan"){
+    const rows = (r.results || []).map((x) =>
+      '<tr><td class="mono">' + esc(x.tool) + '</td><td>' + esc(x.summary) + '</td>' +
+      '<td class="num">' + x.seconds + ' s</td>' +
+      '<td>' + (x.label_caveat ? '<span class="pill warn"><i></i>caveat</span>' : '<span class="pill ok"><i></i>clean</span>') + '</td></tr>').join("");
+    const caveats = [];
+    (r.results || []).forEach((x) => (x.caveats || []).forEach((c) => { if (caveats.indexOf(c) === -1) caveats.push(c); }));
+    return '<div class="banner ok"><span class="mark pass" style="width:20px;height:20px">✓</span><div>' +
+      '<h4>' + esc(job.label) + '</h4><p>' + num(r.records_loaded) + ' cells · ' +
+      (r.results || []).length + ' tools · ' + r.wall_seconds + ' s wall clock. Run record written to ' +
+      '<span class="mono">' + esc((r.run_record_path || "").split("/").slice(-2).join("/")) + '</span>.</p></div></div>' +
+      '<div class="card"><h5>Tool results</h5><div class="scroll"><table><thead><tr><th>Tool</th><th>Summary</th><th>Time</th><th>Labels</th></tr></thead><tbody>' +
+      rows + '</tbody></table></div>' +
+      (caveats.length ? '<div class="note warn" style="margin-top:10px">' + esc(caveats.join(" · ")) + '</div>' : "") +
+      '</div>';
+  }
+  const status = r.status || "unknown";
+  const open = status === "validated_ready";
+  return '<div class="banner ' + (open ? "ok" : "stop") + '"><span class="mark ' + (open ? "pass" : "fail") +
+    '" style="width:20px;height:20px">' + (open ? "✓" : "!") + '</span><div><h4>' + esc(status) + '</h4>' +
+    '<p>' + esc((r.blocking_reasons || []).join(" ") || "The pilot ran the validated lane.") + '</p></div></div>' +
+    '<div class="card"><h5>Pilot output</h5>' +
+    '<div class="kv"><span>records loaded</span><b>' + num(r.records_loaded) + '</b></div>' +
+    '<div class="kv"><span>features</span><b>' + num(r.features_loaded) + '</b></div>' +
+    '<div class="kv"><span>report</span><b><a href="/api/runs/' + esc(job.job_id) + '/report" data-external>open</a></b></div>' +
+    '</div>';
+}
+
+/* ------------------------------------------------------------------ go */
+renderPrompts();
+renderThread();
+renderPlan();
+boot();
+})();
+</script>
+</body>
+</html>

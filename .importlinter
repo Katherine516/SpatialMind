@@ -9,6 +9,7 @@ source_modules =
 forbidden_modules =
     spatialmind.agent
     spatialmind.api
+    spatialmind.app
     spatialmind.batch
     spatialmind.ingestion
     spatialmind.memory
@@ -17,13 +18,14 @@ forbidden_modules =
     spatialmind.viz
 
 [importlinter:contract:tools_do_not_import_agent]
-name = tools must not import the agent or API
+name = tools must not import the agent, API or app
 type = forbidden
 source_modules =
     spatialmind.tools
 forbidden_modules =
     spatialmind.agent
     spatialmind.api
+    spatialmind.app
 
 [importlinter:contract:viz_storage_do_not_import_agent]
 name = viz and storage are pure consumers
@@ -34,3 +36,16 @@ source_modules =
 forbidden_modules =
     spatialmind.agent
     spatialmind.api
+    spatialmind.app
+
+[importlinter:contract:app_is_the_top_layer]
+name = the app is a top layer nothing else may import
+type = forbidden
+source_modules =
+    spatialmind.ingestion
+    spatialmind.pilot
+    spatialmind.promotion
+    spatialmind.methods
+    spatialmind.review
+forbidden_modules =
+    spatialmind.app
