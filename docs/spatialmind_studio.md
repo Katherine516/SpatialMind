@@ -270,6 +270,18 @@ neither of which any reference can supply.
 One job runs at a time per process: two Scanpy pipelines on one machine contend
 for the same cores and finish no sooner.
 
+## Evaluation
+
+[`agent_evaluation.md`](agent_evaluation.md) is a full end-to-end run with
+timings, gate behaviour in both directions, the honesty surface and the claim
+reliability breakdown. `make eval-studio` reproduces it.
+
+The headline: in three claims out of three the limiting component was `P_panel`
+at 0.500-0.667, while statistics, annotation and robustness scored 1.000, 0.862
+and 0.964-1.000. Reliability is weakest-link, so labelling buys *which claims are
+possible*, not *how reliable they are*. The Readiness screen now shows that
+ceiling before a reviewer commits a day to labelling.
+
 ## Tests
 
 ```bash

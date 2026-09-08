@@ -659,12 +659,30 @@ function renderResources(){
       '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:3px">unblocks: ' +
         esc(r.unblocks) + '</div></div></div>';
   }).join("");
+  const pa = inv.panel_adequacy || {};
+  const panelBlock = pa.available ? (
+    '<div class="card" style="margin-bottom:12px"><h5>Panel ceiling</h5>' +
+    '<div style="display:flex;align-items:baseline;gap:9px;margin-bottom:8px">' +
+      '<b class="mono" style="font-size:24px;color:' + (pa.ceiling >= 0.8 ? 'var(--ok)' : 'var(--warn)') + '">' +
+        pa.ceiling.toFixed(2) + '</b>' +
+      '<span style="font-size:11.5px;color:var(--ink-3)">max weakest-link reliability</span></div>' +
+    '<div class="mono" style="font-size:11px;color:var(--ink-2);margin-bottom:9px">' +
+      pa.markers_measured + ' of ' + pa.markers_total + ' canonical markers measured across ' +
+      pa.panel_features + ' panel genes</div>' +
+    (pa.per_lineage || []).slice(0, 5).map((r) =>
+      '<div class="kv"><span>' + esc(r.lineage) + (r.missing && r.missing.length
+        ? ' <span style="opacity:.7">missing ' + esc(r.missing.slice(0,3).join(", ")) + '</span>' : '') +
+      '</span><b style="color:' + (r.ceiling >= 0.8 ? 'var(--ok)' : r.ceiling >= 0.5 ? 'var(--warn)' : 'var(--stop)') +
+      '">' + r.ceiling.toFixed(2) + '</b></div>').join("") +
+    '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:9px">' +
+      'A property of the assay, not the review. Labelling every cell perfectly does not raise it.</div></div>'
+  ) : '';
   const refs = (inv.references || []).map((r) =>
     '<div class="kv"><span title="' + esc(r.relative_path) + '">' + esc(r.display_name) + '</span>' +
     '<b>' + r.size_gb + ' GB</b></div>').join("");
   return '<div class="two" style="margin-top:16px">' +
     '<div class="card"><h5>What expert labels still need</h5>' + rows + '</div>' +
-    '<div><div class="card" style="margin-bottom:12px"><h5>Reference atlases on disk</h5>' +
+    '<div>' + panelBlock + '<div class="card" style="margin-bottom:12px"><h5>Reference atlases on disk</h5>' +
       (refs || '<p style="font-size:12px;color:var(--ink-3)">None found under the data root.</p>') +
       '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:9px">lineages covered: ' +
         esc((cov.covered || []).join(", ") || "none") +

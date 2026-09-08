@@ -8,6 +8,7 @@ the workspace already has.
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import json
 
 from .catalog import pretty_name, resolve_xenium_root
 from .review import table_path
@@ -59,6 +60,70 @@ def lineage_coverage(references: List[Dict[str, Any]]) -> Dict[str, Any]:
     covered = sorted({lineage for ref in references for lineage in ref["covers"]})
     missing = [lineage for lineage in BRAIN_LINEAGES if lineage not in covered]
     return {"covered": covered, "missing": missing, "lineages": list(BRAIN_LINEAGES)}
+
+
+def panel_features(dataset_path: str) -> List[str]:
+    """Panel gene names from `gene_panel.json` -- a few KB, no matrix load."""
+    root = resolve_xenium_root(Path(dataset_path))
+    path = root / "gene_panel.json"
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    targets = (payload.get("payload") or payload).get("targets") or []
+    names = []
+    for target in targets:
+        name = (((target or {}).get("type") or {}).get("data") or {}).get("name")
+        if name:
+            names.append(str(name))
+    return sorted(set(names))
+
+
+def panel_adequacy(dataset_path: str, lineages: Optional[List[str]] = None) -> Dict[str, Any]:
+    """The reliability ceiling this panel imposes, before any labelling happens.
+
+    Every claim in the last validated run was limited by `P_panel` -- not by
+    statistics, annotation coverage or spatial robustness, which scored 1.00,
+    0.86 and 0.96. Reliability is a weakest-link score, so a reviewer can label
+    every cell perfectly and still not move it. Saying that up front is the
+    difference between choosing to spend a day on review and discovering
+    afterwards that the ceiling was 0.67 all along.
+    """
+    features = set(panel_features(dataset_path))
+    if not features:
+        return {"available": False}
+    try:
+        from ..tools.implementations import LINEAGE_MARKERS
+    except ImportError:  # pragma: no cover - the registry is always present
+        return {"available": False}
+
+    wanted = [l for l in (lineages or list(LINEAGE_MARKERS)) if l in LINEAGE_MARKERS]
+    per_lineage = []
+    relevant: set = set()
+    for lineage in wanted:
+        markers = set(LINEAGE_MARKERS[lineage])
+        measured = markers & features
+        relevant |= markers
+        per_lineage.append({
+            "lineage": lineage,
+            "measured": len(measured),
+            "total": len(markers),
+            "ceiling": round(len(measured) / float(len(markers)), 4) if markers else 0.0,
+            "missing": sorted(markers - features),
+        })
+    overlap = relevant & features
+    ceiling = round(len(overlap) / float(len(relevant)), 4) if relevant else 0.0
+    return {
+        "available": True,
+        "panel_features": len(features),
+        "markers_measured": len(overlap),
+        "markers_total": len(relevant),
+        "ceiling": ceiling,
+        "lineages": wanted,
+        "per_lineage": sorted(per_lineage, key=lambda row: row["ceiling"]),
+    }
 
 
 def dataset_state(dataset_path: Optional[str], gate: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -127,6 +192,7 @@ def inventory(data_root: str, dataset_path: Optional[str] = None,
               gate: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     references = find_references(data_root)
     coverage = lineage_coverage(references)
+    adequacy = panel_adequacy(dataset_path, coverage["covered"] or None) if dataset_path else {"available": False}
     ontology_dir = Path(data_root) / "cell_ontology_terms"
     ontology_terms = sorted(p.stem for p in ontology_dir.glob("*.json")) if ontology_dir.is_dir() else []
     state = dataset_state(dataset_path, gate)
@@ -174,6 +240,23 @@ def inventory(data_root: str, dataset_path: Optional[str] = None,
             "unblocks": "Labels that mean the same thing across reviewers and datasets.",
         },
         {
+            "id": "panel",
+            "title": "Panel adequacy — the ceiling on every claim",
+            "status": "have" if adequacy.get("ceiling", 0) >= 0.8 else
+                      ("partial" if adequacy.get("available") else "missing"),
+            "detail": (
+                "This panel measures %d of %d canonical markers for the lineages present, so weakest-link "
+                "reliability cannot exceed %.2f no matter how good the labels are."
+                % (adequacy["markers_measured"], adequacy["markers_total"], adequacy["ceiling"])
+                if adequacy.get("available") else "No gene_panel.json found; the ceiling cannot be computed."
+            ),
+            "action": "" if adequacy.get("ceiling", 0) >= 0.8 else
+                      "Nothing to add: this is a property of the assay, not of the review. Treat %.2f as the "
+                      "ceiling when deciding what claims are worth making, or plan a second modality for the "
+                      "lineages below." % adequacy.get("ceiling", 0),
+            "unblocks": "Nothing. It bounds what the other resources can buy you.",
+        },
+        {
             "id": "reviewer",
             "title": "Expert reviewer time",
             "status": "missing",
@@ -208,6 +291,7 @@ def inventory(data_root: str, dataset_path: Optional[str] = None,
         "lineage_coverage": coverage,
         "ontology_terms": ontology_terms,
         "dataset_state": state,
+        "panel_adequacy": adequacy,
         "requirements": requirements,
         "outstanding": [r["id"] for r in requirements if r["status"] != "have"],
     }

@@ -118,6 +118,23 @@ class StudioAppTests(unittest.TestCase):
         self.assertEqual(body["references"], [])
         self.assertIn("reference_normal", body["outstanding"])
 
+    def test_panel_ceiling_is_reported_before_any_labelling(self):
+        """The panel caps reliability, and a reviewer should know before they start.
+
+        In the last validated run every claim was limited by P_panel at 0.67
+        while statistics, annotation and robustness scored 1.00, 0.86 and 0.96.
+        Reliability is a weakest-link score, so perfect labels cannot raise it.
+        """
+        from spatialmind.app.resources import panel_adequacy
+
+        # The fixture bundle carries no gene_panel.json, so the ceiling is unknown
+        # rather than silently assumed.
+        self.assertFalse(panel_adequacy(self.bundle).get("available"))
+        body = self.client.get("/api/resources").json()
+        panel = [r for r in body["requirements"] if r["id"] == "panel"]
+        self.assertEqual(len(panel), 1, "the panel ceiling must always be reported")
+        self.assertTrue(panel[0]["detail"])
+
     def test_scan_status_flags_a_permission_protected_root(self):
         from spatialmind.app.server import _is_protected_folder
 
