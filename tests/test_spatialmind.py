@@ -1936,6 +1936,36 @@ class ScaffoldDetectionTests(unittest.TestCase):
             sys.modules.pop("scaffold_probe_module", None)
             shutil.rmtree(directory, ignore_errors=True)
 
+    def test_statistical_strength_does_not_grow_with_the_pair_count(self):
+        """More cell types must not buy statistical strength for free.
+
+        `S_statistical` scored `max|z| / 5` across every reported pair with no
+        correction. A section with ten cell types draws that maximum from 55
+        pairs while a two-type section draws from 3, so the larger vocabulary
+        won on pair count alone. Measured against controls matched on everything
+        except spatial arrangement, that inverted the score: the permutation
+        null out-ranked implanted structure, AUROC 0.35 where 0.50 is chance.
+        """
+        from spatialmind.methods.reliability.scoring import _statistical_component
+        from spatialmind.schemas import ToolResult
+
+        claim = {"claim_type": "spatial_colocalization", "status": "supported"}
+
+        def component(pair_count, top_z):
+            pairs = [{"pair": "t%d | t%d" % (i, i), "zscore": 1.2} for i in range(pair_count - 1)]
+            pairs.append({"pair": "a | b", "zscore": top_z})
+            result = ToolResult(tool_name="cell_neighborhood_enrichment", summary="s",
+                                metrics={"top_pairs": pairs})
+            return _statistical_component(claim, [result]).score
+
+        # Same evidence, more noise pairs alongside it: strength must not rise.
+        few = component(3, 6.0)
+        many = component(55, 6.0)
+        self.assertLessEqual(many, few, "widening the pair list must not raise strength")
+
+        # Real structure must still outscore a null-sized effect at equal width.
+        self.assertGreater(component(3, 8.0), component(3, 1.5))
+
     def test_scaffold_detection_survives_having_no_source(self):
         """Detection must not depend on source being readable on disk.
 

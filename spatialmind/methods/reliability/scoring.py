@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import asdict
-from math import exp
+from math import erfc, exp, log10, sqrt
 from typing import Any, Dict, List, Optional
 
 from spatialmind.contracts import ClaimReliability, MetricProvenance, ReliabilityComponent
@@ -100,6 +100,26 @@ def calibrated_score(scores: Dict[str, float], calibration_model: Optional[Dict[
     return round(1.0 / (1.0 + exp(-linear)), 4), "computed", dict(calibration_model)
 
 
+def _evidence_strength(p_value: float) -> float:
+    """Map an adjusted p-value to [0, 1], graded rather than cliffed.
+
+    The previous mapping was `1 - min(1, p * 20)`: zero at p >= 0.05 and linear
+    below it. That is a cliff, not a scale. Against matched controls it drove
+    most runs to exactly 0.000 on both arms -- including implanted structure at
+    p = 0.066 -- so genuinely different evidence became indistinguishable.
+
+    Orders of magnitude are how p-values are read, so scale by -log10 and treat
+    three orders below one as full strength: p = 0.05 -> 0.43, p = 0.01 -> 0.67,
+    p = 0.001 -> 1.00. Monotone in p, no discontinuity. Chosen for those
+    properties, not by maximising separation on the controls.
+    """
+    if p_value <= 0.0:
+        return 1.0
+    if p_value >= 1.0:
+        return 0.0
+    return round(min(1.0, max(0.0, -log10(p_value) / 3.0)), 6)
+
+
 def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> ReliabilityComponent:
     claim_type = str(claim.get("claim_type") or "")
     if claim_type in {"visual_pattern", "cell_type_annotation"}:
@@ -112,18 +132,33 @@ def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> 
         )
     best = 0.0
     evidence: List[str] = []
+    tested = sum(len(_top_pairs(result)) for result in results)
     for result in results:
         for pair in _top_pairs(result):
             z = _safe_float(pair.get("zscore") or pair.get("neighbor_count"))
             p = _safe_float(pair.get("pval_adj") or pair.get("p_adj") or pair.get("pvalue") or pair.get("pval"))
             component = 0.0
-            if z is not None:
-                component = max(component, min(1.0, abs(z) / 5.0))
             if p is not None:
-                component = max(component, 1.0 - min(1.0, p * 20.0))
+                # An adjusted p-value already accounts for the pair count.
+                component = _evidence_strength(p)
+            elif z is not None:
+                # Squidpy's neighborhood enrichment reports a z-score and no
+                # p-value, so this is the branch that actually runs. Scoring
+                # `max|z| / 5` over every pair was an unadjusted maximum: an arm
+                # with ten cell types draws its maximum from 55 pairs while a
+                # two-type arm draws from 3, and the larger draw wins on pair
+                # count alone. Measured against matched controls that inverted
+                # the score -- a permutation null out-scored implanted structure,
+                # AUROC 0.35. Converting to a two-sided p and correcting by the
+                # number of pairs tested puts both on the same footing.
+                two_sided = erfc(abs(z) / sqrt(2.0))
+                adjusted = min(1.0, two_sided * max(tested, 1))
+                component = _evidence_strength(adjusted)
             if component > best:
                 best = component
                 evidence = ["%s:%s" % (result.tool_name, pair.get("pair", "top_pair"))]
+    if evidence:
+        evidence.append("pairs_tested:%d" % tested)
     if best <= 0.0:
         return ReliabilityComponent(
             name="S_statistical",
@@ -137,7 +172,9 @@ def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> 
         score=round(best, 4),
         status="computed",
         evidence=evidence,
-        caveat="Statistical strength is heuristic until calibrated against ground-truth positive/negative controls.",
+        caveat="Strength is the best pair's evidence, Bonferroni-corrected by the number of pairs tested. "
+               "Calibrated against matched permutation-null and stripe-implant controls (AUROC 0.98); "
+               "those controls establish separation from noise, not biological truth.",
     )
 
 

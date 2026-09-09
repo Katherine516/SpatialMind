@@ -1,5 +1,12 @@
 """Claim-level reliability scoring."""
 
+from .controls import (
+    ControlVariant,
+    build_control_grid,
+    implanted_variant,
+    permuted_variant,
+    summarize_grid,
+)
 from .calibration import (
     FEATURE_ORDER,
     apply_calibration_model,
@@ -12,6 +19,11 @@ from .scoring import (
 )
 
 __all__ = [
+    "ControlVariant",
+    "build_control_grid",
+    "implanted_variant",
+    "permuted_variant",
+    "summarize_grid",
     "FEATURE_ORDER",
     "apply_calibration_model",
     "build_claim_reliability_table",

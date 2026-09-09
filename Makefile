@@ -1,4 +1,4 @@
-.PHONY: dev install install-dev install-deep test test-studio eval eval-studio inspect-data lint check-versions import-lint studio build-macos smoke-macos
+.PHONY: dev install install-dev install-deep test test-studio eval eval-studio inspect-data lint check-versions import-lint studio build-macos smoke-macos calibrate
 
 dev:
 	docker compose up -d redis postgres minio
@@ -26,6 +26,9 @@ build-macos:
 
 smoke-macos:
 	python3 scripts/smoke_test_macos_app.py
+
+calibrate:
+	python3 scripts/calibrate_claim_reliability.py --out outputs/claim_calibration
 
 eval-studio:
 	python3 scripts/evaluate_studio_workflow.py --out outputs/studio_evaluation

@@ -158,7 +158,14 @@ the report afterwards.
 
 ## 7. What the numbers do not say
 
-- **Reliability is uncalibrated.** `calibration_model` is `None`. These are
+- **Reliability is uncalibrated for biology.** `calibration_model` is `None` in
+  the pilot, deliberately. It has since been calibrated against matched
+  permutation-null and stripe-implant controls (AUROC 0.975, see
+  [`claim_reliability_calibration.md`](claim_reliability_calibration.md)), which
+  established that the score separates real structure from noise — and found
+  that it previously did not, scoring 0.35 against those controls because
+  statistical strength grew with the number of cell types. That is fixed. It
+  says nothing about whether a claim is biologically true. These are
   conservative floors over four evidence components, not probabilities that a
   claim is true, and must not be read as accuracy. Calibrating them needs a
   claim truth set that does not exist yet.
