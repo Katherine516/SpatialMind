@@ -4,8 +4,11 @@ The gate is the product's central guarantee: no biological claim without expert
 labels and reviewed regions. It was enforced on one of four paths. `run_pilot`
 checked it, `SpatialAgent` checked readiness but not the gate, the Studio's API
 accepted a gate-blocked tool and only its UI declined to send one, and
-`SpatialMindAgent` -- the CLI default and `POST /runs` -- never checked at all
-while `DataIngestionLayer.load` happily accepts a Xenium bundle.
+`SpatialMindAgent` never checked at all. Both shipped entry points route a Xenium
+bundle to `run_pilot`, so in practice it receives only non-Xenium data -- where
+the gate cannot be evaluated anyway. The residual risk was a direct library call:
+`DataIngestionLayer.load` accepts a Xenium directory, so `SpatialMindAgent().run`
+on a real section was ungated for anyone who reached past the entry points.
 
 A guarantee enforced by convention in three places and by code in one is not a
 guarantee. This module is the code. Every executor calls `require_gate_open`

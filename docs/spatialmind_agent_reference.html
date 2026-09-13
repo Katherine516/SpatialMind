@@ -245,7 +245,7 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
       <text x="112" y="26" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".6">ENTRY POINTS</text>
       <rect x="20" y="42" width="184" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="1.3"/>
       <text x="112" y="62" text-anchor="middle" font-size="11.5" fill="currentColor">SpatialMindAgent</text>
-      <text x="112" y="78" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">CLI default · POST /runs</text>
+      <text x="112" y="78" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">non-Xenium data only</text>
 
       <rect x="20" y="100" width="184" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="1.3"/>
       <text x="112" y="120" text-anchor="middle" font-size="11.5" fill="currentColor">SpatialAgent</text>
@@ -296,7 +296,7 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
     </svg>
     <figcaption>Every executor calls <code>require_gate_open</code> before it runs anything. It previously did
       not: the Studio API enforced the gate in its UI only, the agent loop checked readiness rather than the
-      gate, and the CLI's default path never checked at all. The gatekeeper sits at the bottom of the import
+      gate, and <code>SpatialMindAgent</code> never checked at all. The gatekeeper sits at the bottom of the import
       graph so all four layers can reach it without a cycle; an import-linter contract keeps it there.</figcaption>
   </figure>
 
@@ -441,10 +441,12 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
     </tbody>
   </table></div>
   <div class="prose" style="margin-top:15px">
-    <p>Both are reachable only through <code>SpatialMindAgent</code> — which means <code>POST /runs</code>,
-    the CLI's <code>--replay-run-id</code> branch, and the CLI when the data is <em>not</em> a Xenium bundle.
-    A Xenium bundle routes to <code>run_pilot</code> instead. The replay branch is the one that can land on a
-    Xenium path, because it uses whatever <code>source_path</code> the stored provenance recorded.</p>
+    <p>Both are reachable only through <code>SpatialMindAgent</code>, and only with <strong>non-Xenium</strong>
+    data: the CLI and <code>POST /runs</code> each check the data type first and route a Xenium bundle to
+    <code>run_pilot</code>. <code>--replay-run-id</code> adds no route of its own, since only the orchestrator
+    writes the <code>source_path</code> that branch reads. The legacy stack is confined to the demo and
+    non-Xenium formats — though <code>DataIngestionLayer.load</code> still accepts a Xenium directory, which
+    is why a direct library call had to be gated too.</p>
     <p>The tool sets are <strong>disjoint</strong>: nothing in <code>AlgorithmEngine</code> appears in
     <code>ToolRegistry</code>. That is why the gatekeeper classifies two of them as label-gated <em>by
     name</em> — preconditions cannot do it, because these tools are not in the registry that carries

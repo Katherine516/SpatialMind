@@ -9,7 +9,7 @@ paths found it enforced on one of four.
 | `run_pilot` | scripts, Studio pilot job | gated | gated |
 | Studio plan runner | `POST /api/runs` | **UI only** | gated |
 | `SpatialAgent` | batch, `POST /sessions/{id}/query` | readiness only | gated |
-| `SpatialMindAgent` | CLI default, `POST /runs` | **none** | gated |
+| `SpatialMindAgent` | non-Xenium data only | **none** | gated |
 
 The Studio hole was demonstrable: `POST /api/runs` with `region_summary`
 against a section reporting `blocked_missing_validation_inputs` returned `200`
@@ -19,9 +19,22 @@ held for anyone clicking and not for anyone scripting.
 `SpatialMindAgent` was worse. It never consulted the gate, it runs
 `AlgorithmEngine` — a separate three-tool registry disjoint from the 30-tool
 `ToolRegistry`, two of whose tools name cell types — and
-`DataIngestionLayer.load` accepts a Xenium directory. The CLI's default path
-could be pointed at a real section and make cell-type claims with no reviewed
-label in sight.
+`DataIngestionLayer.load` accepts a Xenium directory.
+
+Its exposure is narrower than it first appears, and worth stating precisely
+because the first three attempts at this paragraph all overstated it. **Both**
+shipped entry points check the data type first: the CLI and `POST /runs` each
+route a Xenium bundle to `run_pilot`. The orchestrator therefore receives only
+non-Xenium data — CSV, manifest, H5AD — where the gate's six asset conditions
+cannot be evaluated at all. `--replay-run-id` adds no route of its own, since
+only the orchestrator writes the `source_path` that branch reads.
+
+What remained was a library-level hole rather than an endpoint one.
+`DataIngestionLayer.load` accepts a Xenium directory, so
+`SpatialMindAgent().run(prompt, xenium_path)` was ungated for any caller that
+reached past the entry points — a script, a notebook, a future surface. The fix
+closes that and, for the non-Xenium case it normally sees, replaces silence with
+a recorded `gate_not_evaluated` caveat.
 
 ## One decision function
 

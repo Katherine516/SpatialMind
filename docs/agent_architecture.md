@@ -66,11 +66,14 @@ Two tier-2 modules are v1 survivors, now marked as such in their own docstrings:
 | `algorithms.py` (`AlgorithmEngine`, 3 tools) | `tools` (`ToolRegistry`, 30 tools) | `SpatialMindAgent` |
 | `planner.py` (`LLMReasoningLayer`) | `agent.runtime` + `app.planner` | `SpatialMindAgent` |
 
-Both are reachable only through `SpatialMindAgent`, which means `POST /runs`, the
-CLI's `--replay-run-id` branch, and the CLI when the data is *not* a Xenium
-bundle — a Xenium bundle routes to `run_pilot` instead. The replay branch is the
-one that can land on a Xenium path, because it uses whatever `source_path` the
-stored provenance recorded.
+Both are reachable only through `SpatialMindAgent`, and only with **non-Xenium**
+data: the CLI and `POST /runs` each check the data type first and route a Xenium
+bundle to `run_pilot`. `--replay-run-id` adds no route of its own, since only the
+orchestrator writes the `source_path` that branch reads.
+
+So the legacy stack is confined to the demo and non-Xenium formats. It is still a
+parallel stack, and `DataIngestionLayer.load` still accepts a Xenium directory,
+which is why a direct library call had to be gated too.
 
 The tool sets are disjoint: nothing in `AlgorithmEngine` appears in
 `ToolRegistry`. That is why `gatekeeper` classifies two of them as label-gated
