@@ -20,6 +20,7 @@ from ..ingestion import (
 from ..pilot import run_pilot
 from ..storage import StorageLayer
 from ..tools import build_default_registry
+from .. import gatekeeper
 from . import config
 from . import gate as gate_module
 from . import planner, resources, review
@@ -493,6 +494,17 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         if request.kind == "plan":
             if not request.tools:
                 raise HTTPException(status_code=400, detail="A plan run needs at least one tool.")
+            # The UI declines to submit gate-blocked steps. That is a convention,
+            # and a convention is not a guarantee: this endpoint accepted and ran
+            # region_summary against a blocked section until it asked here too.
+            try:
+                gatekeeper.require_gate_open(
+                    entry.path, request.tools,
+                    gate=studio.gate(request.dataset_id) if entry.reviewable else None,
+                    overrides=request.overrides,
+                )
+            except gatekeeper.GateBlockedError as exc:
+                raise HTTPException(status_code=409, detail=exc.to_dict())
             worker = make_plan_worker(studio, request.dataset_id, request.tools, request.overrides, request.max_records)
         elif request.kind == "pilot":
             worker = make_pilot_worker(studio, request.dataset_id, request.options)

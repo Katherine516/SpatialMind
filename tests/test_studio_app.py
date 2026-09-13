@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 
 from fastapi.testclient import TestClient
@@ -60,6 +61,14 @@ class StudioAppTests(unittest.TestCase):
         shutil.rmtree(cls.root, ignore_errors=True)
 
     def setUp(self):
+        # One job runs at a time per process, so a job left running by an earlier
+        # test makes the next submission 409 for the wrong reason.
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            jobs = self.client.get("/api/runs").json()["jobs"]
+            if not any(job["state"] in {"queued", "running"} for job in jobs):
+                break
+            time.sleep(0.05)
         for kind in ("labels", "regions"):
             self.client.post("/api/datasets/%s/clear" % self.dataset_id, json={"kind": kind})
 
@@ -239,6 +248,72 @@ class StudioAppTests(unittest.TestCase):
             json={"kind": "labels", "value": "   ", "cell_ids": ["cell-1"]},
         )
         self.assertEqual(response.status_code, 400)
+
+    # ------------------------------------------------------------------ the gate as an invariant
+
+    def _open_the_gate(self):
+        ids = ["cell-%d" % i for i in range(N_CELLS)]
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2]})
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "labels", "value": "Oligodendrocyte", "cell_ids": ids[N_CELLS // 2:]})
+        bounds = self.client.get("/api/datasets/%s/cells" % self.dataset_id).json()["bounds"]
+        mid = (bounds["y_min"] + bounds["y_max"]) / 2.0
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "regions", "value": "core",
+                               "bounds": {"x0": bounds["x_min"], "y0": bounds["y_min"],
+                                          "x1": bounds["x_max"], "y1": mid}})
+        return self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                                json={"kind": "regions", "value": "edge",
+                                      "bounds": {"x0": bounds["x_min"], "y0": mid,
+                                                 "x1": bounds["x_max"], "y1": bounds["y_max"]}}).json()
+
+    def test_the_api_refuses_a_gated_tool_while_the_gate_is_shut(self):
+        """The UI declining to send one is not the same as the server refusing.
+
+        This endpoint accepted region_summary against a blocked section and
+        started the job. The gate was a convention in the client, which means it
+        was not a guarantee at all: anything driving the API directly -- a
+        script, a notebook, a second front end -- walked straight past it.
+        """
+        response = self.client.post("/api/runs", json={
+            "dataset_id": self.dataset_id, "kind": "plan", "tools": ["region_summary"]})
+        self.assertEqual(response.status_code, 409, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error"], "gate_blocked")
+        self.assertIn("region_summary", detail["gated_tools"])
+        self.assertTrue(detail["blocking_reasons"])
+
+    def test_the_descriptive_lane_still_runs_while_the_gate_is_shut(self):
+        """Refusing everything would be safe and useless."""
+        response = self.client.post("/api/runs", json={
+            "dataset_id": self.dataset_id, "kind": "plan", "tools": ["qc_and_cluster"]})
+        self.assertNotEqual(response.status_code, 409,
+                            "a descriptive plan must not be refused: %s" % response.text)
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_a_gated_tool_is_accepted_once_the_gate_opens(self):
+        opened = self._open_the_gate()
+        self.assertEqual(opened["gate"]["status"], "validated_ready")
+        response = self.client.post("/api/runs", json={
+            "dataset_id": self.dataset_id, "kind": "plan", "tools": ["region_summary"]})
+        self.assertNotEqual(response.status_code, 409,
+                            "the gate is open; a gated tool must no longer be refused")
+
+    def test_an_unknown_tool_name_does_not_slip_past_the_gate(self):
+        from spatialmind.gatekeeper import gated_tool_names
+
+        # Legacy AlgorithmEngine tools are not in the registry but name cell types.
+        self.assertIn("cell_type_colocalization", gated_tool_names(["cell_type_colocalization"]))
+
+    def test_non_xenium_data_is_recorded_as_unevaluated_not_as_passing(self):
+        """The gate cannot be evaluated off a Xenium bundle. That is not a pass."""
+        from spatialmind.gatekeeper import require_gate_open
+
+        decision = require_gate_open(self.root, ["region_summary"])
+        self.assertEqual(decision["status"], "gate_not_evaluated")
+        self.assertIn("region_summary", decision["gated_tools"])
+        self.assertIn("not gate-validated", decision["caveat"])
 
     # ------------------------------------------------------------------ tools
 

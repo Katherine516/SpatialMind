@@ -1,6 +1,7 @@
 import os
 from typing import List, Optional
 
+from .. import gatekeeper
 from ..algorithms import AlgorithmEngine
 from ..ingestion import DataIngestionLayer, available_samples
 from ..llm import LLMProvider
@@ -31,6 +32,13 @@ class SpatialMindAgent:
         plan = self.reasoning.plan(prompt)
         sample_id = plan.request.sample_id or available_samples(data_path)[0]
         dataset = self.ingestion.load(data_path, sample_id=sample_id)
+        # `DataIngestionLayer.load` accepts a Xenium bundle, so this path could
+        # run cell-type tools over a real section with no reviewed label in
+        # sight. It now asks the same question every other path asks.
+        gate_decision = gatekeeper.require_gate_open(
+            data_path, [step.tool for step in plan.steps], dataset=dataset,
+        )
+
         similar_runs = self.memory.recall(prompt, sample_id)
         run_info = self.storage.start_run(dataset.sample_id)
         run_id = run_info["run_id"]
@@ -68,6 +76,7 @@ class SpatialMindAgent:
                 "normalized": dataset.normalized,
                 "prompt": prompt,
                 "tools": [step.tool for step in plan.steps],
+                "gate_decision": gate_decision,
                 "artifacts": {
                     "report": report_path,
                     "reports": report_paths.to_dict(),

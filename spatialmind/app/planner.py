@@ -15,6 +15,7 @@ from ..agent.runtime import (
     validate_tool_plan,
 )
 from ..contracts import ToolCallSpec
+from ..gatekeeper import requires_labels, requires_regions
 from ..tools import build_default_registry
 
 # Plan validation checks *structure* against the full input set; whether those
@@ -57,30 +58,8 @@ DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "neighborhood_enrichment": {"n_neighs": 6, "n_perms": 250, "random_state": 0},
 }
 
-# The registry's preconditions understate `annotation`: it reads the reviewed
-# label table, so it is label-gated even though its precondition only names
-# normalized counts. Every other gated tool is detected from its preconditions.
-ALWAYS_LABEL_GATED = {"annotation"}
-# Grouping a tool by cluster rather than by cell type keeps it in the descriptive
-# lane: it then describes data-derived groups and never names a cell type.
-CLUSTER_GROUPINGS = {"leiden", "cluster", "clusters", "leiden_cluster"}
-
-
 def _registry():
     return build_default_registry()
-
-
-def requires_labels(tool, params: Optional[Dict[str, Any]] = None) -> bool:
-    params = params or {}
-    if str(params.get("group_key") or params.get("group_by") or "").lower() in CLUSTER_GROUPINGS:
-        return False
-    if tool.name in ALWAYS_LABEL_GATED:
-        return True
-    return any("cell-type label" in text.lower() for text in tool.preconditions)
-
-
-def requires_regions(tool) -> bool:
-    return any("region label" in text.lower() for text in tool.preconditions)
 
 
 def lane_for(tool, gate_open: bool, params: Optional[Dict[str, Any]] = None) -> str:

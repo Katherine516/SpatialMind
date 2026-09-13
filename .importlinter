@@ -49,3 +49,17 @@ source_modules =
     spatialmind.review
 forbidden_modules =
     spatialmind.app
+
+[importlinter:contract:gatekeeper_stays_at_the_bottom]
+name = the gatekeeper must be importable from every layer
+type = forbidden
+source_modules =
+    spatialmind.gatekeeper
+forbidden_modules =
+    spatialmind.agent
+    spatialmind.api
+    spatialmind.app
+    spatialmind.batch
+    spatialmind.pilot
+    spatialmind.storage
+    spatialmind.viz

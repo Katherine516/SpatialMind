@@ -3,6 +3,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from .. import gatekeeper
 from ..contracts import NoAnalysisResponse
 from ..ingestion import DataIngestionLayer
 from ..ingestion.readiness import build_readiness_report
@@ -103,6 +104,13 @@ class SpatialAgent:
             self._apply_mvp_query_assay_hints(query, dataset)
         planned = self._resolve_dependencies(self._plan_tools(query))
         readiness = build_readiness_report(dataset)
+        # Readiness is not the gate. This checked whether inputs were present
+        # and then ran cell-type tools regardless of whether a human had ever
+        # reviewed a label.
+        gate_decision = gatekeeper.require_gate_open(
+            dataset_id, [name for name, _ in planned], dataset=dataset,
+        )
+
         blocked = self._blocked_by_readiness(planned, readiness)
         if blocked:
             reasons = ["%s: %s" % (item.workflow, item.reason) for item in blocked]
@@ -126,6 +134,8 @@ class SpatialAgent:
             )
         tool_trace: List[ToolCall] = []
         warnings: List[str] = []
+        if gate_decision.get("caveat"):
+            warnings.append(gate_decision["caveat"])
         for tool_name, params in planned:
             unmet = self.registry.check_preconditions(tool_name, dataset)
             if unmet:

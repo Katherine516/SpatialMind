@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from spatialmind.agent.runtime import DEFAULT_XENIUM_INPUTS, build_xenium_mvp_plan, validate_tool_plan
+from spatialmind.gatekeeper import pilot_gate
 from spatialmind.ingestion import (
     apply_best_available_labels,
     apply_best_available_regions,
@@ -444,67 +445,6 @@ def scan_pilot_readiness(
     return summary
 
 
-def pilot_gate(
-    dataset: SpatialDataset,
-    asset_readiness: Dict[str, Any],
-    label_report: Dict[str, Any],
-    region_report: Dict[str, Any],
-    min_label_coverage: float,
-    min_region_coverage: float,
-    allow_single_region: bool,
-) -> Dict[str, Any]:
-    blockers: List[str] = []
-    required: List[str] = []
-    for key, name in [
-        ("has_cell_table", "Xenium cell table"),
-        ("has_feature_matrix", "Xenium feature matrix"),
-        ("has_morphology", "morphology image metadata"),
-        ("has_boundaries", "cell/nucleus boundaries"),
-    ]:
-        if not asset_readiness.get(key):
-            blockers.append("Missing %s." % name)
-            required.append("Provide %s." % name)
-
-    total = max(int(label_report.get("total_records") or len(dataset.records)), 1)
-    label_coverage = float(label_report.get("matched_cells") or 0) / float(total)
-    if label_report.get("status") != "expert_labels_applied":
-        blockers.append("Expert cell labels were not applied.")
-        required.append("Add `expert_cell_labels.csv` with `cell_id,expert_label,confidence,notes` to the Xenium folder.")
-    elif label_coverage < min_label_coverage:
-        blockers.append("Expert label coverage %.3f is below required %.3f." % (label_coverage, min_label_coverage))
-        required.append("Increase expert label coverage or lower the explicit threshold.")
-
-    region_total = max(int(region_report.get("total_records") or len(dataset.records)), 1)
-    region_coverage = float(region_report.get("matched_cells") or 0) / float(region_total)
-    if region_report.get("status") != "user_regions_applied":
-        blockers.append("User-provided region labels were not applied.")
-        required.append("Add `cell_regions.csv` with `cell_id,region,region_confidence,notes` to the Xenium folder.")
-    elif region_coverage < min_region_coverage:
-        blockers.append("Region label coverage %.3f is below required %.3f." % (region_coverage, min_region_coverage))
-        required.append("Increase region label coverage or lower the explicit threshold.")
-
-    labels = {record.cell_type for record in dataset.records if record.cell_type and "unannotated" not in record.cell_type.lower()}
-    if len(labels) < 2:
-        blockers.append("At least two biological cell labels are required for marker/neighborhood validation.")
-        required.append("Provide at least two reviewed biological cell classes.")
-
-    regions = {record.region for record in dataset.records if record.region}
-    if not allow_single_region and len(regions) < 2:
-        blockers.append("At least two user-defined regions are required for a validated region summary pilot.")
-        required.append("Provide at least two reviewed tissue/ROI regions.")
-
-    return {
-        "status": "validated_ready" if not blockers else "blocked_missing_validation_inputs",
-        "blocking_reasons": _dedupe(blockers),
-        "required_next_inputs": _dedupe(required),
-        "label_coverage": round(label_coverage, 4),
-        "region_coverage": round(region_coverage, 4),
-    }
-
-
-
-# Instrument-level QC from metrics_summary.csv. These are the first numbers a
-# wet-lab scientist checks, and they were parsed at ingestion but never reported.
 RUN_QC_FIELDS = (
     ("fraction_transcripts_decoded_q20", "Transcripts decoded (Q20)", "fraction", 0.80, "higher is better"),
     ("fraction_transcripts_assigned", "Transcripts assigned to cells", "fraction", 0.50, "higher is better"),
