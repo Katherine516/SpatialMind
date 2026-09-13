@@ -13,7 +13,24 @@ from ..viz import VisualizationLayer
 
 
 class SpatialMindAgent:
-    """Coordinates the six layers into one agent run."""
+    """LEGACY (v1) run path: LLM plan -> AlgorithmEngine -> report.
+
+    The docstring here used to read "coordinates the six layers into one agent
+    run", naming ingestion, algorithms, reasoning, visualization, storage and
+    memory. That was accurate for v1 and has not been true for some time: it
+    omits `tools`, `pilot`, `gatekeeper` and `app`, and two of the six it names
+    are themselves legacy. See `docs/agent_architecture.md` for the six tiers the
+    import graph actually has.
+
+    What this class still is: the only LLM-planned path, running the three
+    `AlgorithmEngine` tools rather than the 30-tool registry. Reached from
+    `POST /runs`, the CLI's `--replay-run-id` branch, and the CLI when the data
+    is not a Xenium bundle -- a Xenium bundle goes to `run_pilot` instead.
+
+    It had no gate at all until `require_gate_open` was added to `run`, which
+    mattered because `DataIngestionLayer.load` accepts a Xenium directory and a
+    replayed run carries whatever `source_path` its provenance recorded.
+    """
 
     def __init__(
         self,

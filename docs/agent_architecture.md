@@ -13,6 +13,84 @@ to make biological claims until a human supplies expert cell labels and tissue
 regions — at which point it runs a fixed, validated tool plan and reports every
 claim with a per-claim reliability score.
 
+## The six tiers
+
+Read from the import graph, not from any docstring. Each tier depends only on
+tiers below it.
+
+| # | Tier | Lines | What it is for |
+| --- | --- | --- | --- |
+| 6 | **Surfaces** — `app`, `api`, `cli`, `batch`, `review`, `promotion` | ~5,330 | How a human or another program gets in |
+| 5 | **Execution** — `agent`, `pilot`, `workflows` | ~3,880 | Turning a plan into a run |
+| 4 | **Derived products** — `viz`, `methods`, `datasets`, `governance` | ~2,570 | Reports, figures, reliability scores, manifests |
+| 3 | **The gate** — `gatekeeper` | 278 | The one tier whose job is to say no |
+| 2 | **Capability** — `ingestion`, `tools`, `storage`, `memory`, `llm` | ~7,100 | Things that can do work, knowing no workflow |
+| 1 | **Contracts** — `contracts`, `schemas` | ~860 | The vocabulary every tier speaks |
+
+**Tier 1** must import nothing else in the project. The moment the vocabulary
+imports a layer, every layer is coupled through it.
+
+**Tier 2** is deliberately workflow-ignorant. `ingestion` reads ~6 MB of a 2.5 GB
+bundle into one contract; `tools` is the 30-tool registry with capability states.
+Neither knows a gate exists.
+
+**Tier 3** is thin and sits alone because of who has to reach it. `gatekeeper`
+imports only `ingestion`, `tools` and `schemas`, so every executing tier above
+can call it without a cycle. `pilot_gate` moved here for exactly that reason: it
+lived in `pilot.xenium`, which imports `agent.runtime`, so an agent-layer caller
+would have closed a loop.
+
+**Tier 4** consumes results and produces artifacts. Contracted as pure consumers:
+`viz` and `storage` may not import the agent or app, so rendering can never reach
+back and trigger analysis.
+
+**Tier 5** is where a plan becomes a run. `pilot` is the largest single unit in
+the codebase at 3,065 lines.
+
+**Tier 6** is entry points. `app` is contracted as a top layer nothing else may
+import.
+
+### What is actually enforced
+
+Five import-linter contracts, checked by `make import-lint`. Everything else in
+that table is convention — and this codebase has twice shown what convention is
+worth. The gate held on one of four execution paths until it was made a function
+call; scaffold detection died silently the first time the app was frozen.
+
+### Legacy components
+
+Two tier-2 modules are v1 survivors, now marked as such in their own docstrings:
+
+| Module | Superseded by | Still reachable from |
+| --- | --- | --- |
+| `algorithms.py` (`AlgorithmEngine`, 3 tools) | `tools` (`ToolRegistry`, 30 tools) | `SpatialMindAgent` |
+| `planner.py` (`LLMReasoningLayer`) | `agent.runtime` + `app.planner` | `SpatialMindAgent` |
+
+Both are reachable only through `SpatialMindAgent`, which means `POST /runs`, the
+CLI's `--replay-run-id` branch, and the CLI when the data is *not* a Xenium
+bundle — a Xenium bundle routes to `run_pilot` instead. The replay branch is the
+one that can land on a Xenium path, because it uses whatever `source_path` the
+stored provenance recorded.
+
+The tool sets are disjoint: nothing in `AlgorithmEngine` appears in
+`ToolRegistry`. That is why `gatekeeper` classifies two of them as label-gated
+*by name* — preconditions cannot do it, because these tools are not in the
+registry that carries preconditions.
+
+Neither is deleted, because removing them means deciding what `SpatialMindAgent`
+should run instead. That is the parallel-stacks question: four execution paths
+and three tool registries, alive because nothing ever forced a choice.
+
+### Three self-descriptions that disagreed
+
+Worth recording, because it is how the drift stayed invisible. The codebase
+described its own layering three incompatible ways: `orchestrator.py` said "six
+layers" and named the v1 set (ingestion, algorithms, reasoning, visualization,
+storage, memory), omitting `tools`, `pilot`, `gatekeeper` and `app`;
+`__init__.py`'s `__all__` listed fifteen names flat; and the import graph said
+the six tiers above. The most authoritative-sounding one was the most out of
+date. It has been corrected.
+
 ## Stage 1: Input — the `.xenium` bundle
 
 A Xenium run ships a ~2.5 GB folder. The agent reads about 6 MB of it.

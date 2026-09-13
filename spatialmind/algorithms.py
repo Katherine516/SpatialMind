@@ -1,3 +1,22 @@
+"""LEGACY (v1). Superseded by `spatialmind.tools`; kept for the demo path.
+
+This is a three-tool registry -- cell_type_distribution, spatial_gene_expression,
+cell_type_colocalization -- from the first version of the agent. `ToolRegistry`
+in `spatialmind.tools` replaced it with 30 tools carrying capability states,
+preconditions, citations and resource profiles, and the two sets are disjoint:
+nothing here appears there.
+
+It is still reachable through `SpatialMindAgent`, which means through
+`POST /runs`, the CLI's `--replay-run-id` branch, and the CLI when the data is
+not a Xenium bundle. Two of its tools name cell types, so `gatekeeper` classifies
+them as label-gated by name -- preconditions cannot do it, because these tools
+are not in the registry that has them.
+
+Do not add tools here. New work belongs in `spatialmind.tools`. Removing this
+module means deciding what `SpatialMindAgent` should run instead, which is the
+parallel-stacks question the architecture doc describes.
+"""
+
 import math
 import random
 from collections import Counter, defaultdict
