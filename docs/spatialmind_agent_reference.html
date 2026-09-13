@@ -639,7 +639,12 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
       <tr><td><b>No expert labels anywhere</b></td><td>No validated run has ever used real expert labels; every one used <code>SYNTHETIC_GATE_DEMO_NOT_AN_EXPERT</code></td><td>~1,600 reviewed cells at a 2,000-cell run</td></tr>
       <tr><td><b>Panel ceiling 0.67</b></td><td>Every claim on this assay is capped regardless of review effort</td><td>A larger panel or a second modality — a data decision, not software</td></tr>
       <tr><td><b>No human malignant reference</b></td><td>Candidate labels can name astrocyte but never neoplastic cell; the only tumour reference present is mouse</td><td>A human glioma scRNA reference with a malignant class</td></tr>
-      <tr><td><b>Eval suites score 1.0000</b></td><td>They assert a keyword router picks expected tools on synthetic data; they cannot fail, so they caught neither the scaffold bug nor the gate hole</td><td>Negative cases and real sections</td></tr>
+      <tr><td><b>Eval suites only reached the router</b> <span class="pill ok">addressed</span></td>
+          <td>Every case scored which tools the router chose, so neither the scaffold bug nor the gate hole was reachable. Three cases actively asserted that scaffolds <em>run</em>.</td>
+          <td>Done: suite invariants that assert on the registry and gatekeeper directly and provably fail under each regression; <code>forbidden_tools</code> per case; the three wrong cases corrected. Remaining: cases on real sections rather than the synthetic manifest.</td></tr>
+      <tr><td><b>Scaffolds could execute</b> <span class="pill ok">fixed</span></td>
+          <td><code>list_plannable()</code> hid them from planners, but <code>get(name).run(...)</code> ran one for anyone asking by name — and the v1 router asks. The trace recorded a successful call whose result was a placeholder.</td>
+          <td>Done: <code>SpatialTool.run</code> refuses when capability is <code>unavailable</code>. Found by the new eval cases on their first run.</td></tr>
       <tr><td><b>Parallel stacks</b></td><td>Four execution paths and three tool registries; <code>AlgorithmEngine</code> holds 3 tools disjoint from the 30</td><td>Collapse to one, delete the rest</td></tr>
       <tr><td><b>Reliability uncalibrated for biology</b></td><td>Scores are conservative floors, not probabilities a claim is true</td><td>A reviewed claim-truth table</td></tr>
       <tr><td><b>Intel-only build</b></td><td>Apple Silicon users have no binary</td><td>Run the <code>macos-14</code> CI job</td></tr>

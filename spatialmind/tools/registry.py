@@ -5,6 +5,7 @@ from spatialmind.contracts import MethodCitation, ResourceProfile
 from spatialmind.schemas import SpatialDataset, ToolResult
 
 from . import implementations
+from .exceptions import ToolExecutionError
 
 
 ToolCallable = Callable[[SpatialDataset, Dict[str, object]], ToolResult]
@@ -93,6 +94,19 @@ class SpatialTool:
             self.citation = _default_citation(self.name)
 
     def run(self, dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
+        if self.capability == "unavailable":
+            # The registry hid scaffolds from planners and then handed one over to
+            # anyone who asked for it by name. `list_plannable()` and
+            # `to_anthropic_tools()` filter them out, but `get(name).run(...)` did
+            # not, so a router that named one -- the v1 keyword planner does, for
+            # "deconvolve cell type proportions" -- executed it and recorded a
+            # successful tool call whose result was a placeholder. Selection was
+            # guarded; execution was not.
+            raise ToolExecutionError(
+                "%s is a registered scaffold: it returns a placeholder and does no work, so it "
+                "must not run. It is excluded from planning; reaching it means a caller went "
+                "around list_plannable()." % self.name
+            )
         result = self.callable(dataset, params)
         return implementations.attach_quality_metrics(result, dataset, params)
 

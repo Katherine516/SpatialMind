@@ -2395,10 +2395,55 @@ class EvalHarnessTests(unittest.TestCase):
     def test_eval_runner_loads_cases_and_scores(self):
         runner = EvalRunner(SpatialAgent())
         cases = runner.load_cases(os.path.join(ROOT, "eval", "test_cases"))
-        self.assertEqual(len(cases), 15)
+        # Not an exact count: adding a case should not fail an unrelated test.
+        self.assertGreaterEqual(len(cases), 15)
+        self.assertTrue(all(case.id for case in cases))
         report = runner.run(cases[:2])
         self.assertEqual(report["summary"]["case_count"], 2)
         self.assertGreaterEqual(report["summary"]["mean_score"], 0.5)
+
+    def test_eval_suite_carries_invariants_that_can_fail(self):
+        """The suite has to be able to go red, or it is not measuring anything.
+
+        It scored 1.0000 on every run while two real bugs were live: scaffold
+        detection died inside the frozen app, and the Studio's API enforced the
+        gate only in its UI. Every case drove the router and scored which tools
+        it chose, so neither was reachable. These invariants assert on the
+        registry and the gatekeeper directly.
+        """
+        import spatialmind.tools.registry as registry_module
+        from eval.runner import check_suite_invariants
+
+        self.assertTrue(all(item["passed"] for item in check_suite_invariants()))
+
+        # Reproduce the frozen-bundle failure: nothing is recognised as a scaffold.
+        original = registry_module._is_scaffold
+        registry_module._is_scaffold = lambda func: False
+        try:
+            failed = [item["name"] for item in check_suite_invariants() if not item["passed"]]
+        finally:
+            registry_module._is_scaffold = original
+        self.assertIn("scaffolds_are_detected", failed)
+        self.assertIn("no_scaffold_in_llm_schemas", failed)
+
+    def test_a_scaffold_refuses_to_execute(self):
+        """Hidden from planners is not the same as refusing to run.
+
+        `list_plannable()` and `to_anthropic_tools()` filtered scaffolds out, but
+        `get(name).run(...)` executed one for anyone who asked by name -- and the
+        v1 keyword router asks, for "deconvolve cell type proportions". The trace
+        then recorded a successful call whose result was a placeholder.
+        """
+        from spatialmind.tools import build_default_registry
+        from spatialmind.tools.exceptions import ToolExecutionError
+
+        from spatialmind.ingestion import DataIngestionLayer
+
+        dataset = DataIngestionLayer().load(DEMO)
+        registry = build_default_registry()
+        scaffold = next(t for t in registry.list_all() if t.capability == "unavailable")
+        with self.assertRaises(ToolExecutionError):
+            scaffold.run(dataset, {})
 
 
 class BrainExpertBenchmarkTests(unittest.TestCase):
