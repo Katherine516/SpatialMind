@@ -11,6 +11,12 @@ This repository implements SpatialMind, an agentic spatial omics analysis system
 
 The base path remains dependency-light for fast testing, while the core workstation environment in `requirements.txt` enables real H5AD/Xenium ingestion and Scanpy/Squidpy-backed wrappers. PyTorch-based scVI/cell2location packages live in `requirements-deep-learning.txt` and must be installed in a separate environment to avoid mixed OpenMP runtimes on Intel macOS.
 
+## Reference
+
+[docs/spatialmind_agent_reference.html](docs/spatialmind_agent_reference.html) — one page covering the
+workflow, the architecture, every function, the reliability model, and the current
+state with its gaps. Open it in a browser.
+
 ## SpatialMind Studio (desktop app)
 
 The agent packaged as a local application: a browser UI over the same pipeline,
