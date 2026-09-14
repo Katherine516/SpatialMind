@@ -66,7 +66,65 @@ napari all export CSVs the loader ingests unchanged.
 
 ## Missing
 
-### 1. A human reference carrying a malignant class — blocking for tumour work
+### 1. A human reference carrying a malignant class — OBTAINED 14 Sep 2026
+
+`data/GBmap_Core_human_glioblastoma.h5ad` — Core GBmap, 338,564 human cells,
+17 cell types including **malignant cell**, 7.6 GB, from
+[CELLxGENE](https://datasets.cellxgene.cziscience.com/861acfd8-25f0-418b-a445-aa96da232827.h5ad).
+
+The preflight now passes on the glioblastoma section:
+
+```text
+REFERENCE data/GBmap_Core_human_glioblastoma.h5ad
+         organism=Homo sapiens  cells=338564  classes=17  panel_overlap=316
+LINEAGE COVERAGE
+         Every lineage confidently detected in the target has a matching reference class.
+USABLE: 17 combined cell classes.
+```
+
+One reference covering every lineage the section carries *and* the malignant
+class, replacing what previously needed seven superclusters and still could not
+name a tumour cell.
+
+**Two defects had to be fixed before it was usable**, both silent:
+
+- anndata's backed mode covers `X` only. This file's `layers` total 37 GB
+  uncompressed, so a backed open was killed before sampling a single cell — and
+  `_open_h5ad` then fell back to a full in-memory read, which is worse.
+  `read_h5ad_subsample` reads the wanted rows through h5py and never touches
+  `layers` or `raw`: 2,000 cells in 7.8 s at 0.57 GB peak.
+- CELLxGENE keys `var` by Ensembl ID and puts symbols in `feature_name`. A
+  Xenium panel is symbols, so reading the index gives an overlap of **zero** —
+  not an error that announces itself, but a confident answer computed from
+  nothing. Reading `feature_name` gives 296 of 339 panel genes.
+
+#### A caveat the reviewer needs before touching this file
+
+Candidate labels are **highly sensitive to how the reference is sampled**, and
+the effect is large enough to change the headline finding:
+
+| Reference sample | Malignant share of reference | Target cells called malignant |
+| --- | --- | --- |
+| proportional, 2,000 cells | 38% | **955** of 2,497 |
+| stratified by class, 6,000 cells | 6.5% | **71** of 2,497 |
+
+A 13.5x swing from the sampling choice alone, with no change to the target data.
+Both runs used the same reference file and the same algorithm.
+
+Neither number is the truth. A proportional draw preserves the atlas's own prior
+— in a GBM atlas a great many cells really are malignant — and lets the majority
+class dominate a neighbour vote. A stratified draw gives every class equal
+voting weight and discards that prior entirely. Stratification is used here
+because a class absent from the sample can never be assigned at all, which is
+the worse failure, but it is a trade and not a correction.
+
+**What this means in practice:** treat the malignant count as a starting point
+for review, not as a measurement. It is exactly the kind of number that looks
+like a result and is not one, which is why the gate does not accept this file.
+
+#### The original entry, kept for the record
+
+### 1b. What the mouse reference could not do (superseded)
 
 The only tumour reference present, `glioblastoma_brain.h5ad`, is **Mus musculus**.
 The preflight refuses it twice over:

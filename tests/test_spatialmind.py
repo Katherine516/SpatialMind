@@ -2402,6 +2402,58 @@ class EvalHarnessTests(unittest.TestCase):
         self.assertEqual(report["summary"]["case_count"], 2)
         self.assertGreaterEqual(report["summary"]["mean_score"], 0.5)
 
+    def test_large_h5ad_reference_is_streamed_and_keyed_by_gene_symbol(self):
+        """A reference atlas has to be readable, and over the right gene names.
+
+        Two failures, both silent. anndata's backed mode covers `X` only, so
+        opening the 7.6 GB Core GBmap atlas -- whose `layers` total 37 GB
+        uncompressed -- was killed before a single cell was sampled, and
+        `_open_h5ad` then fell back to a full in-memory read. And CELLxGENE keys
+        `var` by Ensembl ID with symbols in `feature_name`, while a Xenium panel
+        is symbols: reading the index gives an overlap of zero, which is not an
+        error that announces itself but a confident answer computed from nothing.
+        """
+        import numpy as np
+        from spatialmind.ingestion.loaders.scrna import read_h5ad_subsample
+
+        anndata = importlib.import_module("anndata")
+        import pandas as pd
+        import scipy.sparse as sp
+
+        n_cells, n_genes = 40, 6
+        counts = sp.csr_matrix(np.arange(n_cells * n_genes, dtype="float32").reshape(n_cells, n_genes))
+        obs = pd.DataFrame(
+            {"cell_type": pd.Categorical(["malignant cell" if i % 2 else "astrocyte" for i in range(n_cells)])},
+            index=["cell-%d" % i for i in range(n_cells)],
+        )
+        var = pd.DataFrame(
+            {"feature_name": ["GFAP", "AQP4", "PTPRC", "CD68", "MBP", "SOX2"]},
+            index=["ENSG%011d" % i for i in range(n_genes)],
+        )
+        adata = anndata.AnnData(X=counts, obs=obs, var=var)
+        adata.layers["counts"] = counts.copy()
+
+        directory = tempfile.mkdtemp()
+        try:
+            path = os.path.join(directory, "atlas.h5ad")
+            adata.write_h5ad(path)
+
+            dataset = read_h5ad_subsample(path, max_records=10)
+            self.assertEqual(len(dataset.records), 10, "max_records must bound the read")
+
+            genes = set()
+            for record in dataset.records:
+                genes.update(record.genes)
+            self.assertTrue(genes, "the sampled rows carried no features")
+            self.assertTrue(
+                genes <= {"GFAP", "AQP4", "PTPRC", "CD68", "MBP", "SOX2"},
+                "features must be gene symbols, not the Ensembl index: %s" % sorted(genes),
+            )
+            self.assertIn("malignant cell", {record.cell_type for record in dataset.records})
+            self.assertEqual(dataset.metadata["read_strategy"], "h5py_subsample")
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
     def test_eval_suite_carries_invariants_that_can_fail(self):
         """The suite has to be able to go red, or it is not measuring anything.
 
