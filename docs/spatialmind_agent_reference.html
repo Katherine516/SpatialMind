@@ -101,14 +101,14 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
 <div class="wrap">
 
 <header>
-  <div class="eyebrow">Reference · 13 Sep 2026 · branch spatialmind-studio @ e29282c</div>
+  <div class="eyebrow">Reference · 15 Sep 2026 · branch spatialmind-studio @ 3fbf39c</div>
   <h1>SpatialMind Agent Reference</h1>
   <p class="lede">A spatial-omics agent whose defining behaviour is what it <em>won't</em> do. It ingests a
     Xenium section, runs real Scanpy and Squidpy analysis, and refuses to name a single cell type until a
     human has reviewed the labels. This is how that refusal is built, what it currently can and cannot do,
     and where the evidence for each claim comes from.</p>
   <div class="tiles">
-    <div class="tile"><b>214</b><span>tests passing</span></div>
+    <div class="tile"><b>217</b><span>tests passing</span></div>
     <div class="tile"><b>30</b><span>registered tools</span></div>
     <div class="tile"><b>12</b><span>plannable</span></div>
     <div class="tile"><b>7</b><span>app surfaces</span></div>
@@ -601,9 +601,10 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
     <div class="card">
       <h4>Verification</h4>
       <div style="margin-top:10px">
-        <div class="kv"><span>unit + integration</span><b>214 / 214</b></div>
-        <div class="kv"><span>legacy eval cases</span><b>15 / 15</b></div>
-        <div class="kv"><span>MVP eval cases</span><b>11 / 11</b></div>
+        <div class="kv"><span>unit + integration</span><b>217 / 217</b></div>
+        <div class="kv"><span>legacy eval cases</span><b>16 / 16</b></div>
+        <div class="kv"><span>MVP eval cases</span><b>13 / 13</b></div>
+        <div class="kv"><span>eval suite invariants</span><b>4 / 4</b></div>
         <div class="kv"><span>import contracts</span><b>5 / 5</b></div>
         <div class="kv"><span>packaged-app smoke</span><b>11 / 11</b></div>
       </div>
@@ -620,6 +621,50 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
       is the gate working, not failing.</p>
     </div>
   </div>
+
+  <h3>Reference atlases and candidate labels</h3>
+  <p class="sub">Nine <code>.h5ad</code> references on disk. Together they cover every lineage either brain
+    section carries, and — since 14 Sep — a tumour class.</p>
+  <div class="two">
+    <div class="card">
+      <h4>Core GBmap <span class="pill ok">obtained</span></h4>
+      <div style="margin-top:9px">
+        <div class="kv"><span>cells</span><b>338,564 human</b></div>
+        <div class="kv"><span>classes</span><b>17, incl. malignant cell</b></div>
+        <div class="kv"><span>panel overlap</span><b>316 of 339 genes</b></div>
+        <div class="kv"><span>on disk</span><b>7.6 GB</b></div>
+      </div>
+      <p style="margin-top:10px;font-size:12.5px;color:var(--ink-3)">One reference does what seven Human
+      Brain Atlas superclusters could not: none of them can name a tumour cell.</p>
+    </div>
+    <div class="card">
+      <h4>Candidate labels, glioblastoma section</h4>
+      <div style="margin-top:9px">
+        <div class="kv"><span>cells labelled</span><b>2,497</b></div>
+        <div class="kv"><span>classes assigned</span><b>14</b></div>
+        <div class="kv"><span>low confidence</span><b>631</b></div>
+        <div class="kv"><span>flagged for review</span><b>844</b></div>
+        <div class="kv"><span>status</span><b>awaiting_expert_review</b></div>
+      </div>
+      <p style="margin-top:10px;font-size:12.5px;color:var(--ink-3)">Predictions, not labels. The gate does
+      not accept this file.</p>
+    </div>
+  </div>
+
+  <div class="note stop"><b>The malignant count is not a measurement.</b> The same reference and the same
+    algorithm call <b>955</b> or <b>71</b> of those 2,497 cells malignant, depending only on how the
+    reference is sampled — a 13.5× swing with no change to the target data. A proportional draw keeps the
+    atlas's own prior and lets the majority class dominate a neighbour vote; a stratified draw gives every
+    class equal weight and discards that prior. Stratification is used because a class absent from the sample
+    can never be assigned at all, which is the worse failure — but it is a trade, not a correction.</div>
+
+  <div class="note"><b>Loading it needed a streaming reader, for two silent reasons.</b> anndata's backed
+    mode covers <code>X</code> only, and this file's <code>layers</code> total 37 GB uncompressed, so a backed
+    open was killed before sampling one cell — and the fallback was a full in-memory read, which is worse.
+    And CELLxGENE keys <code>var</code> by Ensembl ID with symbols in <code>feature_name</code>, while a
+    Xenium panel is symbols: reading the index gives an overlap of <em>zero</em>, which is not an error that
+    announces itself but a confident answer computed from nothing. Reading the wanted rows through h5py:
+    2,000 cells in 7.8 s at 0.57 GB peak.</div>
 
   <h3>Packaging</h3>
   <div class="prose">
@@ -638,7 +683,12 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
     <tbody>
       <tr><td><b>No expert labels anywhere</b></td><td>No validated run has ever used real expert labels; every one used <code>SYNTHETIC_GATE_DEMO_NOT_AN_EXPERT</code></td><td>~1,600 reviewed cells at a 2,000-cell run</td></tr>
       <tr><td><b>Panel ceiling 0.67</b></td><td>Every claim on this assay is capped regardless of review effort</td><td>A larger panel or a second modality — a data decision, not software</td></tr>
-      <tr><td><b>No human malignant reference</b></td><td>Candidate labels can name astrocyte but never neoplastic cell; the only tumour reference present is mouse</td><td>A human glioma scRNA reference with a malignant class</td></tr>
+      <tr><td><b>No human malignant reference</b> <span class="pill ok">obtained</span></td>
+          <td>Candidate labels could name astrocyte but never a tumour cell; the only tumour reference present was mouse, which the preflight refuses.</td>
+          <td>Done: Core GBmap from CELLxGENE — 338,564 human cells, 17 classes including <code>malignant cell</code>, 316-gene panel overlap. Loading it needed a streaming reader; see below.</td></tr>
+      <tr><td><b>Candidate labels swing on reference sampling</b> <span class="pill warn">open</span></td>
+          <td>The same file and algorithm call <b>955</b> or <b>71</b> of 2,497 cells malignant depending only on how the reference is sampled — a 13.5× swing.</td>
+          <td>Unresolved by design. Proportional sampling keeps the atlas prior and lets the majority class dominate the vote; stratified sampling gives equal weight and discards it. Treat the count as a review starting point, not a measurement.</td></tr>
       <tr><td><b>Eval suites only reached the router</b> <span class="pill ok">addressed</span></td>
           <td>Every case scored which tools the router chose, so neither the scaffold bug nor the gate hole was reachable. Three cases actively asserted that scaffolds <em>run</em>.</td>
           <td>Done: suite invariants that assert on the registry and gatekeeper directly and provably fail under each regression; <code>forbidden_tools</code> per case; the three wrong cases corrected. Remaining: cases on real sections rather than the synthetic manifest.</td></tr>
