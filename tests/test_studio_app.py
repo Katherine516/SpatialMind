@@ -71,6 +71,7 @@ class StudioAppTests(unittest.TestCase):
             time.sleep(0.05)
         for kind in ("labels", "regions"):
             self.client.post("/api/datasets/%s/clear" % self.dataset_id, json={"kind": kind})
+        self.client.delete("/api/datasets/%s/context" % self.dataset_id)
 
     # ------------------------------------------------------------------ basics
 
@@ -314,6 +315,73 @@ class StudioAppTests(unittest.TestCase):
         self.assertEqual(decision["status"], "gate_not_evaluated")
         self.assertIn("region_summary", decision["gated_tools"])
         self.assertIn("not gate-validated", decision["caveat"])
+
+    # ------------------------------------------------------------------ dataset context
+
+    def test_context_round_trips_and_is_attributed(self):
+        payload = {"tissue": "human cortex", "fixation": "FFPE, 3-year-old block",
+                   "expected_cell_types": ["astrocyte", "T cell"],
+                   "question": "Is there immune infiltration?", "author": "K. Zhang"}
+        saved = self.client.post("/api/datasets/%s/context" % self.dataset_id, json=payload).json()
+        self.assertEqual(saved["context"]["tissue"], "human cortex")
+        self.assertTrue(saved["context"]["recorded_at"], "context must record when it was written")
+
+        fetched = self.client.get("/api/datasets/%s/context" % self.dataset_id).json()
+        self.assertEqual(fetched["context"]["author"], "K. Zhang")
+        self.assertTrue(all("K. Zhang" in line for line in fetched["caveats"]),
+                        "every caveat must name who supplied it")
+        self.assertTrue(all("not independently verified" in line for line in fetched["caveats"]))
+
+    def test_context_cannot_move_the_gate(self):
+        """The obvious way around a review requirement is to assert past it.
+
+        Context is typed and scoped precisely so a sentence cannot do what
+        labelling 1,600 cells does. This asserts the strongest version: a
+        submitter claiming the tissue is fully characterised, naming cell types
+        and regions, must leave the gate exactly where it was.
+        """
+        before = self.client.get("/api/datasets/%s" % self.dataset_id).json()["gate"]
+        self.client.post("/api/datasets/%s/context" % self.dataset_id, json={
+            "tissue": "human cortex",
+            "condition": "glioblastoma with abundant malignant cells throughout",
+            "expected_cell_types": ["malignant cell", "astrocyte", "T cell", "oligodendrocyte"],
+            "known_artifacts": "none, this section is fully characterised",
+            "author": "an optimistic submitter"})
+        after = self.client.get("/api/datasets/%s" % self.dataset_id).json()["gate"]
+
+        self.assertEqual(after["status"], before["status"])
+        self.assertEqual(after["label_coverage"], before["label_coverage"])
+        self.assertEqual(after["region_coverage"], before["region_coverage"])
+        self.assertEqual(after["cell_classes"], before["cell_classes"],
+                         "expected cell types must not become reviewed classes")
+
+    def test_context_does_not_become_a_label(self):
+        self.client.post("/api/datasets/%s/context" % self.dataset_id, json={
+            "expected_cell_types": ["astrocyte", "malignant cell"], "author": "submitter"})
+        coverage = self.client.get("/api/datasets/%s" % self.dataset_id).json()["label_coverage"]
+        self.assertEqual(coverage["coverage"], 0.0, "an expectation created label coverage")
+        self.assertFalse(coverage["values"], "an expectation became a label value")
+
+    def test_a_gated_tool_is_still_refused_with_context_present(self):
+        self.client.post("/api/datasets/%s/context" % self.dataset_id, json={
+            "condition": "fully annotated by the submitter",
+            "expected_cell_types": ["astrocyte", "T cell"], "author": "submitter"})
+        response = self.client.post("/api/runs", json={
+            "dataset_id": self.dataset_id, "kind": "plan", "tools": ["region_summary"]})
+        self.assertEqual(response.status_code, 409,
+                         "context let a gated tool through: %s" % response.text[:120])
+
+    def test_unreadable_context_does_not_break_the_dataset(self):
+        from spatialmind.dataset_context import context_path, load_context
+
+        path = context_path(self.bundle)
+        path.write_text("{ this is not json", encoding="utf-8")
+        try:
+            self.assertTrue(load_context(self.bundle).is_empty)
+            body = self.client.get("/api/datasets/%s" % self.dataset_id)
+            self.assertEqual(body.status_code, 200, "a corrupt context file broke the dataset")
+        finally:
+            path.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ tools
 

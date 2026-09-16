@@ -397,7 +397,7 @@ const S = {
   tools:[], recipes:[], capability:{}, gateOpen:false,
   plan:[], overrides:{}, planInfo:null, selTool:null, filter:"all",
   mode:"label", colorBy:"cluster", selCluster:null, drag:null, rect:null,
-  thread:[], jobs:[], job:null, poll:null, panel:"datasets", dataRoot:"", resources:null, scanning:false, waitingOnPermission:false, scanRetry:null
+  thread:[], jobs:[], job:null, poll:null, panel:"datasets", dataRoot:"", resources:null, context:null, scanning:false, waitingOnPermission:false, scanRetry:null
 };
 
 const $ = (s) => document.querySelector(s);
@@ -519,7 +519,7 @@ async function selectDataset(datasetId){
     $("#ctx").innerHTML =
       '<span class="nm" title="' + esc(entry.relative_path) + '">' + esc(entry.display_name || entry.name) + '</span>' +
       '<span class="meta">' + meta + '</span>';
-    await Promise.all([loadCells(), loadTools(), loadResources()]);
+    await Promise.all([loadCells(), loadTools(), loadResources(), loadContext()]);
     renderAll();
   } catch (err) {
     toast(err.message, true);
@@ -530,6 +530,28 @@ async function selectDataset(datasetId){
 async function loadCells(){
   if (!S.detail || !S.detail.reviewable) { S.cells = null; return; }
   S.cells = await get("/api/datasets/" + S.dsId + "/cells");
+}
+async function loadContext(){
+  try { S.context = await get("/api/datasets/" + S.dsId + "/context"); }
+  catch (err) { S.context = null; }
+}
+async function saveContext(){
+  const payload = {};
+  document.querySelectorAll("[data-ctx]").forEach((input) => {
+    const key = input.dataset.ctx;
+    const raw = input.value.trim();
+    payload[key] = (key === "focus_genes" || key === "expected_cell_types")
+      ? raw.split(",").map((v) => v.trim()).filter(Boolean)
+      : raw;
+  });
+  try {
+    const saved = await post("/api/datasets/" + S.dsId + "/context", payload);
+    S.context = await get("/api/datasets/" + S.dsId + "/context");
+    // Showing the gate back is the point: context must never move it.
+    const status = saved.gate ? saved.gate.status : "n/a";
+    toast("Context saved. Gate is unchanged: " + status);
+    renderAll();
+  } catch (err) { toast(err.message, true); }
 }
 async function loadResources(){
   try {
@@ -611,6 +633,7 @@ function renderGate(){
   $("#cGate").textContent = failed ? failed : "✓";
 
   const assets = gate.asset_readiness || {};
+  const contextHtml = renderContext();
   const resourcesHtml = renderResources();
   body.innerHTML =
     '<div class="two"><div><div class="card"><h5>Six conditions</h5><div id="checkList"></div></div></div>' +
@@ -627,7 +650,17 @@ function renderGate(){
       '<div class="kv"><span>cell classes</span><b>' + (gate.cell_classes || []).length + '</b></div>' +
       '<div class="kv"><span>regions</span><b>' + (gate.regions || []).length + '</b></div>' +
       '<div class="kv"><span>index build</span><b>' + (detail.index_build_seconds || 0) + ' s</b></div>' +
-    '</div></div></div>' + resourcesHtml;
+    '</div></div></div>' + contextHtml + resourcesHtml;
+
+  const saveBtn = $("#saveContext");
+  if (saveBtn) saveBtn.addEventListener("click", saveContext);
+  const clearBtn = $("#clearContext");
+  if (clearBtn) clearBtn.addEventListener("click", async () => {
+    try {
+      await api("/api/datasets/" + S.dsId + "/context", {method: "DELETE"});
+      await loadContext(); toast("Context cleared."); renderAll();
+    } catch (err) { toast(err.message, true); }
+  });
 
   const list = $("#checkList");
   (gate.checks || []).forEach((c) => {
@@ -645,6 +678,51 @@ function renderGate(){
 }
 
 /* ------------------------------------------------------------------ review */
+const CONTEXT_FIELDS = [
+  ["question",            "What do you want to know?", "intent",      "Is there immune infiltration at the tumour edge?"],
+  ["focus_genes",         "Genes of interest",         "intent",      "GFAP, PTPRC"],
+  ["tissue",              "Tissue",                    "specimen",    "human cortex"],
+  ["condition",           "Condition",                 "specimen",    "glioblastoma, recurrent"],
+  ["fixation",            "Fixation / handling",       "specimen",    "FFPE, 3-year-old block"],
+  ["handling_notes",      "Handling notes",            "specimen",    "known RNA degradation"],
+  ["expected_cell_types", "Cell types you expect",     "expectation", "astrocyte, T cell"],
+  ["known_artifacts",     "Suspected artifacts",       "expectation", "fold at the section edge"],
+  ["author",              "Your name",                 "",            "K. Zhang"]
+];
+const INFLUENCE_NOTE = {
+  intent: "steers which tools are proposed; carries no evidence",
+  specimen: "becomes an attributed caveat in the report",
+  expectation: "orders review only — never a label, never seen by the gate"
+};
+
+function renderContext(){
+  const c = (S.context && S.context.context) || {};
+  const rows = CONTEXT_FIELDS.map(([key, label, influence, hint]) => {
+    const value = Array.isArray(c[key]) ? c[key].join(", ") : (c[key] || "");
+    const pill = influence
+      ? '<span class="pill ' + (influence === "expectation" ? "mag" : influence === "specimen" ? "warn" : "acc") +
+        '" title="' + esc(INFLUENCE_NOTE[influence]) + '">' + influence + '</span>'
+      : '';
+    return '<div class="param" style="margin-bottom:9px">' +
+      '<label style="display:flex;gap:7px;align-items:center;text-transform:none;letter-spacing:0;font-size:11px">' +
+        esc(label) + pill + '</label>' +
+      '<input data-ctx="' + key + '" value="' + esc(value) + '" placeholder="' + esc(hint) + '"></div>';
+  }).join("");
+  return '<div class="card" style="margin-top:16px"><h5>Dataset context</h5>' +
+    '<p style="font-size:12.5px;color:var(--ink-2);margin-bottom:12px;max-width:74ch">' +
+      'What you know about this section that the files do not carry. Each field says what it is allowed to ' +
+      'affect. Nothing here is evidence: context can change what the agent looks at first and what caveats ' +
+      'it prints, and can never change what it believes or move the gate.</p>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0 14px">' + rows + '</div>' +
+    '<div style="display:flex;gap:7px;margin-top:10px">' +
+      '<button class="btn pri" id="saveContext">Save context</button>' +
+      '<button class="btn danger" id="clearContext">Clear</button></div>' +
+    ((S.context && (S.context.caveats || []).length)
+      ? '<div class="note" style="margin-top:12px">' +
+        (S.context.caveats || []).map(esc).join('<br>') + '</div>' : '') +
+    '</div>';
+}
+
 function renderResources(){
   const inv = S.resources;
   if (!inv) return '';

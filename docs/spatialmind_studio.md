@@ -231,6 +231,48 @@ prompt explains itself rather than appearing bare.
 The data root is set from the Datasets screen and remembered, because a `.app`
 has no useful working directory.
 
+## Dataset context
+
+A researcher knows things the files do not carry: that a block sat in a drawer
+for three years, that they care about immune infiltration, that they expect
+tumour cells in the upper third. Refusing that is wasteful. Accepting it
+carelessly is worse, because free text is the obvious way around a gate whose
+purpose is to refuse unverified assertions — write "this section contains
+abundant malignant cells" and, if it reaches any evidential path, the review
+requirement has been bypassed with prose.
+
+So context is **typed, not free-form**, and every field is classified by what it
+may influence:
+
+| Class | Fields | May affect | Never affects |
+| --- | --- | --- | --- |
+| `intent` | question, focus genes | which tools are proposed | anything evidential |
+| `specimen` | tissue, condition, fixation, handling notes | an attributed report caveat | the gate, labels, claims |
+| `expectation` | expected cell types, suspected artifacts | the order cells are reviewed in | anything at all, otherwise |
+
+**The rule: context can change what the agent looks at first and what caveats it
+prints. It can never change what the agent believes.** `gatekeeper`,
+`pilot_gate` and `score_claim_reliability` do not read it, and tests assert that
+directly — including one that writes the most tendentious context available
+("glioblastoma with abundant malignant cells throughout", four expected cell
+types, "fully characterised") and asserts the gate does not move a millimetre.
+
+Why typed rather than a free-text box: a blob cannot be scoped. There is no way
+to let "FFPE, degraded" affect a caveat while stopping "contains malignant
+cells" from affecting a claim if both arrive in the same string. Separating them
+at the input is the only point where the distinction is cheap.
+
+Specimen facts become caveats that always name their author and say they are
+unverified. A line reading "FFPE, degraded" beside the agent's own processing
+steps is indistinguishable from something the pipeline measured; the same line
+naming its submitter is not. Context with no author is recorded as coming from
+"an unnamed submitter", which is the honest description of anonymous hearsay.
+
+Stored as `dataset_context.json` beside the bundle, like the label tables.
+`GET`/`POST`/`DELETE /api/datasets/{id}/context`. The POST response returns the
+recomputed gate, so a caller can see for themselves that what they wrote did not
+move it.
+
 ## What labelling still needs
 
 The Readiness screen ends with a live inventory of the inputs expert labels
@@ -259,6 +301,7 @@ neither of which any reference can supply.
 | GET | `/api/datasets/{id}/cells` | Display sample for the map |
 | POST | `/api/datasets/{id}/assign` | Write labels or regions |
 | POST | `/api/datasets/{id}/clear` | Delete a label or region table |
+| GET/POST/DELETE | `/api/datasets/{id}/context` | Typed user context; never evidential |
 | GET | `/api/resources` | What expert labelling still needs, from what is on disk |
 | GET | `/api/tools` | Full registry with lanes and recipes |
 | POST | `/api/plan` | Order, validate and describe a plan |

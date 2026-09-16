@@ -20,7 +20,7 @@ from ..ingestion import (
 from ..pilot import run_pilot
 from ..storage import StorageLayer
 from ..tools import build_default_registry
-from .. import gatekeeper
+from .. import dataset_context, gatekeeper
 from . import config
 from . import gate as gate_module
 from . import planner, resources, review
@@ -293,6 +293,17 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
     class ConfigRequest(BaseModel):
         data_root: str
 
+    class ContextRequest(BaseModel):
+        question: str = ""
+        focus_genes: List[str] = Field(default_factory=list)
+        tissue: str = ""
+        condition: str = ""
+        fixation: str = ""
+        handling_notes: str = ""
+        expected_cell_types: List[str] = Field(default_factory=list)
+        known_artifacts: str = ""
+        author: str = ""
+
     class AskRequest(BaseModel):
         question: str
         dataset_id: str
@@ -451,6 +462,41 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
                 "gate": studio.gate(dataset_id),
             }
         )
+
+    @app.get("/api/datasets/{dataset_id}/context")
+    def get_context(dataset_id: str) -> Dict[str, Any]:
+        """What the submitter told us about this dataset, and what it may affect."""
+        entry = _entry_or_404(dataset_id)
+        context = dataset_context.load_context(entry.path)
+        return jsonable({
+            "context": context.to_dict(),
+            "influence": dataset_context.FIELD_INFLUENCE,
+            "is_empty": context.is_empty,
+            "caveats": context.caveats(),
+            "review_priorities": context.review_priorities(),
+        })
+
+    @app.post("/api/datasets/{dataset_id}/context")
+    def set_context(dataset_id: str, request: ContextRequest) -> Dict[str, Any]:
+        entry = _entry_or_404(dataset_id)
+        fields = request.model_dump() if hasattr(request, "model_dump") else request.dict()
+        context = dataset_context.DatasetContext(**fields)
+        path = dataset_context.save_context(entry.path, context)
+        # The gate is recomputed and returned so the caller can see for itself
+        # that nothing they wrote moved it.
+        gate = studio.gate(dataset_id) if entry.reviewable else None
+        return jsonable({
+            "context": context.to_dict(),
+            "saved_to": str(path),
+            "caveats": context.caveats(),
+            "review_priorities": context.review_priorities(),
+            "gate": gate,
+        })
+
+    @app.delete("/api/datasets/{dataset_id}/context")
+    def delete_context(dataset_id: str) -> Dict[str, Any]:
+        entry = _entry_or_404(dataset_id)
+        return {"cleared": dataset_context.clear_context(entry.path)}
 
     @app.get("/api/resources")
     def label_resources(dataset_id: str = Query("")) -> Dict[str, Any]:
