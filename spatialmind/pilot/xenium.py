@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from spatialmind.agent.runtime import DEFAULT_XENIUM_INPUTS, build_xenium_mvp_plan, validate_tool_plan
+from spatialmind.dataset_context import apply_to_dataset
 from spatialmind.gatekeeper import pilot_gate
 from spatialmind.ingestion import (
     apply_best_available_labels,
@@ -73,6 +74,10 @@ def run_pilot(
     dataset.metadata["analysis_dataset_path"] = dataset_path
     label_report = apply_best_available_labels(dataset, dataset_path, fallback=None)
     region_report = apply_best_available_regions(dataset, dataset_path)
+    # User context is attached as attributed notes and carried into the report's
+    # limitations. It is read here and nowhere that decides anything: the gate
+    # below never sees it.
+    user_context = apply_to_dataset(dataset, dataset_path)
     contract = validate_cell_by_feature_contract(dataset)
     readiness = build_readiness_report(dataset)
     asset_readiness = summarize_xenium_expert_readiness(dataset_path)
@@ -314,6 +319,8 @@ def run_pilot(
         "cell_type_counts": dict(Counter(record.cell_type for record in dataset.records)),
         "region_counts": dict(Counter(record.region or "unassigned" for record in dataset.records)),
         "label_report": label_report.to_dict(),
+        "user_context": user_context.to_dict(),
+        "user_context_caveats": user_context.caveats(),
         "region_report": region_report.to_dict(),
         "label_intake": intake_report.to_dict(),
         "asset_readiness": asset_readiness.to_dict(),
@@ -2387,6 +2394,12 @@ def _spatial_robustness_rows(payload: Dict[str, Any]) -> List[Tuple[str, str]]:
 
 
 def _limitations(payload: Dict[str, Any]) -> List[str]:
+    """Report limitations, ending with anything the submitter told us.
+
+    Submitter context is appended rather than merged, and every line names its
+    author and says it is unverified. A handling note sitting among the agent's
+    own measured limitations would read as something the pipeline established.
+    """
     feature_count = payload.get("features_loaded", 0)
     label_status = payload.get("label_report", {}).get("status", "unknown")
     region_status = payload.get("region_report", {}).get("status", "unknown")
@@ -2419,6 +2432,15 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
         items.append("Region-stratified tests are within-section analyses; biological generalization requires replicate sections or donors.")
     if payload.get("distance_cooccurrence", {}).get("status") == "computed":
         items.append("Distance-dependent co-occurrence curves are descriptive probability ratios and do not provide permutation significance tests.")
+    for line in payload.get("user_context_caveats") or []:
+        items.append(str(line))
+    expected = (payload.get("user_context") or {}).get("expected_cell_types") or []
+    if expected:
+        items.append(
+            "The submitter expected these cell types: %s. That expectation ordered the review queue and "
+            "nothing else; it is not evidence, no label follows from it, and no claim above depends on it."
+            % ", ".join(str(name) for name in expected)
+        )
     return items
 
 

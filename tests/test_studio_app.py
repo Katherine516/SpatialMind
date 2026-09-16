@@ -362,6 +362,37 @@ class StudioAppTests(unittest.TestCase):
         self.assertEqual(coverage["coverage"], 0.0, "an expectation created label coverage")
         self.assertFalse(coverage["values"], "an expectation became a label value")
 
+    def test_expected_types_are_offered_for_review_without_being_assigned(self):
+        """An expectation reaches the reviewer as an ordering, not as a label.
+
+        The chip that appears first assigns exactly what any other chip assigns,
+        and only when a human clicks it. Until then coverage stays at zero.
+        """
+        self.client.post("/api/datasets/%s/context" % self.dataset_id, json={
+            "expected_cell_types": ["Microglial cell", "T cell"], "author": "submitter"})
+        context = self.client.get("/api/datasets/%s/context" % self.dataset_id).json()
+        self.assertEqual(context["review_priorities"], ["Microglial cell", "T cell"])
+
+        detail = self.client.get("/api/datasets/%s" % self.dataset_id).json()
+        self.assertEqual(detail["label_coverage"]["coverage"], 0.0,
+                         "offering a type for review assigned it")
+        self.assertEqual(detail["gate"]["cell_classes"], [])
+
+    def test_report_limitations_carry_context_attributed(self):
+        from spatialmind.dataset_context import DatasetContext
+        from spatialmind.pilot.xenium import _limitations
+
+        context = DatasetContext(fixation="FFPE, 3-year-old block",
+                                 expected_cell_types=["astrocyte"], author="K. Zhang")
+        payload = {"features_loaded": 300,
+                   "label_report": {"status": "missing"}, "region_report": {"status": "missing"},
+                   "user_context": context.to_dict(), "user_context_caveats": context.caveats()}
+        lines = _limitations(payload)
+        self.assertTrue(any("K. Zhang" in line and "not independently verified" in line for line in lines),
+                        "a specimen fact reached the report without attribution")
+        self.assertTrue(any("not evidence" in line and "astrocyte" in line for line in lines),
+                        "an expectation reached the report without being marked as one")
+
     def test_a_gated_tool_is_still_refused_with_context_present(self):
         self.client.post("/api/datasets/%s/context" % self.dataset_id, json={
             "condition": "fully annotated by the submitter",

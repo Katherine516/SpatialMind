@@ -268,6 +268,21 @@ steps is indistinguishable from something the pipeline measured; the same line
 naming its submitter is not. Context with no author is recorded as coming from
 "an unnamed submitter", which is the honest description of anonymous hearsay.
 
+### Where it surfaces
+
+**Report limitations.** Specimen facts are appended to `_limitations`, which
+feeds the markdown, HTML and PDF reports alike, each line naming its author and
+saying it is unverified. Expectations appear too, and say explicitly that they
+ordered the review queue and nothing else — that no claim above depends on them.
+Appended rather than merged: a handling note sitting among the agent's own
+measured limitations would read as something the pipeline established.
+
+**Review Studio ordering.** Expected cell types are listed first in the label
+chips, outlined and tagged `expected`. That is the whole of the effect. The chip
+assigns exactly what any other chip assigns, and only when a human clicks it —
+a test asserts that offering a type for review leaves label coverage at zero and
+the reviewed-class list empty.
+
 Stored as `dataset_context.json` beside the bundle, like the label tables.
 `GET`/`POST`/`DELETE /api/datasets/{id}/context`. The POST response returns the
 recomputed gate, so a caller can see for themselves that what they wrote did not

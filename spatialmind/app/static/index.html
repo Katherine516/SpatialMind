@@ -837,12 +837,29 @@ function renderReview(){
   $("#assignValue").placeholder = S.mode === "label" ? "Astrocyte" : "tumor_core";
 
   const chips = $("#assignChips"); chips.innerHTML = "";
-  const options = S.mode === "label" ? ONTOLOGY : REGION_SUGGESTIONS.map((r) => [r, ""]);
+  // Cell types the submitter said to expect come first, and are marked as an
+  // expectation. Ordering is the only thing that expectation is allowed to do:
+  // the chip assigns exactly what any other chip assigns, and the reviewer still
+  // has to click it.
+  const expected = (S.mode === "label" && S.context) ? (S.context.review_priorities || []) : [];
+  const base = S.mode === "label" ? ONTOLOGY : REGION_SUGGESTIONS.map((r) => [r, ""]);
+  const known = new Set(base.map(([name]) => name.toLowerCase()));
+  const extras = expected.filter((name) => !known.has(String(name).toLowerCase())).map((name) => [name, ""]);
+  const rank = new Map(expected.map((name, i) => [String(name).toLowerCase(), i]));
+  const options = base.concat(extras).sort((a, b) => {
+    const ra = rank.has(a[0].toLowerCase()) ? rank.get(a[0].toLowerCase()) : 999;
+    const rb = rank.has(b[0].toLowerCase()) ? rank.get(b[0].toLowerCase()) : 999;
+    return ra - rb;
+  });
   options.forEach(([name, id]) => {
+    const isExpected = rank.has(String(name).toLowerCase());
     const b = document.createElement("button");
     b.className = "chip";
+    if (isExpected) b.style.borderColor = "var(--magenta)";
+    b.title = isExpected ? "The submitter expected this type. An expectation orders this list and nothing else." : "";
     b.innerHTML = (S.mode === "label" ? '<span class="sw" style="background:' + hueColor(name) + '"></span>' : "") +
-      esc(name) + (id ? ' <span class="mono" style="font-size:9.5px;color:var(--ink-3)">' + id + '</span>' : "");
+      esc(name) + (id ? ' <span class="mono" style="font-size:9.5px;color:var(--ink-3)">' + id + '</span>' : "") +
+      (isExpected ? ' <span class="mono" style="font-size:9px;color:var(--magenta)">expected</span>' : "");
     b.addEventListener("click", () => { $("#assignValue").value = name; applyAssignment(); });
     chips.appendChild(b);
   });
