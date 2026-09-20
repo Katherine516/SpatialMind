@@ -285,6 +285,17 @@ def format_plan(summary: Dict[str, Any]) -> str:
     lines.append("")
     lines.append("LABELS   %s cells in %d clusters"
                  % (format(labels["total_cells"], ","), labels["available_groups"]))
+    if labels.get("no_cluster_solution"):
+        # The UI says this and the CLI printed "1 decision -> 0 pairs", which is
+        # arithmetic about a bucket rather than a plan. Same answer in both.
+        lines.append("         Nothing to review cluster by cluster: this bundle ships no cluster")
+        lines.append("         solution. Run the descriptive lane and the sizing appears.")
+        lines.append("")
+        if summary["blockers"]:
+            lines.append("STILL BLOCKED")
+            for blocker in summary["blockers"]:
+                lines.append("  x %s" % blocker)
+        return "\n".join(lines)
     lines.append("         %d decision(s) reach %.1f%% coverage (gate needs %.0f%%)"
                  % (labels["decisions"], 100 * labels["achieved_coverage"],
                     100 * labels["required_coverage"]))

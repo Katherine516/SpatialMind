@@ -6275,3 +6275,32 @@ class ClassPairArithmeticTests(unittest.TestCase):
             self.sizing.size_region_review({"r1": 600, "r2": 400})))
         self.assertIn("6 cell-type pair(s) to test", rich)
         self.assertNotIn("One pair is the whole", rich)
+
+
+class NoClusterSolutionPlanTests(unittest.TestCase):
+    """The CLI and the UI must refuse in the same words.
+
+    A bundle with no clustering is one all-cells bucket. The UI said "nothing to
+    review cluster by cluster yet"; the CLI printed "1 decision -> 0 pairs",
+    which is arithmetic about a bucket rather than a plan.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+
+    def test_the_plan_refuses_instead_of_counting_a_single_bucket(self):
+        text = self.sizing.format_plan(self.sizing.summarise(
+            "geo", self.sizing.size_label_review({"all": 148150}), None))
+        self.assertIn("Nothing to review cluster by cluster", text)
+        self.assertNotIn("decision(s) reach", text)
+        self.assertNotIn("cell-type pair(s) to test", text)
+        self.assertIn("STILL BLOCKED", text)
+
+    def test_a_real_clustering_still_gets_the_full_plan(self):
+        text = self.sizing.format_plan(self.sizing.summarise(
+            "brain", self.sizing.size_label_review({"0": 700, "1": 300}),
+            self.sizing.size_region_review({"r1": 600, "r2": 400})))
+        self.assertNotIn("Nothing to review cluster by cluster", text)
+        self.assertIn("decision(s) reach", text)

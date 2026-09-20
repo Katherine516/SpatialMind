@@ -246,11 +246,11 @@ regions. `scripts/size_expert_review.py --all` sizes every section the same way.
 All four blocked sections, sized the same way:
 
 ```text
-                    cells    clusters  labels  regions  total  markers separate?
-healthy brain      24,406       9         4       6      10    yes
-glioblastoma       40,786      11         5       6      11    two pairs do not
-lymph node        372,099       8         2       9      11    yes, but 1 pair
-breast S1         209,467       9         5      11      16    one pair does not
+                  cells run   clusters  labels  regions  total  markers separate?
+healthy brain      24,362        9         4       6      10    yes
+glioblastoma       40,786       11         5       6      11    two pairs do not
+lymph node        372,099        8         2       9      11    yes, but 1 pair
+breast S1         201,426        9         5      11      16    one pair does not
 ```
 
 The totals are close and the jobs are not. The lymph node has the cheapest label
