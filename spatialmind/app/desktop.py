@@ -275,6 +275,10 @@ def run_headless(app, port: int, url: str) -> int:
     import uvicorn
 
     logging.info("headless mode; no window will open")
+    # Headless is a real way to run this on a workstation, not only the smoke
+    # test's way in, so the kernels are worth compiling here too. The smoke test
+    # sets SPATIALMIND_NO_WARMUP, which is what that switch is for.
+    warmup.start_background_warmup()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info", log_config=None)
     return 0
 
@@ -284,6 +288,7 @@ def run_browser(app, port: int, url: str) -> int:
     import uvicorn
 
     threading.Thread(target=lambda: wait_until_ready(url) and webbrowser.open(url), daemon=True).start()
+    warmup.start_background_warmup()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info", log_config=None)
     return 0
 

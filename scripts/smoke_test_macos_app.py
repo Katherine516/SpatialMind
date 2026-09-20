@@ -212,6 +212,10 @@ def main() -> int:
         "SPATIALMIND_OUTPUT_ROOT": str(workspace / "outputs"),
         "SPATIALMIND_PORT": str(PORT),
         "SPATIALMIND_NO_BROWSER": "1",
+        # The kernel warmup compiles for ~30s in the background. It is the right
+        # thing for a person's session and pure noise for a timed check that
+        # never runs a real analysis.
+        "SPATIALMIND_NO_WARMUP": "1",
     })
 
     print("Launching %s" % BINARY)
