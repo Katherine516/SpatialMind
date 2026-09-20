@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import gzip
 import json
@@ -420,10 +421,18 @@ class DataIngestionLayer:
             [
                 os.path.join(path, "cells.csv.gz"),
                 os.path.join(path, "cells.csv"),
+                # Parquet is how a Xenium bundle arrives from GEO, and how 10x
+                # itself now ships the cell table. The asset check already
+                # counted it as present, so a parquet-only bundle passed
+                # readiness and then failed to load -- the two disagreed.
+                os.path.join(path, "cells.parquet"),
+                os.path.join(path, "cells.parquet.gz"),
             ]
         )
         if not cells_path:
-            raise IngestionValidationError("Xenium directory is missing cells.csv.gz/cells.csv: %s" % path)
+            raise IngestionValidationError(
+                "Xenium directory is missing a cell table (cells.csv.gz, cells.csv or "
+                "cells.parquet): %s" % path)
         metadata = _read_xenium_metadata(path)
         metadata["xenium_input_path"] = input_path
         metadata["xenium_resolved_directory"] = path
@@ -437,8 +446,7 @@ class DataIngestionLayer:
         record_limit = max_records if max_records > 0 else None
         if estimated_total and record_limit is not None and estimated_total > record_limit:
             target_indices = set(_sample_indices(estimated_total, max_records))
-        with _open_text(cells_path) as handle:
-            reader = csv.DictReader(handle)
+        with _open_cell_rows(cells_path) as reader:
             for row_index, row in enumerate(reader):
                 total_rows += 1
                 if target_indices is not None and row_index not in target_indices:
@@ -1379,6 +1387,51 @@ def _decode_h5_value(value: Any) -> str:
 
 def _normalize_cell_identifier(value: str) -> str:
     return str(value).strip().strip('"').strip("'")
+
+
+
+@contextlib.contextmanager
+def _open_cell_rows(path: str):
+    """Yield the cell table as row dicts, whatever container it arrived in.
+
+    CSV stays streamed, because a full section is 160k+ rows and there is no
+    reason to hold it. Parquet is read whole -- it is columnar, so there is no
+    streaming row reader worth the complexity at this size, and the file is a
+    few megabytes.
+    """
+    lowered = str(path).lower()
+    if lowered.endswith((".csv", ".csv.gz")):
+        handle = _open_text(path)
+        try:
+            yield csv.DictReader(handle)
+        finally:
+            handle.close()
+        return
+
+    try:
+        import pandas as pd
+    except ImportError as exc:  # pragma: no cover - pandas is a hard dependency
+        raise IngestionValidationError(
+            "Reading %s needs pandas (%s)." % (os.path.basename(path), exc))
+
+    if lowered.endswith(".gz"):
+        # Parquet is already compressed; a .parquet.gz has to be unwrapped
+        # before pyarrow will look at it.
+        import gzip
+        import io
+
+        with gzip.open(path, "rb") as handle:
+            buffer = io.BytesIO(handle.read())
+        frame = pd.read_parquet(buffer)
+    else:
+        frame = pd.read_parquet(path)
+
+    # `to_dict("records")` on 160k rows builds 160k dicts at once; iterating the
+    # columns keeps one row alive at a time and matches the CSV path's shape.
+    columns = list(frame.columns)
+    values = [frame[name].tolist() for name in columns]
+    yield ({column: row[index] for index, column in enumerate(columns)}
+           for row in zip(*values))
 
 
 def _read_xenium_metadata(path: str) -> Dict[str, Any]:

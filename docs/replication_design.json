@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "What this workspace's spatial sections amount to as a study design, and",
+    "what each one's labels are. Read by scripts/assess_replication.py.",
+    "`labels` is one of: expert, transferred, none. It is reported rather than",
+    "tested -- the gate decides per section -- because a design can satisfy",
+    "replication and still support nothing in the validated lane."
+  ],
+  "conditions": {
+    "breast_carcinoma": [
+      {"section_id": "Janesick_Rep1", "donor_id": "Janesick_donor_1",
+       "cell_count": 167780, "labels": "expert",
+       "source": "10x Xenium FFPE Human Breast Cancer Rep1 + Janesick et al. 2023"},
+      {"section_id": "GSE311609_B1_1", "donor_id": "GSE311609_B1",
+       "cell_count": 124709, "labels": "none", "source": "GEO GSE311609"},
+      {"section_id": "GSE311609_B2", "donor_id": "GSE311609_B2",
+       "cell_count": 148150, "labels": "none", "source": "GEO GSE311609"}
+    ],
+    "healthy_brain": [
+      {"section_id": "Xenium_V1_FFPE_Human_Brain_Healthy", "donor_id": "unknown",
+       "cell_count": 24406, "labels": "none", "source": "10x public demo"}
+    ],
+    "glioblastoma": [
+      {"section_id": "Xenium_V1_FFPE_Human_Brain_Glioblastoma", "donor_id": "unknown",
+       "cell_count": 0, "labels": "none", "source": "10x public demo"}
+    ]
+  }
+}

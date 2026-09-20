@@ -5556,3 +5556,188 @@ class RegionReviewPacketTests(unittest.TestCase):
             {"region_report": {"reviewers": {"composition-derived, not a pathologist call": 10}}}))
         self.assertFalse(_composition_derived_regions(
             {"region_report": {"reviewers": {"Dr Chen, DAPI morphology review": 10}}}))
+
+
+class ParquetCellTableTests(unittest.TestCase):
+    """A Xenium bundle from GEO ships `cells.parquet`, not `cells.csv.gz`.
+
+    The asset check already counted parquet as a present cell table, so such a
+    bundle passed readiness and then failed to load: the two disagreed, and the
+    disagreement blocked every GEO-deposited Xenium series -- which is how
+    multi-donor Xenium data is actually published.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _frame(self, n=60):
+        import pandas as pd
+
+        return pd.DataFrame({
+            "cell_id": ["c%d" % i for i in range(n)],
+            "x_centroid": [float(i % 10) * 20.0 for i in range(n)],
+            "y_centroid": [float(i // 10) * 20.0 for i in range(n)],
+            "transcript_counts": [40 + (i % 7) for i in range(n)],
+            "control_probe_counts": [0] * n,
+        })
+
+    def test_a_plain_parquet_cell_table_is_read(self):
+        from spatialmind.ingestion.pipeline import _open_cell_rows
+
+        path = self.root / "cells.parquet"
+        self._frame().to_parquet(path)
+        with _open_cell_rows(str(path)) as reader:
+            rows = list(reader)
+        self.assertEqual(len(rows), 60)
+        self.assertEqual(rows[0]["cell_id"], "c0")
+        self.assertEqual(float(rows[11]["y_centroid"]), 20.0)
+
+    def test_a_gzipped_parquet_cell_table_is_read(self):
+        """Parquet is already compressed, so `.parquet.gz` has to be unwrapped
+        before pyarrow will look at it. GEO ships it that way regardless."""
+        import gzip
+        import io
+
+        from spatialmind.ingestion.pipeline import _open_cell_rows
+
+        buffer = io.BytesIO()
+        self._frame().to_parquet(buffer)
+        path = self.root / "cells.parquet.gz"
+        with gzip.open(path, "wb") as handle:
+            handle.write(buffer.getvalue())
+        with _open_cell_rows(str(path)) as reader:
+            rows = list(reader)
+        self.assertEqual(len(rows), 60)
+        self.assertEqual(rows[-1]["cell_id"], "c59")
+
+    def test_csv_is_still_streamed_and_agrees_with_parquet(self):
+        import gzip
+
+        from spatialmind.ingestion.pipeline import _open_cell_rows
+
+        frame = self._frame()
+        csv_path = self.root / "cells.csv.gz"
+        with gzip.open(csv_path, "wt", newline="") as handle:
+            frame.to_csv(handle, index=False)
+        parquet_path = self.root / "cells.parquet"
+        frame.to_parquet(parquet_path)
+
+        with _open_cell_rows(str(csv_path)) as reader:
+            from_csv = [(r["cell_id"], float(r["x_centroid"])) for r in reader]
+        with _open_cell_rows(str(parquet_path)) as reader:
+            from_parquet = [(r["cell_id"], float(r["x_centroid"])) for r in reader]
+        self.assertEqual(from_csv, from_parquet)
+
+    def test_a_parquet_only_bundle_loads_end_to_end(self):
+        """No experiment.xenium either, which is how GEO deposits them."""
+        import h5py
+        import numpy as np
+        from scipy import sparse
+
+        from spatialmind.ingestion import load_xenium
+
+        bundle = self.root / "bundle"
+        bundle.mkdir()
+        frame = self._frame()
+        frame.to_parquet(bundle / "cells.parquet")
+
+        genes = ["GFAP", "AQP4", "MBP"]
+        counts = sparse.csc_matrix(np.arange(len(genes) * len(frame)).reshape(len(genes), len(frame)) % 9)
+        with h5py.File(bundle / "cell_feature_matrix.h5", "w") as handle:
+            group = handle.create_group("matrix")
+            group.create_dataset("data", data=counts.data.astype("int32"))
+            group.create_dataset("indices", data=counts.indices.astype("int64"))
+            group.create_dataset("indptr", data=counts.indptr.astype("int64"))
+            group.create_dataset("shape", data=np.array([len(genes), len(frame)], dtype="int32"))
+            group.create_dataset("barcodes", data=np.array(frame["cell_id"], dtype="S"))
+            features = group.create_group("features")
+            features.create_dataset("name", data=np.array(genes, dtype="S"))
+            features.create_dataset("id", data=np.array(genes, dtype="S"))
+            features.create_dataset("feature_type",
+                                    data=np.array(["Gene Expression"] * len(genes), dtype="S"))
+
+        dataset = load_xenium(str(bundle), max_records=0)
+        self.assertTrue(dataset.records)
+        self.assertTrue(any("GFAP" in record.genes for record in dataset.records))
+
+    def test_a_bundle_with_no_cell_table_at_all_says_which_names_it_looked_for(self):
+        from spatialmind.ingestion import IngestionValidationError, load_xenium
+
+        bundle = self.root / "empty"
+        bundle.mkdir()
+        (bundle / "experiment.xenium").write_text("{}", encoding="utf-8")
+        with self.assertRaises(IngestionValidationError) as caught:
+            load_xenium(str(bundle))
+        self.assertIn("cells.parquet", str(caught.exception))
+
+
+class GeoFetchTests(unittest.TestCase):
+    """Addressing a GEO series, without hitting the network in a test."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import fetch_geo_xenium
+
+        self.fetch = fetch_geo_xenium
+
+    def test_accessions_map_to_their_nested_ftp_folders(self):
+        self.assertEqual(self.fetch.series_prefix("GSE311609"), "GSE311nnn")
+        self.assertEqual(self.fetch.sample_prefix("GSM9509172"), "GSM9509nnn")
+
+    def test_samples_are_grouped_from_their_file_names(self):
+        rows = [
+            {"name": "GSM9509172_breast_breast_B1_B1_1_cells.parquet.gz", "bytes": 2399466},
+            {"name": "GSM9509172_breast_breast_B1_B1_1_cell_feature_matrix.h5", "bytes": 8035436},
+            {"name": "GSM9509172_breast_breast_B1_B1_1_morphology.ome.tif.gz", "bytes": 2824830300},
+            {"name": "GSM9509160_breast_breast_B2_B2_cells.parquet.gz", "bytes": 2692847},
+            {"name": "filelist.txt", "bytes": 28000},
+        ]
+        samples = self.fetch.group_samples(rows)
+        self.assertEqual(set(samples), {"breast_breast_B1_B1_1", "breast_breast_B2_B2"})
+        first = samples["breast_breast_B1_B1_1"]
+        self.assertEqual(first["gsm"], "GSM9509172")
+        self.assertIn("cells.parquet.gz", first["files"])
+        # The 2.8 GB morphology stack is catalogued but is not an analysis file,
+        # so it is only fetched on request.
+        self.assertIn("morphology.ome.tif.gz", first["files"])
+        self.assertNotIn("morphology.ome.tif.gz", self.fetch.ANALYSIS_FILES)
+
+
+class ReplicationDesignTests(unittest.TestCase):
+    """What the workspace's sections amount to as a study design."""
+
+    def test_the_recorded_design_parses_and_names_its_label_state(self):
+        root = Path(__file__).resolve().parents[1]
+        with open(root / "docs" / "replication_design.json", encoding="utf-8") as handle:
+            design = json.load(handle)
+        conditions = design["conditions"]
+        self.assertIn("breast_carcinoma", conditions)
+        for sections in conditions.values():
+            for section in sections:
+                self.assertIn("donor_id", section)
+                self.assertIn(section.get("labels"), {"expert", "transferred", "none"})
+
+    def test_more_donors_clear_replication_without_clearing_the_label_gate(self):
+        """The two are separate, and satisfying one says nothing about the
+        other. A design that passes replication and has no reviewed labels still
+        produces descriptive results only."""
+        from spatialmind.methods.replication import assess_condition_replication
+
+        one_donor = {"breast": [{"section_id": "s1", "donor_id": "d1", "cell_count": 1000}]}
+        blockers = assess_condition_replication(one_donor)["blockers"]
+        self.assertTrue(any("donor" in b for b in blockers))
+
+        three_donors = {"breast": [
+            {"section_id": "s1", "donor_id": "d1", "cell_count": 1000},
+            {"section_id": "s2", "donor_id": "d2", "cell_count": 1000},
+            {"section_id": "s3", "donor_id": "d3", "cell_count": 1000},
+        ]}
+        result = assess_condition_replication(three_donors)
+        self.assertEqual(result["conditions"]["breast"]["donor_count"], 3)
+        self.assertFalse(any("donor" in b for b in result["blockers"]))
+        # Still blocked, and for the right reason: one condition cannot be
+        # compared with anything.
+        self.assertTrue(any("two conditions" in b for b in result["blockers"]))
