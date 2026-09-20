@@ -126,7 +126,7 @@ def _gate_blocked(state):
     return "%d blockers" % len(gate["blocking_reasons"])
 
 
-@check("scanpy and squidpy load inside the bundle")
+@check("the scientific stack is catalogued")
 def _scientific_stack(state):
     body = get("/api/tools?dataset_id=%s" % state["dataset_id"])
     names = {tool["name"] for tool in body["tools"]}
@@ -140,6 +140,38 @@ def _scientific_stack(state):
     bad = [tool["name"] for tool in scaffolds if tool["plannable"]]
     assert not bad, "scaffolds marked plannable: %s" % ", ".join(bad)
     return "%d tools, %d scaffolds correctly disabled" % (len(names), len(scaffolds))
+
+
+@check("a squidpy-backed analysis actually runs in the bundle")
+def _squidpy_runs(state):
+    """The catalog check above is a listing, not an import.
+
+    `squidpy` reaches `spatialdata`, which reached `dask`, `datashader` and
+    `plotly` -- four packages the spec excluded as "not on the Studio's import
+    path". The bundle built, launched, passed every check here, and then failed
+    the first time anyone asked for spatial statistics, with a message that read
+    like a missing optional dependency rather than a broken build. Nothing short
+    of running the tool catches that, so this runs it.
+    """
+    job = post("/api/runs", {
+        "dataset_id": state["dataset_id"], "kind": "plan",
+        "label": "smoke: spatial statistics",
+        "tools": ["qc_and_cluster", "spatial_variable_genes"],
+        "overrides": {"spatial_variable_genes": {"n_perms": 20, "n_top": 5}},
+    })
+    job_id = job["job_id"]
+    deadline = time.time() + 420
+    state_name, error = job["state"], ""
+    while time.time() < deadline:
+        current = get("/api/runs/%s" % job_id, timeout=15.0)
+        state_name, error = current["state"], current.get("error") or ""
+        if state_name in {"succeeded", "failed"}:
+            break
+        time.sleep(2.0)
+    assert state_name == "succeeded", "%s: %s" % (state_name, error[:400])
+    tools = [entry["tool"] for entry in (get("/api/runs/%s" % job_id)["result"] or {}).get("results", [])]
+    assert "spatial_variable_genes" in tools, tools
+    return "qc_and_cluster + spatial_variable_genes on %d cells" % N_CELLS
 
 
 @check("planning inserts dependencies and validates")

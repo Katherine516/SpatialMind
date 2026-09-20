@@ -29,6 +29,9 @@ BUNDLE_PACKAGES = [
     # reachable by static analysis, so a bundle without them builds cleanly and
     # then fails on the first Word export.
     "docx", "lxml", "openpyxl", "et_xmlfile", "multipart",
+    # squidpy's import chain, above. Collected rather than merely un-excluded:
+    # each carries package data and entry points that static analysis misses.
+    "spatialdata", "dask", "datashader", "plotly", "xarray", "zarr",
 ]
 
 datas, binaries, hiddenimports = [], [], []
@@ -62,11 +65,19 @@ hiddenimports += [
 # The web UI ships inside the bundle.
 datas += [(os.path.join(ROOT, "spatialmind", "app", "static"), os.path.join("spatialmind", "app", "static"))]
 
+# `squidpy` imports `spatialdata` at module scope -- `squidpy/gr/_build.py` does
+# `from spatialdata import SpatialData` -- and spatialdata in turn reaches dask,
+# datashader and plotly. Excluding those four as "not on the Studio's import
+# path" was wrong: they are on squidpy's, and squidpy is on ours. The bundle
+# built and launched cleanly and then failed the moment anyone asked for
+# spatial_variable_genes or cell_neighborhood_enrichment, with
+# "Squidpy is required for strict spatial autocorrelation" -- a message that
+# reads like a missing optional dependency rather than a broken build.
 EXCLUDES = [
     "napari", "vitessce", "chromadb", "celery", "redis", "kombu", "flower",
     "torch", "torchvision", "tensorflow", "jax",
-    "cv2", "bokeh", "plotly", "altair", "datashader", "dask", "distributed",
-    "s3fs", "fsspec.implementations.http", "spatialdata", "spatialdata_io",
+    "cv2", "bokeh", "altair", "distributed",
+    "s3fs", "fsspec.implementations.http",
     "napari_plugin_engine", "PyQt5", "PyQt6", "PySide2", "PySide6", "tkinter",
     "IPython", "jupyter", "notebook", "jupyterlab", "ipykernel", "ipywidgets",
     "pytest", "PyInstaller", "openai", "anthropic",
