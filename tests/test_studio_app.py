@@ -16,6 +16,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -489,6 +490,118 @@ class StudioAppTests(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("SpatialMind Studio", response.text)
+
+    def test_the_page_offers_every_tab_the_workflow_needs(self):
+        """The home tabs and the Create button are the whole entry point; a
+        rename in the markup that the JS does not follow is invisible until a
+        user clicks."""
+        page = self.client.get("/").text
+        for marker in ('data-p="datasets"', 'data-p="tools"', 'data-p="visualization"',
+                       'data-p="runs"', 'data-p="reports"', 'id="createBtn"', 'id="wizard"'):
+            self.assertIn(marker, page, marker)
+
+    # -------------------------------------------------------------- workflow
+
+    def test_facts_describe_the_dataset_the_wizard_reasons_over(self):
+        body = self.client.get("/api/workflow/facts",
+                               params={"dataset_id": self.dataset_id}).json()
+        self.assertEqual(body["n_cells"], N_CELLS)
+        self.assertIn("gate_open", body)
+        self.assertIn("panel_size", body)
+
+    def test_suggested_questions_match_the_gate_state(self):
+        """A blocked section offered a cell-type question would teach the user
+        that the gate is arbitrary."""
+        body = self.client.get("/api/workflow/questions",
+                               params={"dataset_id": self.dataset_id}).json()
+        self.assertTrue(body["questions"])
+        if not body["gate_open"]:
+            for question in body["questions"]:
+                self.assertEqual(question["lane"], "descriptive", question["question"])
+
+    def test_every_suggested_question_survives_the_round_trip(self):
+        """The wizard sends a suggestion back to /analyze with its own tools. If
+        that contract breaks, the app refuses a question it just offered."""
+        questions = self.client.get("/api/workflow/questions",
+                                    params={"dataset_id": self.dataset_id}).json()["questions"]
+        for question in questions:
+            body = self.client.post("/api/workflow/analyze", json={
+                "dataset_id": self.dataset_id,
+                "text": question["question"],
+                "tools": question["tools"],
+            }).json()
+            self.assertEqual(body["status"], "understood", question["question"])
+            self.assertTrue(body["tools"], question["question"])
+
+    def test_the_workflow_plan_marks_gated_steps_rather_than_hiding_them(self):
+        body = self.client.post("/api/workflow/plan", json={
+            "dataset_id": self.dataset_id,
+            "tools": ["qc_and_cluster", "region_summary"],
+            "answers": {"group_key": "leiden"},
+        }).json()
+        lanes = {step["tool"]: step["lane"] for step in body["steps"]}
+        self.assertEqual(lanes["qc_and_cluster"], "descriptive")
+        self.assertEqual(lanes["region_summary"], "blocked")
+        self.assertTrue(body["blocking_reasons"])
+
+    # --------------------------------------------------------------- intake
+
+    def test_an_upload_lands_in_the_data_root_and_is_described(self):
+        response = self.client.post("/api/uploads", files=[
+            ("files", ("notes.csv", b"cell_id,x,y\nc1,1,2\n", "text/csv")),
+        ], data={"name": "uploaded_table", "paths": "notes.csv"})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        try:
+            self.assertEqual(body["status"], "stored")
+            self.assertTrue(os.path.exists(body["path"]))
+            # Resolved on both sides: on macOS the Studio resolves its data root
+            # through the /var -> /private/var symlink and the temp path does not.
+            self.assertTrue(str(Path(body["path"]).resolve())
+                            .startswith(str(Path(self.data_root).resolve())))
+            self.assertEqual(body["intake"]["data_type"], "tidy_csv")
+        finally:
+            # The data root is shared by every test in this class, and an upload
+            # left behind changes the dataset count the discovery tests assert.
+            shutil.rmtree(body.get("directory") or body["path"], ignore_errors=True)
+            self.client.get("/api/datasets", params={"refresh": True})
+
+    def test_an_empty_upload_is_refused(self):
+        response = self.client.post("/api/uploads", files=[
+            ("files", (".DS_Store", b"junk", "application/octet-stream")),
+        ], data={"name": "junk", "paths": ".DS_Store"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_linking_a_missing_folder_is_refused(self):
+        response = self.client.post("/api/uploads/link", json={"path": "/no/such/folder"})
+        self.assertEqual(response.status_code, 400)
+
+    # -------------------------------------------------------------- reports
+
+    def test_reports_list_reports_its_root_and_a_well_formed_list(self):
+        # Not asserted empty: other tests in this class submit runs, and a test
+        # that depends on running first is a test that fails on reordering.
+        body = self.client.get("/api/reports").json()
+        self.assertTrue(body["output_root"])
+        self.assertIsInstance(body["reports"], list)
+        for row in body["reports"]:
+            self.assertIn("report_id", row)
+            self.assertIn("title", row)
+            self.assertIn("pinned", row)
+
+    def test_unknown_report_actions_are_404_rather_than_500(self):
+        self.assertEqual(self.client.get("/api/reports/nope").status_code, 404)
+        self.assertEqual(self.client.post("/api/reports/nope/pin", json={"pinned": True}).status_code, 404)
+        self.assertEqual(self.client.delete("/api/reports/nope").status_code, 404)
+        self.assertEqual(self.client.get("/api/reports/nope/export",
+                                         params={"format": "docx"}).status_code, 404)
+
+    def test_visualizations_endpoint_answers_with_a_well_formed_list(self):
+        figures = self.client.get("/api/visualizations").json()["figures"]
+        self.assertIsInstance(figures, list)
+        for figure in figures:
+            self.assertTrue(figure["url"].startswith("/artifacts/"))
+            self.assertIn(figure["kind"], ("image", "interactive"))
 
 
 if __name__ == "__main__":

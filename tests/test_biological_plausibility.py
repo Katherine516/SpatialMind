@@ -17,9 +17,20 @@ import os
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
-HEALTHY_BRAIN = os.path.join(
+
+# A committed 4,000-cell subsample, so this file runs somewhere other than the
+# one laptop holding the full sections. Built by `scripts/build_test_fixture.py`;
+# it keeps the whole 319-gene panel and the 40 most-detected control probes,
+# because the contamination check below asserts controls are present in the raw
+# panel or it proves nothing.
+#
+# The full section is preferred when it is there -- it is the real thing, and the
+# regression that motivated this file only ranked highly at scale.
+FIXTURE_BRAIN = os.path.join(ROOT, "tests", "fixtures", "xenium_healthy_brain_mini")
+_FULL_HEALTHY_BRAIN = os.path.join(
     ROOT, "data", "Xenium Human Brain", "Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs"
 )
+HEALTHY_BRAIN = _FULL_HEALTHY_BRAIN if os.path.isdir(_FULL_HEALTHY_BRAIN) else FIXTURE_BRAIN
 LYMPH_NODE = os.path.join(
     ROOT, "data", "Xenium lymph", "Xenium_V1_hLymphNode_nondiseased_section_outs"
 )
@@ -100,7 +111,8 @@ class BiologicalPlausibilityTests(unittest.TestCase):
         )
 
         checked = 0
-        for path, label in ((HEALTHY_BRAIN, "healthy brain"), (LYMPH_NODE, "lymph node"), (BREAST, "breast")):
+        candidates = [(HEALTHY_BRAIN, "healthy brain"), (LYMPH_NODE, "lymph node"), (BREAST, "breast")]
+        for path, label in candidates:
             if not os.path.isdir(path):
                 continue
             checked += 1
