@@ -63,3 +63,23 @@ forbidden_modules =
     spatialmind.pilot
     spatialmind.storage
     spatialmind.viz
+
+# The six tiers from docs/agent_architecture.md, enforced instead of described.
+# The table was accurate when written and stayed accurate by convention -- the
+# graph had zero violations when last checked -- but nothing would have said so
+# if it stopped being true. Everything above was five `forbidden` contracts
+# pinning individual edges; this pins the ordering itself.
+#
+# `algorithms`, `planner` and `agent_loop` are the v1 survivors. They are listed
+# in the tiers they actually occupy rather than left out, so retiring them is a
+# visible change to this file.
+[importlinter:contract:six_tiers]
+name = the six tiers are ordered, not merely described
+type = layers
+layers =
+    spatialmind.app : spatialmind.api : spatialmind.cli : spatialmind.batch : spatialmind.review : spatialmind.promotion
+    spatialmind.agent : spatialmind.agent_loop : spatialmind.pilot : spatialmind.workflows
+    spatialmind.viz : spatialmind.methods : spatialmind.datasets : spatialmind.governance
+    spatialmind.gatekeeper
+    spatialmind.ingestion : spatialmind.tools : spatialmind.storage : spatialmind.memory : spatialmind.llm : spatialmind.algorithms
+    spatialmind.contracts : spatialmind.schemas

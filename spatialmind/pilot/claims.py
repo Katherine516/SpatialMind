@@ -44,6 +44,13 @@ def build_pilot_claim_ledger(payload: Dict[str, Any], results: List[ToolResult])
             claim_text="User-provided tissue regions support per-region cell-type and feature summaries.",
             claim_type="visual_pattern",
             evidence_refs=["region_summary"],
+            # Declared explicitly, because the default for `visual_pattern` is
+            # `["figure"]` -- a token only `feature_overlay` emits, and which has
+            # nothing to do with a region summary. `evidence_refs` was never read
+            # by `ground_claim`, so this claim silently required a figure that the
+            # validated plan does not produce and was dropped in every validated
+            # run ever made, with regions applied and region_summary.json on disk.
+            required_evidence=["region_summary"],
             resolution="subcellular",
             confidence="medium",
         ),

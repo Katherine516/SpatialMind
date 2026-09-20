@@ -96,6 +96,28 @@ def control_feature_names(dataset: "SpatialDataset") -> set:
     return {str(gene).upper() for gene in dataset.genes if is_control_feature(gene)}
 
 
+def expression_feature_names(dataset: "SpatialDataset") -> list:
+    """Genes used for expression analysis: no control probes, no QC pseudo-features.
+
+    Lives here, beside the two exclusion sets it applies, because three layers
+    need the same answer and were giving three different ones. The pilot payload
+    reported 319 (correct); `CellByFeatureContract.n_features` reported 483 by
+    counting `dataset.genes` raw, and that 483 is what the reliability record
+    printed; the label-transfer preflight printed a third number from the same
+    raw list, which varies with `max_records` because `dataset.genes` holds only
+    the features *detected* in the sample -- so a "panel size" moved with how
+    many cells you loaded.
+    """
+    controls = control_feature_names(dataset)
+    biological = [
+        gene
+        for gene in dataset.genes
+        if gene.upper() not in NON_EXPRESSION_FEATURE_NAMES and gene.upper() not in controls
+    ]
+    # Only drop them when real genes remain, so tiny fixtures stay usable.
+    return biological if len(biological) >= 2 else list(dataset.genes)
+
+
 @dataclass
 class RawDataSource:
     path: str

@@ -49,6 +49,12 @@ class ClaimGroundingChecker:
                 evidence.append("annotation_method")
             if result.tool_name in {"feature_overlay"}:
                 evidence.append("figure")
+            if result.tool_name == "region_summary":
+                # The pilot's region claim requires "region_summary", and nothing
+                # ever emitted that token, so the claim was dropped in every
+                # validated run this agent has made -- with regions applied and
+                # region_summary.json on disk.
+                evidence.append("region_summary")
             if metrics.get("feature_type") == "gene_activity":
                 evidence.append("gene_activity")
         return sorted(set(evidence))

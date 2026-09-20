@@ -20,6 +20,7 @@ from spatialmind.schemas import (
     SpatialDataset,
     ToolResult,
     control_feature_names,
+    expression_feature_names as _expression_feature_names,
     is_control_feature,
 )
 
@@ -283,8 +284,25 @@ def run_neighborhood_robustness(
             },
         )
         pairs = result.metrics.get("all_pairs") or result.metrics.get("top_pairs") or []
-        per_setting.append({"n_neighs": n_neighs, "engine": result.metrics.get("engine"), "pairs": pairs})
-    summary = summarize_neighborhood_robustness(per_setting, top_k=top_k)
+        per_setting.append({
+            "n_neighs": n_neighs, "graph_family": "knn",
+            "engine": result.metrics.get("engine"), "pairs": pairs,
+        })
+
+    # A second graph *family*, not just a third density. Every setting above is
+    # kNN, so the sweep could only ever answer "does the answer survive changing
+    # k" -- and the spatial-statistics literature's actual warning is that
+    # contiguity, distance-band and kNN graphs disagree, with no consensus on
+    # which to use. A distance band at a stated micron radius tests that, and its
+    # disagreement is reported separately because it is a different kind of
+    # instability: kNN adapts to local density, a distance band does not, so a
+    # pair that survives both is robust to something kNN alone cannot probe.
+    band = _distance_band_setting(dataset, params, n_perms, seed)
+    if band is not None:
+        per_setting.append(band)
+
+    knn_only = [item for item in per_setting if item.get("graph_family") != "distance_band"]
+    summary = summarize_neighborhood_robustness(knn_only, top_k=top_k)
     summary.update(
         {
             "requested_settings": grid,
@@ -294,7 +312,82 @@ def run_neighborhood_robustness(
             "engines": sorted({str(item.get("engine")) for item in per_setting if item.get("engine")}),
         }
     )
+    if band is not None:
+        # Scored against the kNN consensus rather than folded into it, so the
+        # headline R stays comparable with every run made before this existed.
+        cross = summarize_neighborhood_robustness([knn_only[0], band], top_k=top_k) if knn_only else {}
+        summary["graph_family_check"] = {
+            "status": cross.get("status", "not_computed"),
+            "family": "distance_band",
+            "radius_um": band.get("radius"),
+            "isolated_cells": band.get("isolated_cells"),
+            "sign_agreement": cross.get("mean_sign_agreement"),
+            "topk_jaccard": cross.get("mean_topk_jaccard"),
+            "score": cross.get("score"),
+            "interpretation": (
+                "Agreement between the kNN reference graph and a distance-band graph at the same "
+                "permutation budget. Low agreement does not invalidate the result; it means the "
+                "finding depends on how neighbourhoods are defined, which the reader should know."
+            ),
+        }
+    elif params.get("robustness_radius_um") is not None:
+        summary["graph_family_check"] = {
+            "status": "not_computed",
+            "reason": "A distance-band graph could not be built for this section.",
+        }
     return summary
+
+
+def _distance_band_setting(
+    dataset: SpatialDataset,
+    params: Dict[str, object],
+    n_perms: int,
+    seed: int,
+) -> Optional[Dict[str, object]]:
+    """One neighbourhood enrichment run on a distance-band graph.
+
+    The radius defaults to three times the median nearest-neighbour distance --
+    small enough to stay within a plausible local-interaction scale, large enough
+    that most cells have neighbours. Returns None rather than raising: a sweep
+    that cannot build a second graph should lose one comparison, not the run.
+    """
+    try:
+        import numpy as np  # type: ignore
+        from scipy.spatial import cKDTree  # type: ignore
+    except ImportError:
+        return None
+    if len(dataset.records) < 3:
+        return None
+    coordinates = np.asarray([[record.x, record.y] for record in dataset.records], dtype=float)
+    nearest, _indices = cKDTree(coordinates).query(coordinates, k=2)
+    median_nearest = float(np.median(nearest[:, 1]))
+    radius = float(params.get("robustness_radius_um") or median_nearest * 3.0)
+    if not np.isfinite(radius) or radius <= 0:
+        return None
+    try:
+        result = cell_neighborhood_enrichment(
+            dataset,
+            {
+                "radius": radius,
+                "n_perms": n_perms,
+                "random_state": seed,
+                "include_all_pairs": True,
+                "strict_engine": True,
+            },
+        )
+    except Exception:  # noqa: BLE001 - an unavailable second graph is not a failed run
+        return None
+    metrics = result.metrics or {}
+    if metrics.get("engine") != "squidpy":
+        return None
+    return {
+        "n_neighs": None,
+        "graph_family": "distance_band",
+        "radius": round(radius, 2),
+        "isolated_cells": metrics.get("isolated_cells"),
+        "engine": metrics.get("engine"),
+        "pairs": metrics.get("all_pairs") or metrics.get("top_pairs") or [],
+    }
 
 
 def summarize_neighborhood_robustness(per_setting: List[Dict[str, object]], top_k: int = 10) -> Dict[str, object]:
@@ -374,12 +467,20 @@ def region_summary(dataset: SpatialDataset, params: Dict[str, object]) -> ToolRe
         raise MissingPreconditionError("region_summary requires user-provided region labels.")
     by_region: Dict[str, Dict[str, Any]] = {}
     top_n = int(params.get("top_n_features", 8) or 8)
+    # The same exclusion the expression matrix applies. Without it a region's
+    # "top features" were CELL_AREA, TOTAL_COUNTS, TRANSCRIPT_COUNTS and
+    # NUCLEUS_AREA -- library size and morphology, on a scale two orders of
+    # magnitude above any gene, so they took the top slots in every region of
+    # every run and pushed the biology out of the table.
+    measured = set(expression_feature_names(dataset))
     for record in dataset.records:
         region = record.region or "unassigned"
         entry = by_region.setdefault(region, {"cell_count": 0, "cell_type_counts": Counter(), "feature_sums": Counter()})
         entry["cell_count"] += 1
         entry["cell_type_counts"][record.cell_type] += 1
         for feature, value in record.genes.items():
+            if feature not in measured:
+                continue
             try:
                 entry["feature_sums"][feature] += float(value)
             except (TypeError, ValueError):
@@ -1923,6 +2024,8 @@ def _screen_spatial_genes(
     candidate_count = max(int(params.get("screen_candidates", 0) or 0), 0) or max(n_top * 2, 50)
     screened = detected_genes
     method = "detection_filter_only"
+    screened_out: List[Dict[str, Any]] = []
+    detected_by_gene = {gene: int(count) for gene, count in zip(all_genes, detected)}
     if len(detected_genes) > candidate_count:
         analytic = sq.gr.spatial_autocorr(
             adata,
@@ -1936,8 +2039,21 @@ def _screen_spatial_genes(
             show_progress_bar=False,
         )
         if analytic is not None and not analytic.empty:
-            screened = [str(gene) for gene in analytic.sort_values("I", ascending=False).head(candidate_count).index]
+            ranked = analytic.sort_values("I", ascending=False)
+            screened = [str(gene) for gene in ranked.head(candidate_count).index]
             method = "analytic_moran_screen"
+            # The genes the screen excluded, with the statistic it excluded them
+            # on. Without these a reader sees only what survived and cannot tell
+            # what was dropped or how close it came -- and the result table would
+            # report 50 genes for a 296-gene panel with no way to audit the gap.
+            screened_out = [
+                {
+                    "gene": str(gene),
+                    "morans_i": round(float(row["I"]), 6),
+                    "detected_cells": detected_by_gene.get(str(gene), 0),
+                }
+                for gene, row in ranked.iloc[candidate_count:].iterrows()
+            ]
 
     # Keep the permutation budget per gene; the saving comes from testing fewer
     # genes. Raising it here would spend the saving straight back: 50 genes at 999
@@ -1951,6 +2067,8 @@ def _screen_spatial_genes(
     return {
         "tested_genes": screened,
         "permutations": permutations,
+        "screened_out_genes": screened_out,
+        "detected_by_gene": detected_by_gene,
         "report": {
             "rule": "detected in >= %d cells; %s" % (
                 min_cells,
@@ -2065,6 +2183,8 @@ def _squidpy_spatial_variable_genes(
                 "random_state": random_state,
                 "multiple_testing": adjusted_key or "not_available",
                 "screening": screening["report"],
+                "screened_out_genes": screening.get("screened_out_genes") or [],
+                "detected_by_gene": screening.get("detected_by_gene") or {},
                 "significant_gene_count_top_n": significant,
                 "significant_gene_count_all": significant_all,
                 "top_genes": rows,
@@ -2134,7 +2254,15 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
     try:
         adata = _dataset_to_anndata(dataset)
         group_labels, group_key = resolve_group_labels(dataset, params)
-        keep = [bool(label) for label in group_labels]
+        # On a partially reviewed section `cell_type` holds the reviewer's classes
+        # and the loader's marker guesses side by side. A validated pair table
+        # listing `Unannotated cell | endothelial cell` beside a reviewed pair is
+        # the conflation the gate exists to prevent, so a caller that knows which
+        # classes were reviewed passes them and the rest are dropped -- the same
+        # treatment unlabelled cells already get, for the same reason.
+        reviewed = params.get("reviewed_labels")
+        allowed = {str(name) for name in reviewed} if (reviewed and group_key == "cell_type") else None
+        keep = [bool(label) and (allowed is None or label in allowed) for label in group_labels]
         if sum(keep) < 3:
             raise MissingPreconditionError(
                 "neighborhood_enrichment needs at least three cells with populated group assignments."
@@ -2148,7 +2276,19 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         n_jobs = int(params.get("n_jobs", 1) or 1)
         backend = str(params.get("backend", "threading") or "threading")
         random_state = int(params.get("random_state", 0) or 0)
-        sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=max(2, n_neighs))
+        # A `radius` switches the weight matrix from kNN to a distance band. kNN
+        # adapts to local density -- every cell gets k neighbours however sparse
+        # its surroundings -- while a band applies one physical scale everywhere
+        # and leaves isolated cells with none. They can disagree, which is the
+        # point: the robustness sweep uses this to test whether a finding depends
+        # on the *kind* of neighbourhood and not only on its size.
+        band_radius = params.get("radius") if str(params.get("engine") or "") != "prototype" else None
+        isolated_cells = 0
+        if band_radius is not None and float(band_radius) > 0:
+            sq.gr.spatial_neighbors(adata, coord_type="generic", radius=float(band_radius), delaunay=False)
+            isolated_cells = int((adata.obsp["spatial_connectivities"].getnnz(axis=1) == 0).sum())
+        else:
+            sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=max(2, n_neighs))
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
             sq.gr.nhood_enrichment(
@@ -2166,10 +2306,20 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         all_pairs = _nhood_enrichment_pairs(result.get("zscore"), result.get("pvalue"), clusters, limit=None)
         expected_pair_count = len(clusters) * (len(clusters) + 1) // 2
         nonfinite_pair_count = max(expected_pair_count - len(all_pairs), 0)
-        top_pairs = all_pairs[:10]
+        # Self-adjacency is near-tautological for any spatially coherent group --
+        # cells of one type sit next to cells of that type -- so `i|i` pairs took
+        # the largest z-scores and four of the top ten, crowding out the
+        # cross-type relationships the table exists to show. They are kept, in
+        # their own list, because a group that is *not* self-adjacent is worth
+        # seeing; they just do not compete for the ranked slots.
+        cross_pairs = [pair for pair in all_pairs if not _is_self_pair(pair)]
+        self_pairs = [pair for pair in all_pairs if _is_self_pair(pair)]
+        top_pairs = cross_pairs[:10]
         metrics = {
             "engine": "squidpy",
             "method": "nhood_enrichment",
+            "self_pairs": self_pairs[:10],
+            "self_pairs_excluded_from_top": len(self_pairs),
             "group_key": group_key,
             "n_neighs": n_neighs,
             "n_perms": n_perms,
@@ -2178,6 +2328,13 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
             "random_state": random_state,
             "analyzed_cell_count": int(adata.n_obs),
             "excluded_unassigned_cell_count": len(group_labels) - int(adata.n_obs),
+            "reviewed_only": allowed is not None,
+            "excluded_unreviewed_cell_count": (
+                sum(1 for label in group_labels if label and label not in allowed) if allowed else 0
+            ),
+            "graph_family": "distance_band" if (band_radius and float(band_radius) > 0) else "knn",
+            "radius": round(float(band_radius), 2) if (band_radius and float(band_radius) > 0) else None,
+            "isolated_cells": isolated_cells,
             "top_pairs": top_pairs,
             "tested_pair_count": len(all_pairs),
             "undefined_pair_count": nonfinite_pair_count,
@@ -2191,7 +2348,8 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
             )
         return ToolResult(
             tool_name="neighborhood_enrichment",
-            summary="Computed neighborhood enrichment with Squidpy for %d cell-type pairs." % len(top_pairs),
+            summary="Computed neighborhood enrichment with Squidpy for %d cross-type pairs (%d self-pairs reported separately)."
+            % (len(top_pairs), len(self_pairs)),
             metrics=metrics,
             caveats=caveats,
         )
@@ -2207,20 +2365,39 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
 # rank as spurious markers. Mirrors ingestion.labels.NON_BIOLOGICAL_FEATURES.
 EXPRESSION_EXCLUDED_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
-def expression_feature_names(dataset: SpatialDataset) -> List[str]:
-    """Genes used for expression analysis.
+# Re-exported: this module is where callers have always imported it from, and
+# the definition moved down to `schemas` so `ingestion` can reach it without
+# importing `tools`.
+expression_feature_names = _expression_feature_names
 
-    Excludes QC/morphology pseudo-features and Xenium control probes, both of
-    which are technical rather than biological signal.
+
+# One entry, holding the most recently built AnnData and the fingerprint of the
+# dataset it came from. Deliberately not an unbounded dict: a full-section matrix
+# with its two layers is around 1.8 GB, and the access pattern this exists for is
+# many tools in a row over one dataset, which a single slot covers exactly.
+_ANNDATA_CACHE: Dict[str, Any] = {"fingerprint": None, "adata": None}
+
+
+def _anndata_fingerprint(dataset: SpatialDataset, genes: List[str]) -> tuple:
+    """Everything the builder reads that can change between calls in a run.
+
+    What it covers: the dataset object, its length, the gene list, the label and
+    region assignment, and the normalisation flag. Those are what actually move --
+    `apply_best_available_labels` rewrites `cell_type` and `apply_best_available_regions`
+    rewrites `region`, both before the tools run, and a region-stratified pass
+    builds shorter subset datasets which land on a different identity and length.
+
+    What it does *not* cover: in-place edits to `record.genes` values. Hashing
+    those would cost what building the matrix costs, which would defeat the
+    point. It is safe because exactly one place in the codebase mutates them --
+    `ingestion/pipeline.py`, restricting a reference to shared features during
+    label transfer -- and that happens at load, never between tool calls. If a
+    tool is ever written that rewrites expression in place, it must clear this
+    cache, and this comment is the reason why.
     """
-    controls = control_feature_names(dataset)
-    biological = [
-        gene
-        for gene in dataset.genes
-        if gene.upper() not in EXPRESSION_EXCLUDED_FEATURES and gene.upper() not in controls
-    ]
-    # Only drop them when real genes remain, so tiny fixtures stay usable.
-    return biological if len(biological) >= 2 else list(dataset.genes)
+    labels = hash(tuple((record.cell_type, record.region) for record in dataset.records))
+    return (id(dataset), len(dataset.records), tuple(genes), labels,
+            bool(dataset.normalized), dataset.sample_id)
 
 
 def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
@@ -2229,13 +2406,49 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     import pandas as pd  # type: ignore
 
     genes = expression_feature_names(dataset)
+    fingerprint = _anndata_fingerprint(dataset, genes) if genes else None
+    if fingerprint is not None and _ANNDATA_CACHE["fingerprint"] == fingerprint:
+        # A copy, never the cached object: every caller mutates what it gets --
+        # scanpy normalises in place, squidpy writes into obsp and uns -- and
+        # handing out the same object would let one tool's graph leak into the
+        # next tool's result.
+        return _ANNDATA_CACHE["adata"].copy()
     if not genes:
         raise MissingPreconditionError("Scanpy/Squidpy wrappers require numeric features.")
-    matrix = np.array([[record.genes.get(gene, 0.0) for gene in genes] for record in dataset.records], dtype=float)
-    source_matrix = np.array(
-        [[record.raw_genes.get(gene, record.genes.get(gene, 0.0)) for gene in genes] for record in dataset.records],
-        dtype=float,
-    )
+
+    # Fill from what each cell actually measured, not by asking every cell about
+    # every gene. The old form was a nested comprehension over cells x genes --
+    # one dict lookup per pair, in Python, single-threaded. Xenium is sparse: a
+    # breast section carries a median of 70 detected genes per cell out of 471,
+    # so 85% of those lookups returned a default. Measured at 40,000 cells it
+    # took 14.6 s, and every tool and every robustness setting rebuilds it, which
+    # is what made a 164,000-cell run average 0.6 cores for an hour.
+    #
+    # Preallocating and writing only the nonzero entries makes the work
+    # proportional to what was measured. Values and dtype are unchanged, so no
+    # downstream number moves.
+    column_of = {gene: index for index, gene in enumerate(genes)}
+    matrix = np.zeros((len(dataset.records), len(genes)), dtype=float)
+    for row, record in enumerate(dataset.records):
+        target = matrix[row]
+        for gene, value in record.genes.items():
+            column = column_of.get(gene)
+            if column is not None:
+                target[column] = value
+    # `raw_genes` falls back to `genes` per gene, so start from the analysis
+    # values and overwrite only where a source value exists. Same result as the
+    # old `raw_genes.get(gene, genes.get(gene, 0.0))`, without the second sweep
+    # over every cell-gene pair.
+    source_matrix = matrix.copy()
+    for row, record in enumerate(dataset.records):
+        raw = record.raw_genes
+        if not raw:
+            continue
+        target = source_matrix[row]
+        for gene, value in raw.items():
+            column = column_of.get(gene)
+            if column is not None:
+                target[column] = value
     obs = pd.DataFrame(
         {
             "sample_id": [record.sample_id for record in dataset.records],
@@ -2259,7 +2472,19 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
         "source_value_semantics": dataset.metadata.get("source_value_semantics", "unspecified"),
         "raw_counts_available": bool(dataset.metadata.get("raw_counts_available")),
     }
+    if fingerprint is not None:
+        _ANNDATA_CACHE["fingerprint"] = fingerprint
+        _ANNDATA_CACHE["adata"] = adata
+        return adata.copy()
     return adata
+
+
+def clear_anndata_cache() -> None:
+    """Drop the cached matrix. For tests, and for any caller that edits
+    expression values in place -- see `_anndata_fingerprint` for why that is the
+    one mutation the fingerprint cannot see."""
+    _ANNDATA_CACHE["fingerprint"] = None
+    _ANNDATA_CACHE["adata"] = None
 
 
 def _rank_genes_groups_table(adata: Any, group: str, limit: int) -> List[Dict[str, object]]:
@@ -2288,6 +2513,12 @@ def _group_values(values: Any, group: str) -> List[Any]:
     if isinstance(values, dict):
         return list(values.get(group, []))
     return list(values)
+
+
+def _is_self_pair(pair: Dict[str, object]) -> bool:
+    """True for an `A | A` pair, whatever the group names contain."""
+    parts = [part.strip() for part in str(pair.get("pair", "")).split("|")]
+    return len(parts) == 2 and parts[0] == parts[1]
 
 
 def _nhood_enrichment_pairs(
