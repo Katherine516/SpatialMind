@@ -1,0 +1,42 @@
+{
+  "major_version": 2,
+  "minor_version": 0,
+  "run_name": "Human Healthy Brain (FFPE)",
+  "run_start_time": "2023-03-26T10:20:40Z",
+  "region_name": "hBrain_healthy_section",
+  "preservation_method": "FFPE",
+  "num_cells": 4000,
+  "transcripts_per_cell": 166,
+  "transcripts_per_100um": 41.85302144045044,
+  "cassette_name": "N/A",
+  "slide_id": "N/A",
+  "panel_design_id": "N/A",
+  "panel_name": "R&D Panel",
+  "panel_organism": "Human",
+  "panel_tissue_type": "Brain",
+  "panel_num_targets_predesigned": 254,
+  "panel_num_targets_custom": 65,
+  "pixel_size": 0.2125,
+  "instrument_sn": "R&D",
+  "instrument_sw_version": "R&D",
+  "analysis_sw_version": "xenium-1.3.0.5",
+  "experiment_uuid": "",
+  "cassette_uuid": "",
+  "roi_uuid": "",
+  "z_step_size": 3.0,
+  "well_uuid": "",
+  "calibration_uuid": "d4683bfa-edca-4dd5-9802-e5f6461699a8",
+  "images": {},
+  "xenium_explorer_files": {
+    "transcripts_zarr_filepath": "transcripts.zarr.zip",
+    "cells_zarr_filepath": "cells.zarr.zip",
+    "cell_features_zarr_filepath": "cell_feature_matrix.zarr.zip",
+    "analysis_zarr_filepath": "analysis.zarr.zip",
+    "analysis_summary_filepath": "analysis_summary.html"
+  },
+  "fixture": {
+    "derived_from": "Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon_outs",
+    "cells": 4000,
+    "note": "Subsampled test fixture. No morphology or boundaries; not gate-ready."
+  }
+}
