@@ -43,10 +43,17 @@ def configure_numba_cache() -> Optional[str]:
 
     scanpy's Moran's I and the neighbour kernels are `@numba.njit(cache=True)`,
     and numba writes that cache into `__pycache__` *beside the installed
-    package*. In a checkout that is the virtualenv and it works. Inside a
-    `.app` in /Applications it is not writable by the user who runs it, so
-    every launch silently recompiles: measured at 35 seconds before the first
-    result, on every single analysis.
+    package*. That is fine in a checkout and not fine for an installed copy
+    whose directory belongs to whoever installed it, so this points numba at a
+    per-user directory instead.
+
+    It does *not* rescue the frozen app, and it was written believing it would.
+    Inside a PyInstaller bundle a module's `__file__` points into the archive
+    rather than at a file on disk, so numba cannot build the source stamp its
+    cache index is keyed on and disables caching whatever the destination --
+    measured, with this set: the directory stays empty and a second run is no
+    faster than the first. `app/warmup.py` is what actually addresses that.
+    This remains worth doing for every other way the Studio is run.
 
     Must run before numba is imported -- it reads this at import time -- so the
     frozen entry point calls it first, ahead of everything else.

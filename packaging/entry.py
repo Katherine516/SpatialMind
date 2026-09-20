@@ -9,9 +9,9 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
 
     # Before any other import: numba reads NUMBA_CACHE_DIR when it is imported,
-    # and inside an installed .app its default cache location is not writable.
-    # Without this it recompiles scanpy's kernels on every launch -- 35 seconds
-    # before the first result, every time.
+    # so anything that pulls numba in first makes this a no-op. It does not by
+    # itself restore caching inside a frozen bundle -- see the docstring -- but
+    # it is the right destination when caching can work at all.
     from spatialmind.app.config import configure_numba_cache
 
     configure_numba_cache()

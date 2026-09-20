@@ -134,6 +134,77 @@ class NumbaCacheTests(unittest.TestCase):
         )
 
 
+class KernelWarmupTests(unittest.TestCase):
+    """Compilation cannot be avoided in a frozen app, so it is moved off the wait.
+
+    numba caching does not survive PyInstaller: a bundled module's `__file__`
+    points into the archive, numba cannot build the source stamp its cache index
+    needs, and it silently stops caching whatever NUMBA_CACHE_DIR says. So the
+    kernels compile on every launch either way. Running the same tools once over
+    120 synthetic cells compiles the same specialisations a real section needs,
+    and doing it while the window is up spends that time against the user's own
+    reading rather than their first progress bar.
+    """
+
+    def setUp(self):
+        from spatialmind.app import warmup
+
+        self.warmup = warmup
+        warmup._done = False
+        self._previous = os.environ.pop("SPATIALMIND_NO_WARMUP", None)
+
+    def tearDown(self):
+        self.warmup._done = False
+        if self._previous is not None:
+            os.environ["SPATIALMIND_NO_WARMUP"] = self._previous
+        else:
+            os.environ.pop("SPATIALMIND_NO_WARMUP", None)
+
+    def test_the_warmup_plan_only_names_tools_this_build_has(self):
+        """A plan naming a tool that is not registered would warm nothing and
+        log a skip on every launch."""
+        from spatialmind.tools import build_default_registry
+
+        plannable = {tool.name for tool in build_default_registry().list_plannable()}
+        for step in self.warmup.WARMUP_PLAN:
+            self.assertIn(step["tool"], plannable, "warmup plan is out of step with the registry")
+
+    def test_it_compiles_the_kernels_and_reports_what_it_did(self):
+        outcome = self.warmup.warm_kernels()
+        self.assertEqual(outcome["skipped"], [], "the warmup plan did not run cleanly")
+        self.assertEqual(
+            sorted(outcome["compiled"]),
+            sorted(step["tool"] for step in self.warmup.WARMUP_PLAN),
+        )
+
+    def test_the_warmup_leaves_nothing_of_its_own_in_the_matrix_cache(self):
+        """Its synthetic section must not be what a real run finds cached."""
+        from spatialmind.tools import implementations
+
+        self.warmup.warm_kernels()
+        self.assertIsNone(implementations._ANNDATA_CACHE["adata"],
+                          "a warmup matrix was left in the cache")
+
+    def test_it_runs_once(self):
+        first = self.warmup.start_background_warmup()
+        second = self.warmup.start_background_warmup()
+        self.assertIsNotNone(first)
+        self.assertIsNone(second, "the warmup must not run again on a second call")
+        first.join(timeout=180)
+        self.assertFalse(first.is_alive(), "warmup thread did not finish")
+
+    def test_it_can_be_turned_off(self):
+        os.environ["SPATIALMIND_NO_WARMUP"] = "1"
+        self.assertIsNone(self.warmup.start_background_warmup())
+
+    def test_a_failing_warmup_is_not_a_failing_app(self):
+        """A slower first analysis, never a crash on launch."""
+        with patch.object(self.warmup, "_synthetic_dataset", side_effect=RuntimeError("boom")):
+            outcome = self.warmup.warm_kernels()
+        self.assertEqual(outcome["compiled"], [])
+        self.assertEqual(len(outcome["skipped"]), len(self.warmup.WARMUP_PLAN))
+
+
 class ReadOnlyBundleTests(unittest.TestCase):
     """Instrument output is not always writable, and the review has to survive it.
 
