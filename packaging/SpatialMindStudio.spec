@@ -24,6 +24,11 @@ BUNDLE_PACKAGES = [
     "uvicorn", "fastapi", "starlette", "pydantic", "pydantic_core", "anyio", "click", "h11",
     # The native window: pywebview drives a WKWebView through pyobjc.
     "webview", "objc", "Foundation", "AppKit", "WebKit", "Quartz",
+    # Exports and uploads. `docx` carries XML templates as package data, and
+    # `lxml` is a binary extension it imports at write time -- neither is
+    # reachable by static analysis, so a bundle without them builds cleanly and
+    # then fails on the first Word export.
+    "docx", "lxml", "openpyxl", "et_xmlfile", "multipart",
 ]
 
 datas, binaries, hiddenimports = [], [], []
@@ -49,6 +54,9 @@ hiddenimports += [
     # pywebview picks its backend at runtime, so the Cocoa one is never seen as
     # an import and has to be named explicitly.
     "webview.platforms.cocoa", "webview.window", "webview.util",
+    # FastAPI resolves its multipart parser by name when a form arrives, so an
+    # upload is the first thing that would fail in a frozen build.
+    "python_multipart", "multipart.multipart",
 ]
 
 # The web UI ships inside the bundle.

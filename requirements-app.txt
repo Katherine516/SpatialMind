@@ -45,6 +45,13 @@ pillow
 tifffile
 reportlab
 
+# Export formats the Studio hands to people who do not open this app:
+# Word for the report, Excel for the result tables, and the multipart parser
+# FastAPI needs to accept an upload at all.
+python-docx
+openpyxl
+python-multipart
+
 # Packaging and tests
 pyinstaller
 httpx

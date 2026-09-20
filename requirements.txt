@@ -72,10 +72,13 @@ ome-types
 jinja2
 markdown
 reportlab==4.2.5
+python-docx
+openpyxl
 
 # API, background jobs, and storage adapters
 fastapi
 uvicorn[standard]
+python-multipart
 pydantic
 pydantic-settings
 redis

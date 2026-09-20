@@ -62,16 +62,81 @@ with the boilerplate dropped — `FFPE Human Brain Glioblastoma` — and the UI 
 that, with the raw folder name underneath in small type and the full relative
 path in the tooltip. Nothing is hidden; the readable part is just first.
 
-## The seven surfaces
+## Create: the guided path
+
+**+ Create** in the title bar is the way in. Five steps, and only the last one
+starts work.
+
+1. **Data** — drop files or a folder, or paste the path of a folder already on
+   this Mac. Uploading copies bytes; **linking** does not, which matters because
+   a Xenium bundle is routinely 10 GB and pushing it through a browser form to
+   land it on the same disk costs minutes and twice the space. Whatever arrives
+   is described back: what the app made of it, and for a half-copied bundle,
+   which file is missing.
+2. **Question** — five suggestions *this dataset can answer*, plus free text.
+   The suggestions are grounded in the dataset: an unlabelled section is offered
+   only descriptive questions, a gated-open one is offered questions naming its
+   own cell types and regions. Free text is restated as the app will act on it,
+   with anything it could not parse shown rather than silently dropped.
+3. **Details** — only questions whose answer changes the plan. There are no
+   questions here for the sake of looking thorough; each one sets a parameter or
+   picks a lane.
+4. **Tools** — the proposed plan with every step's lane, plus the rest of the
+   implemented registry. Gate-blocked steps are visible and disabled, with the
+   reason, rather than failing after the run starts.
+5. **Run** — the exact parameters, then go.
+
+Two rules the wizard never bends. It offers nothing it cannot run: every
+suggestion resolves to a registered, implemented tool, and a suggestion carries
+the tools it resolves to rather than being re-parsed from its own words. And it
+routes around nothing: a blocked step is labelled blocked while it is still a
+choice.
+
+The text analysis is deterministic and local. An LLM would phrase the
+restatement more fluently and could also quietly widen the question past what
+the tools do, and this is the step that decides what gets run.
+
+## The surfaces
+
+Five home tabs, and three that belong to whichever dataset is selected.
 
 | Surface | Job to be done | Backed by |
 | --- | --- | --- |
 | Datasets | What do I have, and how far is each from an answer? | folder scan + `infer_data_type` |
+| Tools | I know the method I want | `ToolRegistry` |
+| Visualization | Show me the figures | run artifacts |
+| Tasks | What is running, what finished, what failed | `JobRunner` |
+| Reports | Pin, rename, preview, edit, export | `ReportLibrary` |
 | Readiness | Why can't this run, and what clears it? | `pilot_gate()` |
 | Review Studio | Label cells and draw regions without writing a CSV | cell index + label/region writers |
 | Ask | Answer my question, or tell me you can't | `planner.propose` |
-| Tool Bench | I know the method I want | `ToolRegistry` |
-| Runs | What happened, and can I reproduce it? | `StorageLayer` run records |
+
+## Reports, edits and exports
+
+Every run leaves a report, result tables and at least one figure. A plan run
+writes its own report rather than only JSON: a run that ends with a file nobody
+can read is not a finished piece of work.
+
+**Editing.** The user's version is written to `report_edited.md` *beside* the
+run's own report and never over it, so the run record still replays byte for
+byte. Every export of an edited report says "edited by hand after the run" —
+a document carrying a run id has to be traceable back to what actually ran.
+
+**Exports.** The report goes out as `.docx`, PDF, plain text or Markdown; the
+result tables as one `.xlsx` workbook or a zip of CSVs, for all cells, all
+genes, or everything. Every sheet and every CSV repeats the run id, the dataset
+and the gate status, because a table is usually read apart from the report that
+qualifies it.
+
+A big export is a background task. Writing 163,920 cells x 35 columns to `.xlsx`
+takes about 75 seconds, nearly all of it openpyxl serialising XML — too long to
+hold a browser request open, and no reason to block an analysis run, since it is
+one core writing a file. Exports are therefore non-exclusive jobs and appear
+under Tasks beside the analyses.
+
+**Deleting** a report removes the run directory and its record, so that run can
+no longer be replayed. The UI confirms, and that is the only guard: a Reports
+tab that cannot delete accumulates until it is useless.
 
 ## Choosing which tool runs
 
@@ -324,9 +389,26 @@ neither of which any reference can supply.
 | POST | `/api/runs` | Start a `plan` or `pilot` job |
 | GET | `/api/runs`, `/api/runs/{id}` | Job list and status |
 | GET | `/api/runs/{id}/report` | The run's HTML report |
+| POST | `/api/uploads` | Store an uploaded file or folder, then describe it |
+| POST | `/api/uploads/link` | Register a folder already on this machine, without copying |
+| GET | `/api/workflow/facts` | What the wizard reasons over: cells, gate, classes, panel |
+| GET | `/api/workflow/questions` | Questions this dataset can answer |
+| POST | `/api/workflow/analyze` | Free text, or a suggestion, into a structured prompt |
+| POST | `/api/workflow/plan` | Answers into parameters, and the plan with its lanes |
+| GET | `/api/reports` | Every run that produced a report |
+| GET | `/api/reports/{id}` | Detail, report text and result tables |
+| POST | `/api/reports/{id}/rename`, `/pin` | Library metadata |
+| POST | `/api/reports/{id}/edit`, `/revert` | The user's version, beside the run's |
+| DELETE | `/api/reports/{id}` | Remove the run directory and its record |
+| GET | `/api/reports/{id}/export` | `docx`, `pdf`, `txt` or `md` |
+| POST/GET | `/api/reports/{id}/results` | `xlsx` or `csv`, optionally one `kind` |
+| GET | `/api/reports/{id}/table` | Preview one result table |
+| GET | `/api/visualizations` | Every figure any run produced |
 
-One job runs at a time per process: two Scanpy pipelines on one machine contend
-for the same cores and finish no sooner.
+One *analysis* job runs at a time per process: two Scanpy pipelines on one
+machine contend for the same cores and finish no sooner. Exports are jobs too
+and are not exclusive — they are one core writing a file, and queueing them
+behind an analysis would serve nobody.
 
 ## Evaluation
 

@@ -4,7 +4,7 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-08-26. Unit tests 166/166; legacy eval 15/15; MVP eval 11/11; real Scanpy/Squidpy backend checks passed; import-linter 3/3.
+Last verified: 2026-09-19. Unit tests 342/342; legacy eval 16/16; MVP eval 13/13; real Scanpy/Squidpy backend checks passed; import-linter 6/6. (Counts derived by `scripts/check_doc_numbers.py`.)
 
 ## The one-sentence version
 
@@ -178,8 +178,8 @@ Every registered tool carries a capability:
 
 Scaffolds are detected automatically from the implementation, so the registry
 stays honest even if a caller forgets to set the field. `list_plannable()` and
-`to_anthropic_tools()` exclude them by default: of 30 registered tools, 16 are
-plannable and 14 are hidden, so a model cannot select a tool that does nothing.
+`to_anthropic_tools()` exclude them by default: of 30 registered tools, 12 are
+plannable and 18 are hidden, so a model cannot select a tool that does nothing.
 They remain in `list_all()` for provenance.
 
 ## Stage 5: Typed plan validation

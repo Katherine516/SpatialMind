@@ -34,6 +34,9 @@ REQUIRED_MODULES = [
     "fastapi", "uvicorn", "pydantic", "numpy", "scipy", "pandas", "pyarrow",
     "h5py", "anndata", "scanpy", "squidpy", "sklearn", "matplotlib", "igraph",
     "tifffile", "PIL", "reportlab",
+    # Export formats and upload parsing. Verified here because each one is a
+    # feature that fails only when a user clicks it, not at launch.
+    "docx", "openpyxl", "multipart",
     # The native window. Without these the app falls back to a browser tab.
     "webview", "objc", "AppKit", "WebKit",
 ]
