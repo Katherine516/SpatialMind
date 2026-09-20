@@ -221,8 +221,16 @@ def main() -> None:
     parser.add_argument("--mvp", action="store_true", help="Run against the current MVP agent/tool policy.")
     args = parser.parse_args()
 
+    # `--cases` picks the cases; `--mvp` picks the agent policy. They are
+    # independent flags, so `--cases eval/mvp_cases` without `--mvp` ran the MVP
+    # cases against the legacy registry and reported 2/13, mean 0.205 -- a score
+    # that looks exactly like a regression and is not one. The two are checked
+    # against each other rather than silently mismatched.
+    case_directory = _case_directory(args.cases, args.mvp)
+    _refuse_policy_mismatch(parser, case_directory, args.mvp)
+
     runner = EvalRunner(SpatialAgent(mvp_mode=args.mvp))
-    cases = runner.load_cases(_case_directory(args.cases, args.mvp))
+    cases = runner.load_cases(case_directory)
     for case in cases:
         if not case.dataset:
             case.dataset = args.data
@@ -243,6 +251,22 @@ def main() -> None:
             print("  %s ran %s" % (r["id"], ", ".join(r["forbidden_tools_run"])))
     if not report["summary"]["invariants_passed"] or trespassers:
         raise SystemExit(1)
+
+
+def _refuse_policy_mismatch(parser, case_directory: str, mvp_mode: bool) -> None:
+    """Refuse a case set that does not match the agent policy selected."""
+    looks_mvp = "mvp" in os.path.basename(os.path.normpath(case_directory)).lower()
+    if looks_mvp and not mvp_mode:
+        parser.error(
+            "%s holds MVP cases but --mvp was not given, so they would run against the legacy "
+            "registry and score as failures. Add --mvp, or point --cases at a legacy case set."
+            % case_directory
+        )
+    if mvp_mode and not looks_mvp:
+        parser.error(
+            "--mvp selects the MVP agent policy, but %s does not look like an MVP case set. "
+            "Drop --mvp, or point --cases at eval/mvp_cases." % case_directory
+        )
 
 
 def _case_directory(requested: Optional[str], mvp_mode: bool) -> str:
