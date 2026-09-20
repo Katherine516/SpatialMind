@@ -485,10 +485,18 @@ def region_summary(dataset: SpatialDataset, params: Dict[str, object]) -> ToolRe
                 entry["feature_sums"][feature] += float(value)
             except (TypeError, ValueError):
                 continue
+    # A composition is a proportion, and a proportion from one cell is not one.
+    # Every region was summarised regardless of size, so a one-cell region was
+    # reported as "100% T cells" in the same shape and the same table as one
+    # from 500 cells. Small regions are still counted and named -- dropping them
+    # silently would be its own misreport -- but their proportions are marked.
+    floor = int(params.get("min_region_cells", MIN_REGION_CELLS_FOR_COMPOSITION)
+                or MIN_REGION_CELLS_FOR_COMPOSITION)
     summaries = {}
+    under_floor = []
     for region, entry in by_region.items():
         cell_count = int(entry["cell_count"]) or 1
-        summaries[region] = {
+        summary_entry = {
             "cell_count": cell_count,
             "cell_type_counts": dict(entry["cell_type_counts"]),
             "cell_type_fraction": {
@@ -499,11 +507,36 @@ def region_summary(dataset: SpatialDataset, params: Dict[str, object]) -> ToolRe
                 for feature, total in entry["feature_sums"].most_common(top_n)
             ],
         }
+        if cell_count < floor:
+            summary_entry["composition_reliable"] = False
+            summary_entry["note"] = (
+                "%d cells is below the %d-cell floor; these proportions describe too few cells "
+                "to compare with the other regions." % (cell_count, floor))
+            under_floor.append(region)
+        else:
+            summary_entry["composition_reliable"] = True
+        summaries[region] = summary_entry
+
+    reliable = len(summaries) - len(under_floor)
+    summary_text = ("Summarized %d user-provided regions by cell type and feature means."
+                    % len(summaries))
+    caveats = ["Region summaries use user-provided region labels; they were not derived from "
+               "image segmentation."]
+    if under_floor:
+        summary_text += (" %d of them hold fewer than %d cells, so their proportions are marked "
+                         "unreliable: %s." % (len(under_floor), floor,
+                                              ", ".join(sorted(under_floor)[:5])))
+        caveats.append(
+            "%d region(s) are below the %d-cell floor and their compositions are not comparable "
+            "with the rest." % (len(under_floor), floor))
     return ToolResult(
         tool_name="region_summary",
-        summary="Summarized %d user-provided regions by cell type and feature means." % len(summaries),
-        metrics={"region_count": len(summaries), "regions": summaries, "region_source": "user_provided"},
-        caveats=["Region summaries use user-provided region labels; they were not derived from image segmentation."],
+        summary=summary_text,
+        metrics={"region_count": len(summaries), "reliable_region_count": reliable,
+                 "regions_below_floor": sorted(under_floor),
+                 "min_region_cells": floor,
+                 "regions": summaries, "region_source": "user_provided"},
+        caveats=caveats,
     )
 
 
@@ -1050,6 +1083,11 @@ def lineages_conflict(predicted: str, observed: str) -> bool:
 # cell; this is the floor at which the result means anything, and it matches the
 # figure the review sizing reports.
 MIN_CELLS_FOR_GROUP_STATISTICS = 3
+
+# The floor below which a region's composition is not comparable with another's.
+# Matches the gate's own class/region floor, so the gate cannot pass a section
+# whose regions this then marks unreliable.
+MIN_REGION_CELLS_FOR_COMPOSITION = 50
 
 MIN_LINEAGE_EVIDENCE_CELLS = 25
 MIN_LINEAGE_EVIDENCE_FRACTION = 0.002

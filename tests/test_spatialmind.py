@@ -6861,3 +6861,115 @@ class GroupSizePreconditionTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("Other", message)
         self.assertIn("Merge them", message)
+
+
+class RegionSizePreconditionTests(unittest.TestCase):
+    """The same rule as the classes, on the regions two lines below them.
+
+    When the class-size floor was added, the region branch was not checked. A
+    second region of one cell still cleared "at least two user-defined regions",
+    and `region_summary` skips anything under 50 cells -- so the run was left
+    with one usable region, from a gate that had just required two.
+    """
+
+    def _gate(self, label_counts, region_counts, **kwargs):
+        from spatialmind.gatekeeper import pilot_gate
+
+        records, index = [], 0
+        labels = [name for name, n in label_counts.items() for _ in range(n)]
+        regions = [name for name, n in region_counts.items() for _ in range(n)]
+        for label, region in zip(labels, regions):
+            records.append(SpotRecord(sample_id="S", x=float(index), y=0.0, cell_type=label,
+                                      genes={"A": 1.0}, region=region, cell_id="c%d" % index))
+            index += 1
+        dataset = SpatialDataset(sample_id="S", source_path="synthetic",
+                                 modality="xenium_spatial_rna", records=records)
+        dataset.metadata["analysis_scope"] = "full_section"
+        total = len(records)
+        options = {"min_label_coverage": 0.7, "min_region_coverage": 0.7,
+                   "allow_single_region": False}
+        options.update(kwargs)
+        return pilot_gate(
+            dataset=dataset,
+            asset_readiness={k: True for k in ("has_cell_table", "has_feature_matrix",
+                                               "has_morphology", "has_boundaries")},
+            label_report={"status": "expert_labels_applied", "matched_cells": total,
+                          "total_records": total, "reviewed_labels": sorted(label_counts),
+                          "label_counts": dict(label_counts)},
+            region_report={"status": "user_regions_applied", "matched_cells": total,
+                           "total_records": total, "reviewed_regions": sorted(region_counts),
+                           "region_counts": dict(region_counts)},
+            **options)
+
+    def test_a_one_cell_second_region_does_not_open_the_gate(self):
+        gate = self._gate({"T": 500, "S": 500}, {"R1": 999, "R2": 1})
+        self.assertNotEqual(gate["status"], "validated_ready")
+        self.assertTrue(any("reviewed regions need" in r for r in gate["blocking_reasons"]))
+
+    def test_two_real_regions_open_it(self):
+        self.assertEqual(self._gate({"T": 500, "S": 500},
+                                    {"R1": 500, "R2": 500})["status"], "validated_ready")
+
+    def test_a_small_third_region_does_not_veto_the_section(self):
+        self.assertEqual(self._gate({"T": 400, "S": 400, "X": 200},
+                                    {"R1": 480, "R2": 500, "R3": 20})["status"],
+                         "validated_ready")
+
+    def test_the_single_region_waiver_still_bypasses_it(self):
+        """An explicit waiver is a decision the report states; it is not a hole."""
+        self.assertEqual(self._gate({"T": 500, "S": 500}, {"R1": 999, "R2": 1},
+                                    allow_single_region=True)["status"], "validated_ready")
+
+    def _region_summary(self, split):
+        records = []
+        index = 0
+        for region, count in split.items():
+            for _ in range(count):
+                records.append(SpotRecord(
+                    sample_id="S", x=float(index % 20), y=float(index // 20),
+                    cell_type="Tumor" if index % 2 else "Stroma",
+                    genes={"A": float(index % 4), "B": float(index % 3)},
+                    region=region, cell_id="c%d" % index))
+                index += 1
+        dataset = SpatialDataset(sample_id="S", source_path="synthetic",
+                                 modality="xenium_spatial_rna", records=records)
+        return build_default_registry().get("region_summary").run(dataset, {})
+
+    def test_a_gate_passing_split_leaves_two_usable_regions(self):
+        """The invariant the floor exists for, asserted end to end rather than
+        by comparing two constants: what the gate calls ready, the tool can
+        actually summarise."""
+        split = {"R1": 100, "R2": 100}
+        self.assertEqual(self._gate({"Tumor": 100, "Stroma": 100}, split)["status"],
+                         "validated_ready")
+        self.assertGreaterEqual(self._region_summary(split).metrics["region_count"], 2)
+
+    def test_the_split_the_gate_now_refuses_would_have_left_one(self):
+        split = {"R1": 199, "R2": 1}
+        self.assertNotEqual(self._gate({"Tumor": 100, "Stroma": 100}, split)["status"],
+                            "validated_ready")
+        # And this is why: only one of the two regions has a comparable
+        # composition, so there is no contrast to report.
+        self.assertEqual(self._region_summary(split).metrics["reliable_region_count"], 1)
+
+    def test_a_tiny_region_composition_is_marked_not_presented_as_a_finding(self):
+        """A proportion from one cell is not a proportion. It was reported as
+        "100% T cells" in the same shape and the same table as one from 500
+        cells."""
+        result = self._region_summary({"R1": 480, "R2": 500, "R3": 1})
+        regions = result.metrics["regions"]
+        self.assertTrue(regions["R1"]["composition_reliable"])
+        self.assertFalse(regions["R3"]["composition_reliable"])
+        self.assertIn("below the 50-cell floor", regions["R3"]["note"])
+        self.assertEqual(result.metrics["regions_below_floor"], ["R3"])
+        self.assertEqual(result.metrics["reliable_region_count"], 2)
+        # And it says so where a reader will see it, not only in the metrics.
+        self.assertIn("unreliable", result.summary)
+        self.assertTrue(any("not comparable" in c for c in result.caveats))
+
+    def test_a_small_region_is_still_counted_and_named(self):
+        """Dropping it silently would be its own misreport: the reviewer drew
+        that region and is entitled to see what is in it."""
+        regions = self._region_summary({"R1": 480, "R2": 500, "R3": 1}).metrics["regions"]
+        self.assertIn("R3", regions)
+        self.assertEqual(regions["R3"]["cell_count"], 1)

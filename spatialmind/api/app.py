@@ -29,7 +29,9 @@ def create_app():
 
     class RunRequest(BaseModel):
         prompt: str
-        data_path: str = "data/demo_spatial.csv"
+        # No default. A server that guesses which dataset you meant will
+        # happily analyse one you never named and return 200.
+        data_path: str
         output_root: str = "outputs"
         llm_provider: str = "local"
         llm_model: str = ""
@@ -50,7 +52,7 @@ def create_app():
         dataset_ids: list[str]
 
     class XeniumPilotRequest(BaseModel):
-        data_path: str = "data/Human_Breast_Biomarkers_S1_Top_outs"
+        data_path: str
         output_dir: str = "outputs/xenium_validated_pilot"
         max_records: int = 2500
         min_label_coverage: float = DEFAULT_MIN_LABEL_COVERAGE
@@ -130,24 +132,37 @@ def create_app():
     def get_batch_status(job_id: str) -> Dict[str, object]:
         return _jsonable(batch_engine.get(job_id))
 
+    # An id that does not exist is the caller's mistake, not the server's. These
+    # let `FileNotFoundError` escape, so asking for an unknown run returned a
+    # 500 and a traceback instead of a 404 and a sentence.
     @app.get("/runs/{run_id}")
     def get_run(run_id: str) -> Dict[str, object]:
-        return _jsonable(StorageLayer().get_run(run_id))
+        try:
+            return _jsonable(StorageLayer().get_run(run_id))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
 
     @app.get("/runs/{run_id}/figures")
     def list_run_figures(run_id: str) -> Dict[str, object]:
-        return {"run_id": run_id, "figures": StorageLayer().list_figures(run_id)}
+        try:
+            return {"run_id": run_id, "figures": StorageLayer().list_figures(run_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
 
     @app.post("/pilot/xenium/intake")
     def validate_xenium_intake(request: XeniumPilotRequest) -> Dict[str, object]:
         return _jsonable(
+            # `report_format` is not a parameter of the intake check -- it
+            # writes no report. Passing it made every call to this endpoint
+            # raise TypeError, which nothing noticed because the only test
+            # asserted the route was mounted and never called it.
             validate_xenium_label_intake(
                 request.data_path,
                 max_records=request.max_records,
                 min_label_coverage=request.min_label_coverage,
                 min_region_coverage=request.min_region_coverage,
                 allow_single_region=request.allow_single_region,
-                report_format=request.report_format,
             )
         )
 

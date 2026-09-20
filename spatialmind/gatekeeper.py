@@ -275,23 +275,25 @@ MIN_CELLS_PER_TESTED_CLASS = 50
 
 
 def _testable_classes(label_report, dataset, labels,
-                      min_cells: int = MIN_CELLS_PER_TESTED_CLASS):
-    """(classes with enough cells, the rest with their counts).
+                      min_cells: int = MIN_CELLS_PER_TESTED_CLASS,
+                      counts_key: str = "label_counts",
+                      attribute: str = "cell_type"):
+    """(groups with enough cells, the rest with their counts).
 
-    Counted from the reviewed table's own `label_counts` when it has them, and
-    from the loaded records otherwise, so this matches whatever the coverage
-    figure beside it was computed from.
+    Serves both conditions. Counted from the reviewed table's own counts when it
+    has them, and from the loaded records otherwise, so this matches whatever
+    the coverage figure beside it was computed from.
     """
     counts = {}
     if isinstance(label_report, dict):
-        counts = dict(label_report.get("label_counts") or {})
+        counts = dict(label_report.get(counts_key) or {})
     elif label_report is not None:
-        counts = dict(getattr(label_report, "label_counts", {}) or {})
+        counts = dict(getattr(label_report, counts_key, {}) or {})
     if not counts and dataset is not None:
         from collections import Counter
 
         counts = dict(Counter(
-            str(getattr(record, "cell_type", "") or "") for record in dataset.records))
+            str(getattr(record, attribute, "") or "") for record in dataset.records))
 
     reviewed = set(labels)
     sized = [(name, int(counts.get(name, 0))) for name in sorted(reviewed)]
@@ -446,6 +448,26 @@ def pilot_gate(
             "the reviewed region table supplies %d." % len(regions)
         )
         required.append("Provide at least two reviewed tissue/ROI regions.")
+    elif not allow_single_region:
+        # The same rule as the classes above, and it was missed when that one
+        # was added two lines up. `region_summary` skips any region under 50
+        # cells, so a second region of one cell cleared this condition and left
+        # the run with a single usable region -- no contrast, from a gate that
+        # had just required two.
+        testable_regions, small_regions = _testable_classes(
+            region_report, dataset, regions, min_cells=min_cells_per_class,
+            counts_key="region_counts", attribute="region")
+        if len(testable_regions) < 2:
+            blockers.append(
+                "At least two reviewed regions need %d or more cells; region summaries skip "
+                "anything smaller, so %s would leave one usable region."
+                % (min_cells_per_class,
+                   ", ".join("`%s` has %d" % (name, count) for name, count in small_regions[:4])
+                   or "the current split")
+            )
+            required.append(
+                "Extend at least two regions past %d cells, or merge the small ones."
+                % min_cells_per_class)
 
     return {
         "status": "validated_ready" if not blockers else "blocked_missing_validation_inputs",

@@ -14,6 +14,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -187,3 +188,65 @@ class ApiServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProductionApiContractTests(unittest.TestCase):
+    """Calling the endpoints, not asserting they are mounted.
+
+    The only coverage `/pilot/xenium/intake` had was a check that its path
+    appeared in `app.routes`. It had been passing `report_format=` to a function
+    that takes no such parameter, so every real call raised TypeError, and the
+    test suite was green throughout.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+
+        from spatialmind.api.app import create_app
+
+        cls.client = TestClient(create_app())
+        cls.fixture = str(Path(__file__).resolve().parents[1] /
+                          "tests" / "fixtures" / "xenium_healthy_brain_mini")
+
+    def test_the_intake_endpoint_actually_runs(self):
+        response = self.client.post("/pilot/xenium/intake",
+                                    json={"data_path": self.fixture, "max_records": 300})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertIn("label_status", body)
+        self.assertIn("blockers", body)
+
+    def test_no_endpoint_guesses_which_dataset_you_meant(self):
+        """`data_path` defaulted to a real section, so an under-specified
+        request ran a full analysis on a dataset the caller never named and
+        returned 200."""
+        for path in ("/pilot/xenium/intake", "/pilot/xenium/run"):
+            response = self.client.post(path, json={})
+            self.assertEqual(response.status_code, 422, path)
+            self.assertIn("data_path", response.text, path)
+        self.assertEqual(self.client.post("/runs", json={"prompt": "x"}).status_code, 422)
+
+    def test_an_unknown_run_id_is_404_not_500(self):
+        for path in ("/runs/no_such_run", "/runs/no_such_run/figures"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 404, path)
+            self.assertIn("no_such_run", response.json()["detail"])
+
+    def test_every_mounted_route_is_reachable_without_a_server_error(self):
+        """A smoke pass over the surface. Anything that 500s on a well-formed
+        request is broken, whatever its route table says."""
+        probes = [
+            ("GET", "/health", None),
+            ("GET", "/runs/absent", None),
+            ("GET", "/runs/absent/figures", None),
+            ("POST", "/runs", {"prompt": "x", "data_path": "data/demo_spatial.csv"}),
+            ("POST", "/batch/jobs", {"query": "x", "dataset_ids": []}),
+            ("POST", "/pilot/xenium/intake", {"data_path": self.fixture, "max_records": 200}),
+        ]
+        for method, path, payload in probes:
+            response = (self.client.get(path) if method == "GET"
+                        else self.client.post(path, json=payload))
+            self.assertLess(response.status_code, 500,
+                            "%s %s returned %s: %s" % (method, path, response.status_code,
+                                                       response.text[:200]))
