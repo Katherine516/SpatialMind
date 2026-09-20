@@ -187,6 +187,14 @@ def _intake_note(data_type: str, path: Path) -> str:
         # folder holding only cells.csv.gz was told it could run the validated
         # lane, and it cannot be loaded at all.
         missing = _missing_xenium_parts(path)
+        if missing == ["experiment.xenium"]:
+            # The one absence that is normal rather than broken: GEO deposits
+            # carry no experiment file. Coordinates are already in microns, so
+            # the section loads and gates; only the morphology viewer, which
+            # needs a pixel size to align an image, is affected.
+            return ("Recognised as a Xenium bundle with no `experiment.xenium`, which is how GEO "
+                    "deposits them. It loads and can be gated; the morphology viewer cannot align "
+                    "an image without a pixel size.")
         if missing:
             return ("Recognised as a Xenium bundle, but incomplete -- missing %s. Copy the rest of "
                     "the output folder before running anything against it." % ", ".join(missing))
@@ -217,13 +225,15 @@ def _intake_note(data_type: str, path: Path) -> str:
 # format changed between Xenium Analyzer versions.
 REQUIRED_XENIUM_FILES = {
     "experiment.xenium": ("experiment.xenium",),
-    "cells.csv.gz": ("cells.csv.gz", "cells.parquet", "cells.csv"),
+    # `cells.parquet.gz` belongs here because the loader reads it: a GEO deposit
+    # ships that and nothing else, and reporting it as a missing cell table told
+    # the user to go and find a file they do not need.
+    "a cell table": ("cells.csv.gz", "cells.csv", "cells.parquet", "cells.parquet.gz"),
     "cell_feature_matrix.h5": ("cell_feature_matrix.h5", "cell_feature_matrix.tar.gz"),
 }
-# Something Xenium-shaped has to be present before a folder is called a
-# near-miss, or every folder on the disk gets a Xenium diagnosis.
-XENIUM_HINTS = {"experiment.xenium", "cells.csv.gz", "cells.parquet", "cell_feature_matrix.h5",
-                "transcripts.parquet", "metrics_summary.csv", "gene_panel.json"}
+XENIUM_HINTS = {"experiment.xenium", "cells.csv.gz", "cells.parquet", "cells.parquet.gz",
+                "cell_feature_matrix.h5", "transcripts.parquet", "metrics_summary.csv",
+                "gene_panel.json"}
 
 
 def _missing_xenium_parts(path: Path) -> List[str]:

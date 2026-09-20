@@ -98,6 +98,16 @@ def decisions_for_coverage(sizes: Dict[Any, int],
     }
 
 
+def pair_count(classes: int) -> int:
+    """Unordered pairs among `classes` labelled groups.
+
+    The gate needs two classes; two classes give one pair. The decision count
+    and the analysis it enables are not the same number, and only one of them
+    was ever printed.
+    """
+    return max(classes, 0) * max(classes - 1, 0) // 2
+
+
 def marker_readiness(sizes: Dict[Any, int],
                      min_cells: int = MIN_CELLS_FOR_MARKERS) -> Dict[str, Any]:
     """Which groups are big enough for the validated lane to test at all.
@@ -281,6 +291,16 @@ def format_plan(summary: Dict[str, Any]) -> str:
     lines.append("         each decision names ~%s cells at once; smallest is %s"
                  % (format(labels["cells_per_decision"], ","),
                     format(labels["smallest_chosen"], ",")))
+    # What the minimum buys, which is not the same as whether it passes. Two
+    # named classes clear the gate's two-class condition and leave exactly one
+    # cell-type pair to test -- a lymph node reaches 70% on T cells and B cells
+    # alone, so the cheapest review there is also the thinnest result.
+    pairs = pair_count(labels["decisions"])
+    lines.append("         naming only these gives %d class(es) -> %d cell-type pair(s) to test"
+                 % (labels["decisions"], pairs))
+    if pairs <= 1:
+        lines.append("           One pair is the whole neighbourhood analysis. Naming a few more")
+        lines.append("           clusters costs a decision each and multiplies what can be asked.")
     for group in labels["groups"]:
         lines.append("           %-14s %9s cells" % (group["group"], format(group["cells"], ",")))
     markers = labels.get("markers") or {}
@@ -333,6 +353,12 @@ def format_plan(summary: Dict[str, Any]) -> str:
         biggest = labels["groups"][0]["group"] if labels.get("groups") else ""
         lines.extend(malignant_caveat(tumour["evidence"],
                                       summary.get("cluster_markers"), biggest))
+    elif tumour.get("known") is False:
+        lines.append("")
+        lines.append("TISSUE UNKNOWN")
+        lines.append("  This bundle carries no `experiment.xenium`, so nothing here knows whether the")
+        lines.append("  section is neoplastic. If it is, every lineage call below is provisional for")
+        lines.append("  the reason a tumour section always is, and this plan has not said so.")
 
     lines.append("")
     lines.append("WHAT THIS BUYS, AND WHAT IT DOES NOT")
@@ -587,15 +613,19 @@ def tumour_context(dataset_path: str) -> Dict[str, Any]:
         with open(candidate, encoding="utf-8") as handle:
             metadata = json.load(handle) or {}
     except (OSError, ValueError):
-        return {"neoplastic": False, "evidence": ""}
+        # No metadata is not "healthy": it is "cannot tell". A GEO deposit ships
+        # no experiment file, and the whole GSE311609 series is tumour, so a
+        # flat False here would quietly drop the caveat on exactly that data.
+        return {"neoplastic": False, "evidence": "", "known": False}
 
     for key in ("run_name", "region_name", "panel_tissue_type"):
         value = str(metadata.get(key) or "")
         lowered = value.lower()
         for word in NEOPLASM_WORDS:
             if word in lowered:
-                return {"neoplastic": True, "evidence": "%s = %s" % (key, value), "word": word}
-    return {"neoplastic": False, "evidence": ""}
+                return {"neoplastic": True, "evidence": "%s = %s" % (key, value),
+                        "word": word, "known": True}
+    return {"neoplastic": False, "evidence": "", "known": True}
 
 
 def malignant_caveat(evidence: str,

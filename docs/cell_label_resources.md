@@ -243,6 +243,22 @@ That last line is measured, not projected: the gate was run against those ten
 decisions and returned `validated_ready`, 4 reviewed classes and 6 reviewed
 regions. `scripts/size_expert_review.py --all` sizes every section the same way.
 
+All four blocked sections, sized the same way:
+
+```text
+                    cells    clusters  labels  regions  total  markers separate?
+healthy brain      24,406       9         4       6      10    yes
+glioblastoma       40,786      11         5       6      11    two pairs do not
+lymph node        372,099       8         2       9      11    yes, but 1 pair
+breast S1         209,467       9         5      11      16    one pair does not
+```
+
+The totals are close and the jobs are not. The lymph node has the cheapest label
+side of all — T cells and B cells are 70% of the section, so **two** decisions
+clear the gate — and that is also its problem: two classes give exactly one
+cell-type pair to test, which is the entire neighbourhood analysis. The plan says
+so rather than reporting the cheapness alone.
+
 The glioblastoma section costs about the same and is not the same job:
 
 ```text

@@ -6164,3 +6164,114 @@ class MalignantCaveatTests(unittest.TestCase):
             tumour={"neoplastic": True, "evidence": "run_name = Breast Cancer"})
         text = self.sizing.format_plan(summary)
         self.assertIn("cluster 5 (SFRP1, CD24, EPCAM)", text)
+
+
+class GeoBundleDegradationTests(unittest.TestCase):
+    """A bundle with no `experiment.xenium` is normal, not broken.
+
+    GEO deposits them that way. Coordinates are already in microns, so the
+    section loads and gates; the parts that need run metadata are the morphology
+    viewer and any judgement about the tissue.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.bundle = self.root / "geo"
+        self.bundle.mkdir()
+        (self.bundle / "cells.parquet.gz").write_bytes(b"x")
+        (self.bundle / "cell_feature_matrix.h5").write_bytes(b"x")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_a_parquet_cell_table_is_not_reported_as_a_missing_one(self):
+        """The note told users to go and find `cells.csv.gz`, a file the loader
+        does not need once it can read the parquet beside it."""
+        from spatialmind.app import uploads
+
+        note = uploads.describe(str(self.bundle))["note"]
+        self.assertNotIn("cells.csv.gz", note)
+        self.assertIn("how GEO deposits them", note)
+
+    def test_a_genuinely_incomplete_bundle_still_says_what_is_missing(self):
+        from spatialmind.app import uploads
+
+        partial = self.root / "partial"
+        partial.mkdir()
+        (partial / "cells.parquet.gz").write_bytes(b"x")
+        note = uploads.describe(str(partial))["note"]
+        self.assertIn("incomplete", note)
+        self.assertIn("cell_feature_matrix.h5", note)
+
+    def test_unknown_tissue_is_distinguished_from_known_healthy(self):
+        """No metadata is "cannot tell", not "not a tumour". The whole
+        GSE311609 series is tumour and ships no experiment file, so a flat False
+        would drop the caveat on exactly that data."""
+        from spatialmind.review.sizing import tumour_context
+
+        unknown = tumour_context(str(self.bundle))
+        self.assertFalse(unknown["neoplastic"])
+        self.assertFalse(unknown["known"])
+
+        healthy = self.root / "healthy"
+        healthy.mkdir()
+        (healthy / "experiment.xenium").write_text(
+            json.dumps({"run_name": "Human Healthy Brain"}), encoding="utf-8")
+        known = tumour_context(str(healthy))
+        self.assertFalse(known["neoplastic"])
+        self.assertTrue(known["known"])
+
+    def test_the_plan_says_when_it_cannot_tell(self):
+        from spatialmind.review import sizing
+
+        text = sizing.format_plan(sizing.summarise(
+            "geo", sizing.size_label_review({"0": 700, "1": 300}),
+            sizing.size_region_review({"r1": 600, "r2": 400}),
+            tumour={"neoplastic": False, "evidence": "", "known": False}))
+        self.assertIn("TISSUE UNKNOWN", text)
+
+        quiet = sizing.format_plan(sizing.summarise(
+            "healthy", sizing.size_label_review({"0": 700, "1": 300}),
+            sizing.size_region_review({"r1": 600, "r2": 400}),
+            tumour={"neoplastic": False, "evidence": "", "known": True}))
+        self.assertNotIn("TISSUE UNKNOWN", quiet)
+
+
+class ClassPairArithmeticTests(unittest.TestCase):
+    """The decision count and the analysis it enables are different numbers.
+
+    A lymph node reaches 70% coverage on T cells and B cells alone: two
+    decisions, which clears the gate's two-class condition exactly, and leaves
+    exactly one cell-type pair to test. The cheapest review there is also the
+    thinnest result, and only the cheapness was ever printed.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+
+    def test_pairs_grow_quadratically_with_named_classes(self):
+        self.assertEqual(self.sizing.pair_count(2), 1)
+        self.assertEqual(self.sizing.pair_count(4), 6)
+        self.assertEqual(self.sizing.pair_count(5), 10)
+        # Degenerate inputs are zero, not negative.
+        self.assertEqual(self.sizing.pair_count(1), 0)
+        self.assertEqual(self.sizing.pair_count(0), 0)
+        self.assertEqual(self.sizing.pair_count(-3), 0)
+
+    def test_a_two_class_plan_warns_that_one_pair_is_the_whole_analysis(self):
+        thin = self.sizing.format_plan(self.sizing.summarise(
+            "lymph", self.sizing.size_label_review({"0": 360, "2": 350, "1": 290}),
+            self.sizing.size_region_review({"r1": 600, "r2": 400})))
+        self.assertIn("1 cell-type pair(s) to test", thin)
+        self.assertIn("One pair is the whole neighbourhood analysis", thin)
+
+    def test_a_richer_plan_reports_pairs_without_the_warning(self):
+        rich = self.sizing.format_plan(self.sizing.summarise(
+            # Top three reach 65%, top four reach 83%: four decisions, six pairs.
+            "brain", self.sizing.size_label_review(
+                {"4": 260, "0": 200, "1": 190, "2": 180, "3": 170}),
+            self.sizing.size_region_review({"r1": 600, "r2": 400})))
+        self.assertIn("6 cell-type pair(s) to test", rich)
+        self.assertNotIn("One pair is the whole", rich)
