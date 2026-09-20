@@ -1,5 +1,5 @@
 from spatialmind.contracts import ArrayRef, CellByFeatureContract, ContractViolationError, SegmentationRef
-from spatialmind.schemas import SpatialDataset
+from spatialmind.schemas import expression_feature_names, SpatialDataset
 
 
 def to_cell_by_feature_contract(dataset: SpatialDataset) -> CellByFeatureContract:
@@ -28,7 +28,11 @@ def to_cell_by_feature_contract(dataset: SpatialDataset) -> CellByFeatureContrac
         qc_passed=bool(dataset.records),
         assay_subtype=subtype,
         feature_type=feature_type,
-        n_features=len(dataset.genes),
+        # Measured genes, not every detected feature. Counting `dataset.genes`
+        # raw put control probes and QC pseudo-features in the panel size --
+        # 483 for a 319-gene brain panel -- and that number is what the
+        # reliability record printed beside every claim.
+        n_features=len(expression_feature_names(dataset)),
         is_targeted_panel=bool(dataset.metadata.get("is_targeted_panel") or subtype == "xenium_spatial_rna"),
         panel_name=dataset.metadata.get("panel_name"),
         resolution=resolution,  # type: ignore[arg-type]

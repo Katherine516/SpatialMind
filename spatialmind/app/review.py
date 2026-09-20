@@ -17,8 +17,14 @@ from .catalog import resolve_xenium_root
 
 LABEL_FILENAME = "expert_cell_labels.csv"
 REGION_FILENAME = "cell_regions.csv"
-LABEL_FIELDS = ["cell_id", "expert_label", "confidence", "notes"]
-REGION_FIELDS = ["cell_id", "region", "region_confidence", "notes"]
+# `assignment_scope` records what the reviewer actually decided, not just what
+# the decision covered. One click on a cluster writes thousands of rows, and
+# every downstream consumer read those rows as thousands of per-cell expert
+# calls -- the annotation-quality score among them. Appended to the documented
+# column set rather than replacing it: readers resolve columns by name, so a
+# table written before this column existed still loads.
+LABEL_FIELDS = ["cell_id", "expert_label", "confidence", "notes", "assignment_scope"]
+REGION_FIELDS = ["cell_id", "region", "region_confidence", "notes", "assignment_scope"]
 
 KINDS = {
     "labels": (LABEL_FILENAME, LABEL_FIELDS, "expert_label"),
@@ -71,6 +77,7 @@ def assign(
     value: str,
     confidence: float = 0.9,
     notes: str = "",
+    scope: str = "cells",
 ) -> AssignmentResult:
     """Merge one assignment into the table and rewrite it atomically."""
     if kind not in KINDS:
@@ -92,6 +99,9 @@ def assign(
             value_field: value,
             confidence_field: "%.2f" % float(confidence),
             "notes": notes or "assigned in SpatialMind Studio",
+            # One scope string per assignment, identical across every row it
+            # wrote, so the count of distinct scopes is the count of decisions.
+            "assignment_scope": scope,
         }
         written += 1
 

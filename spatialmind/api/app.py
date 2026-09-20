@@ -7,6 +7,11 @@ from ..agent import SpatialAgent, SpatialMindAgent
 from ..batch import BatchEngine
 from ..llm import build_llm_provider
 from ..ingestion import infer_data_type, validate_xenium_label_intake
+from ..gatekeeper import (
+    DEFAULT_MIN_LABEL_COVERAGE,
+    DEFAULT_MIN_REGION_COVERAGE,
+    CoverageFloorError,
+)
 from ..pilot import run_pilot
 from ..promotion import build_local_promotion_report
 from ..storage import StorageLayer
@@ -32,11 +37,12 @@ def create_app():
         report_format: Literal["html", "pdf", "both"] = "html"
         max_records: int = 5000
         full_section: bool = False
-        review_max_records: int = 5000
-        min_label_coverage: float = 0.7
-        min_region_coverage: float = 0.7
+        review_max_records: int = 0
+        min_label_coverage: float = DEFAULT_MIN_LABEL_COVERAGE
+        min_region_coverage: float = DEFAULT_MIN_REGION_COVERAGE
         allow_single_region: bool = False
         allow_sampled_validation: bool = False
+        acknowledge_low_coverage: bool = False
         readiness_only: bool = False
 
     class BatchRequest(BaseModel):
@@ -47,13 +53,14 @@ def create_app():
         data_path: str = "data/Human_Breast_Biomarkers_S1_Top_outs"
         output_dir: str = "outputs/xenium_validated_pilot"
         max_records: int = 2500
-        min_label_coverage: float = 0.7
-        min_region_coverage: float = 0.7
+        min_label_coverage: float = DEFAULT_MIN_LABEL_COVERAGE
+        min_region_coverage: float = DEFAULT_MIN_REGION_COVERAGE
         allow_single_region: bool = False
         report_format: Literal["html", "pdf", "both"] = "html"
         full_section: bool = False
-        review_max_records: int = 5000
+        review_max_records: int = 0
         allow_sampled_validation: bool = False
+        acknowledge_low_coverage: bool = False
         readiness_only: bool = False
         prompt: str = "Validated Xenium pilot: annotate cells, summarize user regions, and test spatial relationships."
 
@@ -73,21 +80,25 @@ def create_app():
     @app.post("/runs")
     def create_run(request: RunRequest) -> Dict[str, object]:
         if infer_data_type(request.data_path) in {"xenium_directory", "xenium_experiment_file"}:
-            return _jsonable(
-                run_pilot(
-                    request.data_path,
-                    output_dir=Path(request.output_root),
-                    max_records=0 if request.full_section else request.max_records,
-                    min_label_coverage=request.min_label_coverage,
-                    min_region_coverage=request.min_region_coverage,
-                    allow_single_region=request.allow_single_region,
-                    report_format=request.report_format,
-                    readiness_only=request.readiness_only,
-                    require_complete_section=not request.allow_sampled_validation,
-                    review_max_records=request.review_max_records,
-                    query=request.prompt,
+            try:
+                return _jsonable(
+                    run_pilot(
+                        request.data_path,
+                        output_dir=Path(request.output_root),
+                        max_records=0 if request.full_section else request.max_records,
+                        min_label_coverage=request.min_label_coverage,
+                        min_region_coverage=request.min_region_coverage,
+                        allow_single_region=request.allow_single_region,
+                        report_format=request.report_format,
+                        readiness_only=request.readiness_only,
+                        require_complete_section=not request.allow_sampled_validation,
+                        review_max_records=request.review_max_records,
+                        acknowledge_low_coverage=request.acknowledge_low_coverage,
+                        query=request.prompt,
+                    )
                 )
-            )
+            except CoverageFloorError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         provider = build_llm_provider(request.llm_provider, model=request.llm_model)
         agent = SpatialMindAgent(output_root=request.output_root, llm_provider=provider)
         run = agent.run(request.prompt, request.data_path, report_format=request.report_format)
@@ -142,21 +153,27 @@ def create_app():
 
     @app.post("/pilot/xenium/run")
     def run_xenium_pilot(request: XeniumPilotRequest) -> Dict[str, object]:
-        return _jsonable(
-            run_pilot(
-                request.data_path,
-                output_dir=Path(request.output_dir),
-                max_records=0 if request.full_section else request.max_records,
-                min_label_coverage=request.min_label_coverage,
-                min_region_coverage=request.min_region_coverage,
-                allow_single_region=request.allow_single_region,
-                report_format=request.report_format,
-                readiness_only=request.readiness_only,
-                require_complete_section=not request.allow_sampled_validation,
-                review_max_records=request.review_max_records,
-                query=request.prompt,
+        # A threshold under the floor is a bad request, not a server fault: the
+        # caller asked for a gate that cannot refuse anything.
+        try:
+            return _jsonable(
+                run_pilot(
+                    request.data_path,
+                    output_dir=Path(request.output_dir),
+                    max_records=0 if request.full_section else request.max_records,
+                    min_label_coverage=request.min_label_coverage,
+                    min_region_coverage=request.min_region_coverage,
+                    allow_single_region=request.allow_single_region,
+                    report_format=request.report_format,
+                    readiness_only=request.readiness_only,
+                    require_complete_section=not request.allow_sampled_validation,
+                    review_max_records=request.review_max_records,
+                    acknowledge_low_coverage=request.acknowledge_low_coverage,
+                    query=request.prompt,
+                )
             )
-        )
+        except CoverageFloorError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/promotion/local")
     def promote_local(request: LocalPromotionRequest) -> Dict[str, object]:

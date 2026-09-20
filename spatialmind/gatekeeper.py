@@ -40,6 +40,54 @@ ALWAYS_LABEL_GATED = {"annotation"}
 # classify them, but two of them name cell types and are therefore gated.
 LEGACY_LABEL_GATED = {"cell_type_distribution", "cell_type_colocalization"}
 
+# The reviewed-coverage thresholds the gate applies unless a caller lowers them.
+# Named here because they were literal `0.7` defaults in six signatures across
+# three layers, and a report that states the threshold it used has to read the
+# same number the gate applied.
+DEFAULT_MIN_LABEL_COVERAGE = 0.7
+DEFAULT_MIN_REGION_COVERAGE = 0.7
+
+# Below this, a coverage threshold stops being a relaxed standard and becomes no
+# standard at all: at 0.0, two labelled cells clear the gate on a 24,406-cell
+# section and the run reports `validated_ready`. Lowering past this needs an
+# explicit acknowledgement from the caller, and the report says so wherever it
+# names the threshold.
+MIN_COVERAGE_FLOOR = 0.2
+
+
+class CoverageFloorError(ValueError):
+    """Raised when a caller lowers a coverage threshold past `MIN_COVERAGE_FLOOR`.
+
+    Not a gate refusal -- the gate has not been evaluated yet. This is a refusal
+    to *configure* the gate into something that cannot refuse, which is a caller
+    error and belongs at the entry point rather than in the run's blockers.
+    """
+
+    def __init__(self, kind: str, requested: float, floor: float = MIN_COVERAGE_FLOOR) -> None:
+        self.kind = kind
+        self.requested = requested
+        self.floor = floor
+        super().__init__(
+            "min_%s_coverage=%.3f is below the %.2f floor: at that threshold a handful of rows "
+            "clears the gate on a whole section. Pass acknowledge_low_coverage=True "
+            "(CLI: --acknowledge-low-coverage) to proceed; the report will state it."
+            % (kind, requested, floor)
+        )
+
+
+def enforce_coverage_floor(
+    min_label_coverage: float,
+    min_region_coverage: float,
+    acknowledge_low_coverage: bool = False,
+) -> None:
+    """Refuse a threshold low enough that the gate could not refuse anything."""
+    if acknowledge_low_coverage:
+        return
+    if min_label_coverage < MIN_COVERAGE_FLOOR:
+        raise CoverageFloorError("label", float(min_label_coverage))
+    if min_region_coverage < MIN_COVERAGE_FLOOR:
+        raise CoverageFloorError("region", float(min_region_coverage))
+
 
 class GateBlockedError(RuntimeError):
     """Raised when a gated tool is asked to run before the gate opens."""
@@ -218,6 +266,62 @@ def _dedupe(items: List[str]) -> List[str]:
             seen.add(item)
             ordered.append(item)
     return ordered
+def build_gate_evidence(
+    gate: Dict[str, Any],
+    label_report: Dict[str, Any],
+    region_report: Dict[str, Any],
+    min_label_coverage: float,
+    min_region_coverage: float,
+    allow_single_region: bool = False,
+    acknowledge_low_coverage: bool = False,
+) -> Dict[str, Any]:
+    """The numbers the gate decided on, in one place a report can print.
+
+    The gate already computed all of this and the payload carried none of it, so
+    the report's Limitations section said "expert_labels_applied" whether the
+    reviewer covered 99.8% of the section or 0.01% of it -- the same sentence,
+    with the distinguishing number sitting one dict away. Coverage without the
+    threshold it was judged against is only half the fact, so both travel here,
+    together with whether the threshold was the default.
+    """
+    lowered = [
+        name
+        for name, used, default in (
+            ("label", float(min_label_coverage), DEFAULT_MIN_LABEL_COVERAGE),
+            ("region", float(min_region_coverage), DEFAULT_MIN_REGION_COVERAGE),
+        )
+        if used < default
+    ]
+    return {
+        "label_status": str(label_report.get("status") or "unknown"),
+        "label_coverage": gate.get("label_coverage"),
+        "label_matched_cells": int(label_report.get("matched_cells") or 0),
+        "label_review_decisions": int(label_report.get("review_decisions") or 0),
+        "label_total_records": int(label_report.get("total_records") or 0),
+        "min_label_coverage": float(min_label_coverage),
+        "region_status": str(region_report.get("status") or "unknown"),
+        "region_coverage": gate.get("region_coverage"),
+        "region_matched_cells": int(region_report.get("matched_cells") or 0),
+        "region_review_decisions": int(region_report.get("review_decisions") or 0),
+        "region_total_records": int(region_report.get("total_records") or 0),
+        "min_region_coverage": float(min_region_coverage),
+        "reviewed_cell_classes": list(gate.get("reviewed_cell_classes") or []),
+        "reviewed_regions": list(gate.get("reviewed_regions") or []),
+        "reviewed_basis": dict(gate.get("reviewed_basis") or {}),
+        "default_min_label_coverage": DEFAULT_MIN_LABEL_COVERAGE,
+        "default_min_region_coverage": DEFAULT_MIN_REGION_COVERAGE,
+        "thresholds_lowered": lowered,
+        "allow_single_region": bool(allow_single_region),
+        "acknowledge_low_coverage": bool(acknowledge_low_coverage),
+        "coverage_floor": MIN_COVERAGE_FLOOR,
+        "below_coverage_floor": [
+            name
+            for name, used in (("label", float(min_label_coverage)), ("region", float(min_region_coverage)))
+            if used < MIN_COVERAGE_FLOOR
+        ],
+    }
+
+
 def pilot_gate(
     dataset: SpatialDataset,
     asset_readiness: Dict[str, Any],
@@ -257,14 +361,35 @@ def pilot_gate(
         blockers.append("Region label coverage %.3f is below required %.3f." % (region_coverage, min_region_coverage))
         required.append("Increase region label coverage or lower the explicit threshold.")
 
-    labels = {record.cell_type for record in dataset.records if record.cell_type and "unannotated" not in record.cell_type.lower()}
+    # Conditions 4 and 5 count what the *reviewer* supplied, which is not the
+    # same as what is on the records. By the time the gate runs, the loader has
+    # already filled `cell_type` with marker-rule guesses and `region` with a
+    # section-wide placeholder, so reading the records made both conditions pass
+    # on the loader's own output: one reviewed cell in a 24,406-cell section
+    # counted as six biological classes and two user regions. The Studio never
+    # had the bug because its gate dataset carries no loader labels at all --
+    # which is why the two paths reported different blockers for one section.
+    #
+    # `reviewed_labels`/`reviewed_regions` are the distinct values the reviewed
+    # table actually applied. An older report that predates those fields has
+    # neither, so fall back to the record scan rather than blocking a rerun of a
+    # stored run; the fallback is named in the payload so it cannot pass silently.
+    labels, labels_basis = _reviewed_values(
+        label_report, "reviewed_labels", dataset, "cell_type", drop_substring="unannotated"
+    )
     if len(labels) < 2:
-        blockers.append("At least two biological cell labels are required for marker/neighborhood validation.")
+        blockers.append(
+            "At least two biological cell labels are required for marker/neighborhood validation; "
+            "the reviewed label table supplies %d." % len(labels)
+        )
         required.append("Provide at least two reviewed biological cell classes.")
 
-    regions = {record.region for record in dataset.records if record.region}
+    regions, regions_basis = _reviewed_values(region_report, "reviewed_regions", dataset, "region")
     if not allow_single_region and len(regions) < 2:
-        blockers.append("At least two user-defined regions are required for a validated region summary pilot.")
+        blockers.append(
+            "At least two user-defined regions are required for a validated region summary pilot; "
+            "the reviewed region table supplies %d." % len(regions)
+        )
         required.append("Provide at least two reviewed tissue/ROI regions.")
 
     return {
@@ -273,7 +398,40 @@ def pilot_gate(
         "required_next_inputs": _dedupe(required),
         "label_coverage": round(label_coverage, 4),
         "region_coverage": round(region_coverage, 4),
+        "reviewed_cell_classes": sorted(labels),
+        "reviewed_regions": sorted(regions),
+        "reviewed_basis": {"labels": labels_basis, "regions": regions_basis},
     }
+
+
+def _reviewed_values(
+    report: Dict[str, Any],
+    key: str,
+    dataset: SpatialDataset,
+    attribute: str,
+    drop_substring: str = "",
+) -> tuple:
+    """Distinct values the reviewer supplied, and how we know.
+
+    Returns ``(values, basis)`` where basis is ``reviewed_table`` when the report
+    carried them and ``record_scan_fallback`` when it did not -- the latter
+    includes whatever the loader put on the records, so a caller that sees it
+    must not treat the count as reviewer-supplied.
+    """
+    listed = report.get(key)
+    if isinstance(listed, list):
+        values = {str(item).strip() for item in listed if str(item).strip()}
+        if drop_substring:
+            values = {item for item in values if drop_substring not in item.lower()}
+        return values, "reviewed_table"
+    values = {
+        str(getattr(record, attribute, "") or "").strip()
+        for record in dataset.records
+        if str(getattr(record, attribute, "") or "").strip()
+    }
+    if drop_substring:
+        values = {item for item in values if drop_substring not in item.lower()}
+    return values, "record_scan_fallback"
 
 
 
