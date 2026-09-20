@@ -1,6 +1,7 @@
 import math
 import random
 import warnings
+import weakref
 from collections import Counter, defaultdict
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -25,6 +26,21 @@ from spatialmind.schemas import (
 )
 
 from .exceptions import DataModalityError, InsufficientDataError, InvalidParameterError, MissingPreconditionError
+
+
+def _add_caveats(result: ToolResult, extra: List[str]) -> None:
+    """Append caveats the result is not already carrying.
+
+    The loader writes the targeted-panel caveat into ``dataset.notes``, and
+    ``_type_honesty_caveats`` derives the same sentence from the metadata so a
+    tool that never reads notes still states it. A wrapper that composes both --
+    ``qc_and_cluster``, ``annotation``, ``cell_neighborhood_enrichment`` -- then
+    printed the line twice in the report. Appending through here keeps both
+    sources without repeating either.
+    """
+    for caveat in extra:
+        if caveat not in result.caveats:
+            result.caveats.append(caveat)
 
 
 def require_records(dataset: SpatialDataset) -> None:
@@ -58,7 +74,7 @@ def qc_and_cluster(dataset: SpatialDataset, params: Dict[str, object]) -> ToolRe
     result.summary = "Ran per-type QC and clustering. %s" % result.summary
     result.metrics["qc"] = dict(dataset.qc_metrics)
     result.metrics["assay_subtype"] = dataset.metadata.get("assay_subtype", dataset.modality)
-    result.caveats.extend(_type_honesty_caveats(dataset))
+    _add_caveats(result, _type_honesty_caveats(dataset))
     return result
 
 
@@ -67,7 +83,7 @@ def annotation(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult
     result.tool_name = "annotation"
     result.metrics["assay_subtype"] = dataset.metadata.get("assay_subtype", dataset.modality)
     caveats = _type_honesty_caveats(dataset)
-    result.caveats.extend(caveats)
+    _add_caveats(result, caveats)
     result.label_caveat = caveats[0] if caveats else None
     return result
 
@@ -234,7 +250,7 @@ def cell_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, obje
     result = neighborhood_enrichment(dataset, params)
     result.tool_name = "cell_neighborhood_enrichment"
     result.metrics["resolution"] = dataset.metadata.get("resolution", "subcellular")
-    result.caveats.extend(_type_honesty_caveats(dataset))
+    _add_caveats(result, _type_honesty_caveats(dataset))
     result.label_caveat = _first_or_none(_type_honesty_caveats(dataset))
     return result
 
@@ -2443,7 +2459,7 @@ expression_feature_names = _expression_feature_names
 # dataset it came from. Deliberately not an unbounded dict: a full-section matrix
 # with its two layers is around 1.8 GB, and the access pattern this exists for is
 # many tools in a row over one dataset, which a single slot covers exactly.
-_ANNDATA_CACHE: Dict[str, Any] = {"fingerprint": None, "adata": None}
+_ANNDATA_CACHE: Dict[str, Any] = {"fingerprint": None, "adata": None, "dataset": None}
 
 
 def _anndata_fingerprint(dataset: SpatialDataset, genes: List[str]) -> tuple:
@@ -2462,6 +2478,16 @@ def _anndata_fingerprint(dataset: SpatialDataset, genes: List[str]) -> tuple:
     label transfer -- and that happens at load, never between tool calls. If a
     tool is ever written that rewrites expression in place, it must clear this
     cache, and this comment is the reason why.
+
+    `id(dataset)` is in here to separate datasets, but an address only identifies
+    an object while that object is alive: CPython hands the same address to the
+    next allocation once the first is collected. Two datasets that never coexist
+    -- the usual shape of `analyse(build(a)); analyse(build(b))` -- could
+    therefore land on one fingerprint, differing only in expression values, which
+    is the one thing above that is deliberately not hashed. The second dataset
+    was then served the first one's matrix. The cache keeps a weak reference
+    alongside this tuple so a hit has to be the same live object, not merely the
+    same address; see `_cache_holds`.
     """
     labels = hash(tuple((record.cell_type, record.region) for record in dataset.records))
     return (id(dataset), len(dataset.records), tuple(genes), labels,
@@ -2475,7 +2501,7 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
 
     genes = expression_feature_names(dataset)
     fingerprint = _anndata_fingerprint(dataset, genes) if genes else None
-    if fingerprint is not None and _ANNDATA_CACHE["fingerprint"] == fingerprint:
+    if fingerprint is not None and _ANNDATA_CACHE["fingerprint"] == fingerprint and _cache_holds(dataset):
         # A copy, never the cached object: every caller mutates what it gets --
         # scanpy normalises in place, squidpy writes into obsp and uns -- and
         # handing out the same object would let one tool's graph leak into the
@@ -2543,8 +2569,20 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     if fingerprint is not None:
         _ANNDATA_CACHE["fingerprint"] = fingerprint
         _ANNDATA_CACHE["adata"] = adata
+        _ANNDATA_CACHE["dataset"] = weakref.ref(dataset)
         return adata.copy()
     return adata
+
+
+def _cache_holds(dataset: SpatialDataset) -> bool:
+    """Is the cached matrix this very object's, rather than a recycled address's?
+
+    A dead referent answers None, which is a miss and a rebuild -- correct, and
+    the case the cache was never for: a plan holds its dataset alive across the
+    tools it runs.
+    """
+    reference = _ANNDATA_CACHE["dataset"]
+    return reference is not None and reference() is dataset
 
 
 def clear_anndata_cache() -> None:
@@ -2553,6 +2591,7 @@ def clear_anndata_cache() -> None:
     one mutation the fingerprint cannot see."""
     _ANNDATA_CACHE["fingerprint"] = None
     _ANNDATA_CACHE["adata"] = None
+    _ANNDATA_CACHE["dataset"] = None
 
 
 def _rank_genes_groups_table(adata: Any, group: str, limit: int) -> List[Dict[str, object]]:

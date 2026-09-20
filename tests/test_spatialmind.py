@@ -4,6 +4,7 @@ import json
 import math
 import os
 import csv
+import re
 import shutil
 import sys
 import tempfile
@@ -66,10 +67,13 @@ from spatialmind.tools import MVP_TOOL_NAMES, build_default_registry, build_full
 from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.fusion import ModalityFuser
 from spatialmind.tools.implementations import (
+    annotation,
     assess_reference_lineage_coverage,
+    cell_neighborhood_enrichment,
     describe_lineage_coverage,
     feature_overlay,
     marker_detection,
+    qc_and_cluster,
     reference_label_transfer,
 )
 from spatialmind.workflows import INTEGRATION_MODE, SCATAC_STANDALONE, SCRNA_STANDALONE, XENIUM_STANDALONE
@@ -239,6 +243,24 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(dataset.sources[0].data_type, "xenium_experiment_file")
         self.assertTrue(dataset.metadata["xenium_files"]["experiment_xenium"])
         self.assertTrue(dataset.metadata["xenium_explorer_assets"]["analysis_summary_filepath"]["exists"])
+
+    def test_gene_attachment_is_counted_against_the_cells_that_survived_qc(self):
+        """The caveat quoted a fraction above 1.
+
+        Matching runs on the scanned cells; per-cell QC then drops some. Reporting
+        the matcher's tally against the surviving record count mixed the two
+        populations, and the healthy brain section printed "attached ... to
+        24404/24362 loaded cells" -- which reads as a load that gained cells.
+        """
+        dataset = DataIngestionLayer().load_xenium_directory(XENIUM_LYMPH, max_records=2000)
+        attachment = [note for note in dataset.notes if "attached top expressed genes" in note]
+        self.assertEqual(len(attachment), 1, dataset.notes)
+        attached, loaded = (int(part) for part in re.search(r"to (\d+)/(\d+) loaded cells", attachment[0]).groups())
+        self.assertEqual(loaded, len(dataset.records))
+        self.assertLessEqual(attached, loaded, attachment[0])
+        # QC dropped cells here, so the denominator really is the smaller number
+        # and a stale one would have been caught.
+        self.assertTrue(dataset.metadata["cell_qc"]["dropped_cell_count"] > 0)
 
     def test_discovers_and_inspects_xenium_datasets(self):
         candidates = discover_dataset_candidates(os.path.join(ROOT, "data"))
@@ -1685,6 +1707,52 @@ class LabelTransferTests(unittest.TestCase):
         )
         with self.assertRaises(MissingPreconditionError):
             reference_label_transfer(self._target(), {"reference_dataset": reference, "min_shared_features": 2})
+
+
+class CaveatCompositionTests(unittest.TestCase):
+    """A caveat stated twice reads as two findings.
+
+    The loader writes the targeted-panel caveat into `dataset.notes`, and
+    `_type_honesty_caveats` derives the same sentence from the metadata so a tool
+    that never reads notes still states it. Every wrapper that composes both --
+    `qc_and_cluster`, `annotation`, `cell_neighborhood_enrichment` -- printed the
+    line twice, once in the run's own report.
+    """
+
+    def _panel_dataset(self):
+        dataset = DataIngestionLayer().load_csv(DEMO, sample_id="BRCA_04")
+        dataset.metadata["is_targeted_panel"] = True
+        dataset.metadata["feature_type"] = "targeted_panel"
+        # What the Xenium loader does at ingestion time.
+        dataset.notes.append("Xenium uses a targeted panel; a missing gene means not measured, not unexpressed.")
+        return dataset
+
+    def test_a_wrapper_does_not_repeat_a_caveat_the_loader_already_wrote(self):
+        for tool in (qc_and_cluster, annotation, cell_neighborhood_enrichment):
+            with self.subTest(tool=tool.__name__):
+                dataset = self._panel_dataset()
+                try:
+                    result = tool(dataset, {"engine": "prototype"})
+                except MissingPreconditionError:
+                    continue  # this tool refuses the demo data; nothing to compose
+                duplicates = [c for c in set(result.caveats) if result.caveats.count(c) > 1]
+                self.assertEqual(duplicates, [], "%s repeated: %s" % (tool.__name__, duplicates))
+                self.assertIn(
+                    "Xenium uses a targeted panel; a missing gene means not measured, not unexpressed.",
+                    result.caveats,
+                    "de-duplication must not drop the caveat entirely",
+                )
+
+    def test_the_caveat_still_appears_when_the_loader_did_not_write_it(self):
+        """A tool reading metadata rather than notes must still state the panel."""
+        dataset = DataIngestionLayer().load_csv(DEMO, sample_id="BRCA_04")
+        dataset.metadata["is_targeted_panel"] = True
+        dataset.metadata["feature_type"] = "targeted_panel"
+        result = annotation(dataset, {"engine": "prototype"})
+        self.assertTrue(
+            any("targeted panel" in caveat for caveat in result.caveats),
+            result.caveats,
+        )
 
 
 class ToolHonestyTests(unittest.TestCase):
@@ -4792,6 +4860,47 @@ class AnnDataCacheTests(unittest.TestCase):
         subset = SpatialDataset(sample_id="S", source_path="x", records=full.records[:4])
         self.assertEqual(_dataset_to_anndata(subset).n_obs, 4)
         self.assertEqual(_dataset_to_anndata(full).n_obs, 12)
+
+    def test_a_recycled_address_is_not_treated_as_the_same_dataset(self):
+        """The fingerprint carries `id(dataset)`, and an address is only unique
+        among *live* objects: CPython gives the next allocation the address of
+        one it just collected. Two datasets that never coexist then share a
+        fingerprint whose only other difference -- expression values -- is the
+        one thing it deliberately does not hash, and the second was handed the
+        first one's matrix.
+
+        The datasets here differ in expression alone: same length, same genes,
+        same labels, same regions, same sample id. Both record lists are built
+        up front so that the only allocation between the two datasets is the
+        dataset object itself, which is what makes the address reuse reliable
+        rather than a matter of luck.
+        """
+        from spatialmind.tools.implementations import _dataset_to_anndata
+
+        def records(seed):
+            return [
+                SpotRecord("S", float(i), 0.0, "a", {"G1": float(i + seed), "G2": 1.0}, cell_id="c%d" % i)
+                for i in range(12)
+            ]
+
+        first_records, second_records = records(0), records(5)
+        first_dataset = SpatialDataset(sample_id="S", source_path="x", records=first_records)
+        address = id(first_dataset)
+        first = _dataset_to_anndata(first_dataset)
+        first_values = [float(value) for value in first[:, "G1"].X.reshape(-1)]
+        del first_dataset
+
+        second_dataset = SpatialDataset(sample_id="S", source_path="x", records=second_records)
+        second = _dataset_to_anndata(second_dataset)
+        second_values = [float(value) for value in second[:, "G1"].X.reshape(-1)]
+
+        if id(second_dataset) != address:
+            self.skipTest("the allocator did not reuse the address; nothing to prove here")
+        self.assertNotEqual(
+            first_values,
+            second_values,
+            "a recycled address served the previous dataset's expression matrix",
+        )
 
 
 class ProvenanceFileCoverageTests(unittest.TestCase):

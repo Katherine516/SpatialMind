@@ -566,9 +566,14 @@ class DataIngestionLayer:
         )
         dataset.notes.extend(matrix_warnings)
         if matrix_features:
+            # Count against the cells that survived QC, not the matcher's own
+            # tally: matching runs on the scanned set, QC then drops cells, and
+            # reporting one against the other produced "24404/24362 loaded
+            # cells" -- a fraction above 1, from two different populations.
+            attached_cell_count = sum(1 for record in records if record.cell_id in matrix_features)
             dataset.notes.append(
                 "Xenium adapter attached top expressed genes from cell_feature_matrix.h5 to %d/%d loaded cells."
-                % (matrix_metadata.get("n_cells_matched", 0), len(records))
+                % (attached_cell_count, len(records))
             )
             if matrix_metadata.get("marker_rule_annotations", 0):
                 dataset.notes.append(
