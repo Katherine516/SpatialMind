@@ -115,6 +115,10 @@ def main() -> None:
                         help="A descriptive run directory, to size against its own clustering.")
     parser.add_argument("--worksheet", action="store_true",
                         help="Also write the per-cluster worksheet into the run directory.")
+    parser.add_argument("--candidates", default="",
+                        help="An expert_cell_labels_candidate.csv, to pre-fill what a reference "
+                             "proposes per cluster. Proposals go in their own column; the gate "
+                             "still refuses transferred labels.")
     parser.add_argument("--json", action="store_true", help="Emit the full plan as JSON.")
     args = parser.parse_args()
 
@@ -151,12 +155,19 @@ def main() -> None:
         print()
         if args.worksheet and plan.get("run_dir"):
             written = write_cluster_worksheet(
-                plan["run_dir"], str(Path(plan["run_dir"]) / WORKSHEET_NAME))
+                plan["run_dir"], str(Path(plan["run_dir"]) / WORKSHEET_NAME),
+                candidates=args.candidates)
             if written.get("status") == "written":
                 print("WORKSHEET  %s" % written["path"])
                 print("           %d cluster(s), %d with marker evidence; name the top %d to "
                       "reach the gate." % (written["clusters"], written["with_markers"],
                                            written["decisions_for_gate"]))
+                if written.get("with_proposals"):
+                    print("           %d carry a reference proposal to confirm or correct."
+                          % written["with_proposals"])
+                for mixed in written.get("mixed_proposals") or []:
+                    print("           cluster %s: the reference is split; look at that one."
+                          % mixed)
             else:
                 print("WORKSHEET  not written: %s" % written.get("reason"))
             print()

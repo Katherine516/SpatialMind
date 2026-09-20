@@ -421,6 +421,11 @@ def format_plan(summary: Dict[str, Any]) -> str:
 
 WORKSHEET_FIELDS = [
     "cluster", "n_cells", "share_of_section", "top_markers",
+    # What a reference proposes, kept in its own column and never in
+    # `expert_label`. A transferred label is a draft the gate refuses; writing
+    # it into the answer column would turn "confirm this" into "this is done",
+    # which is the one substitution this whole project exists to prevent.
+    "reference_proposes",
     "loader_guess", "expert_label", "confidence", "uncertain", "notes",
 ]
 WORKSHEET_NAME = "cluster_label_worksheet.csv"
@@ -451,7 +456,8 @@ def read_run_cell_clusters(run_dir: str) -> List[Tuple[str, str]]:
 
 
 def write_cluster_worksheet(run_dir: str, output_path: str,
-                            loader_guesses: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                            loader_guesses: Optional[Dict[str, str]] = None,
+                            candidates: Optional[str] = None) -> Dict[str, Any]:
     """One row per cluster, with the marker evidence to decide on.
 
     The run already writes a per-cell label template with 24,362 rows. That
@@ -473,6 +479,11 @@ def write_cluster_worksheet(run_dir: str, output_path: str,
         return {"status": "unavailable",
                 "reason": "No clustering found in %s; run the descriptive lane first." % run_dir}
 
+    proposals: Dict[str, Dict[str, Any]] = {}
+    if candidates and Path(candidates).exists():
+        proposals = candidates_by_cluster(read_run_cell_clusters(run_dir),
+                                          read_candidate_labels(candidates))
+
     total = sum(sizes.values()) or 1
     guesses = loader_guesses or {}
     rows = sorted(sizes.items(), key=lambda kv: -kv[1])
@@ -488,6 +499,7 @@ def write_cluster_worksheet(run_dir: str, output_path: str,
                 "n_cells": count,
                 "share_of_section": "%.1f%%" % (100.0 * count / total),
                 "top_markers": ", ".join(markers.get(cluster, [])),
+                "reference_proposes": format_candidate(proposals.get(cluster)),
                 # The loader's marker rule is a guess, and it is in its own
                 # column so it cannot be mistaken for the evidence beside it.
                 "loader_guess": guesses.get(cluster, ""),
@@ -506,6 +518,9 @@ def write_cluster_worksheet(run_dir: str, output_path: str,
         "decisions_for_gate": plan["decisions"],
         "coverage_at_that": plan["achieved_coverage"],
         "with_markers": sum(1 for cluster, _ in rows if markers.get(cluster)),
+        "with_proposals": sum(1 for cluster, _ in rows if proposals.get(cluster)),
+        "mixed_proposals": sorted(name for name, entry in proposals.items()
+                                  if not entry.get("consensus")),
     }
 
 
@@ -710,3 +725,92 @@ def malignant_caveat(evidence: str,
     ])
     return lines
 
+
+
+# ------------------------------------------------- candidates per cluster
+
+# Below this share of a cluster, the transferred labels do not agree well enough
+# for "the reference proposes X" to be a fair summary. Calibrated in
+# `docs/cell_label_resources.md`: a reference whose sampling swings the
+# malignant count 13.5x is not something to report a bare majority from.
+CANDIDATE_CONSENSUS_FLOOR = 0.5
+
+
+def read_candidate_labels(path: str) -> Dict[str, Dict[str, Any]]:
+    """cell_id -> {label, confidence} from a candidate label file.
+
+    These are transferred labels. The gate refuses them and should: the point
+    of reading them here is to pre-fill a worksheet so a reviewer confirms or
+    corrects nine rows instead of naming nine from scratch.
+    """
+    import csv
+
+    found: Dict[str, Dict[str, Any]] = {}
+    with open(path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            cell_id = str(row.get("cell_id") or "").strip()
+            label = str(row.get("candidate_label") or "").strip()
+            if not cell_id or not label:
+                continue
+            try:
+                confidence = float(row.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            found[cell_id] = {"label": label, "confidence": confidence}
+    return found
+
+
+def candidates_by_cluster(assignments: Sequence[Tuple[str, str]],
+                          candidates: Dict[str, Dict[str, Any]],
+                          floor: float = CANDIDATE_CONSENSUS_FLOOR) -> Dict[str, Dict[str, Any]]:
+    """What the reference proposes for each cluster, and how much it agrees.
+
+    A majority label alone would read as a recommendation. The share behind it
+    and the runner-up are reported with it, because a cluster split 45/40
+    between two classes is the one a reviewer most needs to look at and the one
+    a bare majority hides.
+    """
+    per_cluster: Dict[str, Counter] = {}
+    confidence: Dict[str, List[float]] = {}
+    for cell_id, cluster in assignments:
+        entry = candidates.get(cell_id)
+        if not entry:
+            continue
+        per_cluster.setdefault(cluster, Counter())[entry["label"]] += 1
+        confidence.setdefault(cluster, []).append(entry["confidence"])
+
+    summary: Dict[str, Dict[str, Any]] = {}
+    for cluster, counts in per_cluster.items():
+        total = sum(counts.values()) or 1
+        ranked = counts.most_common()
+        top_label, top_count = ranked[0]
+        share = top_count / total
+        scores = confidence.get(cluster) or [0.0]
+        summary[cluster] = {
+            "label": top_label,
+            "share": round(share, 4),
+            "cells_with_candidate": total,
+            "mean_confidence": round(sum(scores) / len(scores), 4),
+            "runner_up": (ranked[1][0] if len(ranked) > 1 else ""),
+            "runner_up_share": round(ranked[1][1] / total, 4) if len(ranked) > 1 else 0.0,
+            "classes_seen": len(ranked),
+            # Strictly greater, not >=: an exact 50/50 split is the coin toss
+            # this floor exists to catch, and it passed.
+            "consensus": share > floor,
+        }
+    return summary
+
+
+def format_candidate(entry: Optional[Dict[str, Any]]) -> str:
+    """The proposal as one worksheet cell, with its own uncertainty attached."""
+    if not entry:
+        return ""
+    if not entry.get("consensus"):
+        return "mixed: %s %.0f%% / %s %.0f%% -- look at this one" % (
+            entry["label"], 100 * entry["share"],
+            entry["runner_up"] or "other", 100 * entry["runner_up_share"])
+    text = "%s (%.0f%% of cells, mean conf %.2f)" % (
+        entry["label"], 100 * entry["share"], entry["mean_confidence"])
+    if entry.get("runner_up"):
+        text += "; then %s %.0f%%" % (entry["runner_up"], 100 * entry["runner_up_share"])
+    return text

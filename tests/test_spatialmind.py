@@ -6371,3 +6371,108 @@ class RunArtifactShapeTests(unittest.TestCase):
         run.mkdir()
         (run / "plan_results.json").write_text("{not json", encoding="utf-8")
         self.assertEqual(self.sizing.read_run_clusters(str(run)), {})
+
+
+class CandidateProposalTests(unittest.TestCase):
+    """A reference proposes; a reviewer decides; the gate refuses the proposal.
+
+    Transferred labels make the review cheaper -- confirm or correct nine rows
+    instead of naming nine from scratch -- and they are not expert labels. The
+    whole value depends on the two never merging, so the proposal lives in its
+    own worksheet column and `expert_label` stays empty.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+        self.root = Path(tempfile.mkdtemp())
+        self.run = self.root / "run"
+        (self.run / "tables").mkdir(parents=True)
+        (self.run / "descriptive_qc_and_cluster.json").write_text(
+            json.dumps({"metrics": {"cluster_counts": {"0": 10, "1": 10}}}), encoding="utf-8")
+        (self.run / "descriptive_marker_detection.json").write_text(
+            json.dumps({"metrics": {"markers_by_group": {"0": [{"gene": "MOG"}]}}}),
+            encoding="utf-8")
+        with open(self.run / "tables" / "cells.tsv", "w", newline="", encoding="utf-8") as handle:
+            handle.write("# run\tr1\ncell_id\tcluster\n")
+            for cluster in ("0", "1"):
+                for i in range(10):
+                    handle.write("c%s_%d\t%s\n" % (cluster, i, cluster))
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _candidates(self, rows):
+        path = self.root / "cand.csv"
+        with open(path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["cell_id", "candidate_label", "confidence", "review_status"])
+            for cell_id, label, conf in rows:
+                writer.writerow([cell_id, label, conf, "needs_expert_review"])
+        return str(path)
+
+    def test_a_clear_cluster_gets_a_proposal_with_its_agreement(self):
+        path = self._candidates(
+            [("c0_%d" % i, "oligodendrocyte", 0.9) for i in range(10)] +
+            [("c1_%d" % i, "astrocyte", 0.8) for i in range(10)])
+        summary = self.sizing.candidates_by_cluster(
+            self.sizing.read_run_cell_clusters(str(self.run)),
+            self.sizing.read_candidate_labels(path))
+        self.assertEqual(summary["0"]["label"], "oligodendrocyte")
+        self.assertEqual(summary["0"]["share"], 1.0)
+        self.assertTrue(summary["0"]["consensus"])
+        self.assertIn("100%", self.sizing.format_candidate(summary["0"]))
+
+    def test_a_split_cluster_is_flagged_rather_than_given_a_majority(self):
+        """45/40 between two classes is the cluster a reviewer most needs to
+        look at, and the one a bare majority label hides."""
+        path = self._candidates(
+            [("c1_%d" % i, "astrocyte", 0.6) for i in range(5)] +
+            [("c1_%d" % i, "neuron", 0.6) for i in range(5, 10)])
+        summary = self.sizing.candidates_by_cluster(
+            self.sizing.read_run_cell_clusters(str(self.run)),
+            self.sizing.read_candidate_labels(path))
+        self.assertFalse(summary["1"]["consensus"])
+        text = self.sizing.format_candidate(summary["1"])
+        self.assertIn("mixed", text)
+        self.assertIn("look at this one", text)
+
+    def test_an_exact_tie_is_not_a_consensus(self):
+        self.assertFalse(self.sizing.candidates_by_cluster(
+            [("a", "x"), ("b", "x")],
+            {"a": {"label": "p", "confidence": 1.0},
+             "b": {"label": "q", "confidence": 1.0}})["x"]["consensus"])
+
+    def test_the_proposal_never_lands_in_the_answer_column(self):
+        """Writing a transferred label into `expert_label` would turn "confirm
+        this" into "this is done"."""
+        path = self._candidates([("c0_%d" % i, "oligodendrocyte", 0.9) for i in range(10)])
+        sheet = self.root / "ws.csv"
+        result = self.sizing.write_cluster_worksheet(str(self.run), str(sheet), candidates=path)
+        self.assertEqual(result["with_proposals"], 1)
+        with open(sheet, newline="", encoding="utf-8") as handle:
+            rows = {r["cluster"]: r for r in csv.DictReader(handle)}
+        self.assertIn("oligodendrocyte", rows["0"]["reference_proposes"])
+        self.assertEqual(rows["0"]["expert_label"], "")
+        self.assertEqual(rows["1"]["reference_proposes"], "")
+
+    def test_a_worksheet_with_proposals_still_expands_only_what_was_named(self):
+        """The reviewer's `expert_label` is the only thing that becomes a label.
+        A confirmed-looking proposal that nobody confirmed is not one."""
+        path = self._candidates([("c0_%d" % i, "oligodendrocyte", 0.9) for i in range(10)])
+        sheet = self.root / "ws.csv"
+        self.sizing.write_cluster_worksheet(str(self.run), str(sheet), candidates=path)
+        out = self.root / "labels.csv"
+        result = self.sizing.apply_cluster_labels(
+            str(self.run), str(sheet), "Dr Chen", str(out))
+        self.assertEqual(result["status"], "empty")
+        self.assertFalse(out.exists())
+
+    def test_the_candidate_file_itself_is_never_a_label_table(self):
+        """`apply_best_available_labels` must not pick up a candidate file: the
+        gate accepts `expert_cell_labels.csv`, which a human writes."""
+        from spatialmind.ingestion.labels import LABEL_TABLE_NAMES
+
+        for name in LABEL_TABLE_NAMES:
+            self.assertNotIn("candidate", name)
