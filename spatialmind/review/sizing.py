@@ -257,6 +257,7 @@ def summarise(dataset_name: str, label_plan: Dict[str, Any],
         "total_decisions": total_decisions,
         "total_is_complete": complete,
         "separability": separability,
+        "cluster_markers": dict(markers) if markers else {},
         "tumour": tumour or {"neoplastic": False, "evidence": ""},
         "blockers": blockers,
         "opens_gate": not blockers,
@@ -329,8 +330,9 @@ def format_plan(summary: Dict[str, Any]) -> str:
     tumour = summary.get("tumour") or {}
     if tumour.get("neoplastic"):
         lines.append("")
-        lines.extend(line % tumour["evidence"] if "%s" in line else line
-                     for line in MALIGNANT_CAVEAT)
+        biggest = labels["groups"][0]["group"] if labels.get("groups") else ""
+        lines.extend(malignant_caveat(tumour["evidence"],
+                                      summary.get("cluster_markers"), biggest))
 
     lines.append("")
     lines.append("WHAT THIS BUYS, AND WHAT IT DOES NOT")
@@ -596,20 +598,40 @@ def tumour_context(dataset_path: str) -> Dict[str, Any]:
     return {"neoplastic": False, "evidence": ""}
 
 
-MALIGNANT_CAVEAT = [
-    "THE CALL THIS CANNOT SIZE",
-    "  This section names itself neoplastic (%s).",
-    "",
-    "  The overlap check above compares clusters with each other. It cannot see the",
-    "  ambiguity that matters most here, because that one is not a within-section",
-    "  comparison: a malignant cell mimicking a lineage carries that lineage's",
-    "  markers. A cluster of PTPRZ1, BCAN, OLIG2, PDGFRA reads as OPC and reads",
-    "  equally as OPC-like tumour, and nothing in the marker table separates them.",
-    "",
-    "  So every normal-lineage call in this section is provisional in a way the",
-    "  same call on a healthy section is not. Resolving it needs CNV inference",
-    "  (`cnv_inference` is a scaffold in this build), a reference carrying the",
-    "  malignant class (GBmap Core is here, and its candidate malignant count",
-    "  swings 13.5x on the reference sampling choice alone), or a pathologist on",
-    "  the morphology. The decision count below does not include that work.",
-]
+def malignant_caveat(evidence: str,
+                     markers: Optional[Dict[str, Sequence[str]]] = None,
+                     largest: str = "") -> List[str]:
+    """What the overlap check is blind to on a neoplastic section.
+
+    The example is drawn from the section's own clusters, not written in. A
+    fixed one asserted PTPRZ1/BCAN/OLIG2 -- a brain example -- on a breast
+    section, where the ambiguity is real and the genes are EPCAM, CD24 and the
+    keratins.
+    """
+    lines = [
+        "THE CALL THIS CANNOT SIZE",
+        "  This section names itself neoplastic (%s)." % evidence,
+        "",
+        "  The overlap check above compares clusters with each other. It cannot see the",
+        "  ambiguity that matters most here, because that one is not a within-section",
+        "  comparison: a malignant cell mimicking a lineage carries that lineage's",
+        "  markers, so a cluster reads as that lineage and as tumour-of-that-lineage",
+        "  equally, and nothing in the marker table separates the two.",
+    ]
+    genes = list((markers or {}).get(largest) or [])
+    if largest and genes:
+        lines.extend([
+            "",
+            "  On this section that applies to every cluster named from lineage markers,",
+            "  starting with the largest: cluster %s (%s)." % (largest, ", ".join(genes[:5])),
+        ])
+    lines.extend([
+        "",
+        "  So every normal-lineage call in this section is provisional in a way the",
+        "  same call on a healthy section is not. Resolving it needs CNV inference",
+        "  (`cnv_inference` is a scaffold in this build), a reference that carries the",
+        "  malignant class, or a pathologist on the morphology. The decision count",
+        "  above does not include that work.",
+    ])
+    return lines
+

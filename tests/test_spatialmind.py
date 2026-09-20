@@ -6033,3 +6033,134 @@ class MarkerSeparabilityTests(unittest.TestCase):
             markers={"0": ["AQP4"], "1": ["MOG"]})
         self.assertIsNotNone(summary["separability"])
         self.assertIn("0", summary["separability"]["max_overlap_by_cluster"])
+
+
+class ParquetOnlyBundleTests(unittest.TestCase):
+    """A Xenium bundle as GEO deposits it: cells.parquet.gz, no experiment file.
+
+    The loader learned to read these; discovery and the Studio's own cell index
+    had not, so such a bundle loaded fine through the ingestion layer and was
+    either never listed or listed and then failed to index. Three readers, one
+    format, and they disagreed.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.bundle = self.root / "geo_style"
+        self.bundle.mkdir()
+        self._write_cells(self.bundle / "cells.parquet.gz")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write_cells(self, path, n=40):
+        import gzip
+        import io
+
+        import pandas as pd
+
+        frame = pd.DataFrame({
+            "cell_id": ["aaaa%04d-1" % i for i in range(n)],
+            "x_centroid": [float(i % 8) * 25.0 for i in range(n)],
+            "y_centroid": [float(i // 8) * 25.0 for i in range(n)],
+            "transcript_counts": [40 + (i % 5) for i in range(n)],
+        })
+        buffer = io.BytesIO()
+        frame.to_parquet(buffer)
+        if str(path).endswith(".gz"):
+            with gzip.open(path, "wb") as handle:
+                handle.write(buffer.getvalue())
+        else:
+            path.write_bytes(buffer.getvalue())
+
+    def test_discovery_lists_a_bundle_with_no_experiment_file(self):
+        from spatialmind.app.catalog import discover_datasets
+
+        found = {entry.name: entry for entry in discover_datasets(str(self.root))}
+        self.assertIn("geo_style", found)
+        self.assertTrue(found["geo_style"].reviewable)
+
+    def test_the_studio_cell_index_reads_gzipped_parquet(self):
+        from spatialmind.app.catalog import build_cell_index
+
+        index = build_cell_index(str(self.bundle))
+        self.assertEqual(index.n_cells, 40)
+        self.assertEqual(index.cell_ids[0], "aaaa0000-1")
+        self.assertEqual(index.cluster_method, "none")
+
+    def test_plain_parquet_reads_the_same_as_gzipped(self):
+        from spatialmind.app.catalog import build_cell_index
+
+        plain = self.root / "plain"
+        plain.mkdir()
+        self._write_cells(plain / "cells.parquet")
+        self.assertEqual(build_cell_index(str(plain)).cell_ids,
+                         build_cell_index(str(self.bundle)).cell_ids)
+
+    def test_a_bundle_with_no_cell_table_names_every_form_it_looked_for(self):
+        from spatialmind.app.catalog import build_cell_index
+
+        empty = self.root / "empty"
+        empty.mkdir()
+        (empty / "experiment.xenium").write_text("{}", encoding="utf-8")
+        with self.assertRaises(FileNotFoundError) as caught:
+            build_cell_index(str(empty))
+        message = str(caught.exception)
+        self.assertIn("cells.parquet", message)
+        self.assertIn("cells.csv", message)
+
+    def test_a_folder_that_is_not_xenium_is_not_listed_as_one(self):
+        """Widening the marker set must not make every folder a dataset."""
+        from spatialmind.app.catalog import discover_datasets
+
+        noise = self.root / "not_data"
+        noise.mkdir()
+        (noise / "notes.txt").write_text("hello", encoding="utf-8")
+        names = {entry.name for entry in discover_datasets(str(self.root))}
+        self.assertNotIn("not_data", names)
+
+
+class MalignantCaveatTests(unittest.TestCase):
+    """The caveat's example comes from the section, not from the source.
+
+    A fixed example asserted PTPRZ1/BCAN/OLIG2 -- brain genes -- on a breast
+    section, where the ambiguity is just as real and the genes are EPCAM, CD24
+    and the keratins. Stating the right principle with the wrong evidence is
+    still stating the wrong evidence.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+
+    def test_the_example_is_the_sections_own_largest_cluster(self):
+        breast = self.sizing.malignant_caveat(
+            "run_name = Human Breast Cancer",
+            {"5": ["SFRP1", "CD24", "EPCAM"], "0": ["CD74", "LYZ"]}, "5")
+        text = "\n".join(breast)
+        self.assertIn("EPCAM", text)
+        self.assertNotIn("PTPRZ1", text)
+
+        brain = self.sizing.malignant_caveat(
+            "run_name = Glioblastoma",
+            {"4": ["MOG", "ERMN", "CLDN11"]}, "4")
+        self.assertIn("MOG", "\n".join(brain))
+        self.assertNotIn("EPCAM", "\n".join(brain))
+
+    def test_the_principle_survives_with_no_markers_to_cite(self):
+        lines = self.sizing.malignant_caveat("run_name = Something", None, "")
+        text = "\n".join(lines)
+        self.assertIn("mimicking a lineage", text)
+        self.assertIn("cnv_inference", text)
+        self.assertNotIn("starting with the largest", text)
+
+    def test_a_plan_cites_the_cluster_it_actually_sized(self):
+        markers = {"5": ["SFRP1", "CD24", "EPCAM"], "0": ["CD74", "LYZ", "CD68"]}
+        summary = self.sizing.summarise(
+            "breast", self.sizing.size_label_review({"5": 700, "0": 300}),
+            self.sizing.size_region_review({"r1": 600, "r2": 400}),
+            markers=markers,
+            tumour={"neoplastic": True, "evidence": "run_name = Breast Cancer"})
+        text = self.sizing.format_plan(summary)
+        self.assertIn("cluster 5 (SFRP1, CD24, EPCAM)", text)

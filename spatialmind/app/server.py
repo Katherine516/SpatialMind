@@ -57,6 +57,36 @@ def jsonable(value: Any) -> Any:
 
 
 
+
+def _run_matches(run_dir: Path, dataset_path: str) -> bool:
+    """Did this run analyse this dataset?
+
+    Matched through the run's own validation record rather than by taking any
+    run in the output root: sizing one section's review against another
+    section's clustering would be worse than reporting none.
+    """
+    import json
+
+    for name in ("pilot_validation.json", "plan_results.json"):
+        record = run_dir / name
+        if not record.exists():
+            continue
+        try:
+            with open(record, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        ran_on = str(payload.get("dataset_path") or
+                     (payload.get("dataset") or {}).get("path") or "")
+        if not ran_on:
+            continue
+        try:
+            return Path(ran_on).resolve() == Path(dataset_path).resolve()
+        except OSError:
+            return False
+    return False
+
+
 def _slug(text: str) -> str:
     """A filename a user can find again, from a report title."""
     cleaned = re.sub(r"[^A-Za-z0-9]+", "_", str(text or "report")).strip("_")
@@ -737,6 +767,65 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
                           "the dataset list until the data root is changed to a parent of it.")
         linked["datasets"] = studio.refresh_datasets()
         return jsonable(linked)
+
+    @app.get("/api/datasets/{dataset_id}/sizing")
+    def dataset_sizing(dataset_id: str) -> Dict[str, Any]:
+        """How many decisions would open the gate on this section.
+
+        The Readiness screen says what is missing. It did not say how much work
+        the missing thing is, and the honest answer is small enough to change
+        whether someone starts: the gate needs 70% coverage, a reviewer labels
+        by cluster, and on the healthy brain section four cluster calls and six
+        region calls reach it.
+        """
+        from ..review import sizing as review_sizing
+
+        entry = _entry_or_404(dataset_id)
+        if not entry.reviewable:
+            return {"dataset_id": dataset_id, "sizable": False,
+                    "reason": "Only Xenium bundles are gated."}
+
+        # A descriptive run's own clustering beats the bundle's when there is
+        # one: it is what carries the marker evidence a cluster call is made on.
+        # Newest matching run, not the last one alphabetically. The output root
+        # accumulates runs, several of them on the same section at different
+        # sample sizes, and picking by name sized the glioblastoma review
+        # against an older, smaller run: 4 decisions where the current full
+        # section needs 5.
+        run_dir = ""
+        newest = -1.0
+        root = Path(studio.output_root)
+        if root.exists():
+            for candidate in sorted(root.glob("*/descriptive_qc_and_cluster.json")):
+                if not _run_matches(candidate.parent, entry.path):
+                    continue
+                stamp = candidate.stat().st_mtime
+                if stamp > newest:
+                    run_dir, newest = str(candidate.parent), stamp
+        clusters = review_sizing.read_run_clusters(run_dir) if run_dir else {}
+        markers = review_sizing.read_run_markers(run_dir) if run_dir else {}
+        source = "this dataset's descriptive run"
+        if not clusters:
+            clusters = studio.index(dataset_id).cluster_sizes()
+            markers = {}
+            source = "the bundle's own 10x clusters"
+
+        label_plan = review_sizing.size_label_review(clusters)
+        region_plan = None
+        if run_dir:
+            candidate = Path(run_dir) / "cell_regions_candidate.csv"
+            if candidate.exists():
+                region_plan = review_sizing.size_region_review(
+                    review_sizing.read_candidate_regions(str(candidate)))
+
+        summary = review_sizing.summarise(
+            entry.display_name, label_plan, region_plan,
+            markers=markers or None,
+            tumour=review_sizing.tumour_context(entry.path))
+        summary["sizable"] = True
+        summary["cluster_source"] = source
+        summary["run_dir"] = run_dir
+        return jsonable(summary)
 
     # -------------------------------------------------------------- workflow
 

@@ -596,6 +596,52 @@ class StudioAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/reports/nope/export",
                                          params={"format": "docx"}).status_code, 404)
 
+    def test_sizing_reports_the_decisions_that_would_open_the_gate(self):
+        body = self.client.get("/api/datasets/%s/sizing" % self.dataset_id).json()
+        self.assertTrue(body["sizable"])
+        self.assertIn("total_decisions", body)
+        self.assertIn(body["cluster_source"],
+                      ("this dataset's descriptive run", "the bundle's own 10x clusters"))
+        # No run has been done against this synthetic bundle, so the region side
+        # is uncounted and the total must say it is a lower bound.
+        self.assertFalse(body["total_is_complete"])
+
+    def test_sizing_uses_the_newest_matching_run_not_the_first_by_name(self):
+        """The output root accumulates runs, often several on one section at
+        different sample sizes. Picking by name sized the glioblastoma review
+        against an older, smaller run -- 4 decisions where the full section
+        needs 5."""
+        import time
+
+        root = Path(self.output_root)
+        for name, counts, when in (("aaa_old_run", {"0": 90, "1": 10}, 1_600_000_000),
+                                   ("zzz_new_run", {"0": 40, "1": 35, "2": 25}, 1_900_000_000)):
+            directory = root / name
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "pilot_validation.json").write_text(
+                json.dumps({"dataset_path": self.bundle}), encoding="utf-8")
+            marker = directory / "descriptive_qc_and_cluster.json"
+            marker.write_text(json.dumps({"metrics": {"cluster_counts": counts}}),
+                              encoding="utf-8")
+            os.utime(marker, (when, when))
+        try:
+            body = self.client.get("/api/datasets/%s/sizing" % self.dataset_id).json()
+            self.assertTrue(body["run_dir"].endswith("zzz_new_run"))
+            # The newer run's three even clusters need two decisions for 70%;
+            # the older run's 90/10 split needs one.
+            self.assertEqual(body["labels"]["decisions"], 2)
+        finally:
+            for name in ("aaa_old_run", "zzz_new_run"):
+                shutil.rmtree(root / name, ignore_errors=True)
+
+    def test_sizing_refuses_a_dataset_that_is_not_gated(self):
+        for entry in self.client.get("/api/datasets").json()["datasets"]:
+            if entry["reviewable"]:
+                continue
+            body = self.client.get("/api/datasets/%s/sizing" % entry["dataset_id"]).json()
+            self.assertFalse(body["sizable"])
+            break
+
     def test_visualizations_endpoint_answers_with_a_well_formed_list(self):
         figures = self.client.get("/api/visualizations").json()["figures"]
         self.assertIsInstance(figures, list)

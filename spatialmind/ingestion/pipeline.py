@@ -1027,7 +1027,14 @@ def _looks_like_visium(path: str) -> bool:
 
 def _looks_like_xenium(path: str) -> bool:
     names = set(os.listdir(path)) if os.path.isdir(path) else set()
-    return "experiment.xenium" in names or "cells.csv.gz" in names or "cell_feature_matrix.h5" in names
+    if names & {"experiment.xenium", "cells.csv.gz", "cell_feature_matrix.h5"}:
+        return True
+    # A GEO deposit ships `cells.parquet.gz` and no experiment file. The loader
+    # reads those; leaving them out here made `infer_data_type` return "unknown"
+    # for a bundle the rest of the stack could open, so the catalogue listed it
+    # as not reviewable and the gate never saw it.
+    return any(name.startswith("cells.parquet") or name.startswith("cells.csv")
+               for name in names)
 
 
 def _open_text(path: str, newline: Optional[str] = None):

@@ -585,7 +585,7 @@ const S = {
   plan:[], overrides:{}, planInfo:null, selTool:null, filter:"all",
   mode:"label", colorBy:"cluster", selCluster:null, drag:null, rect:null,
   thread:[], jobs:[], job:null, poll:null, panel:"datasets", dataRoot:"", resources:null, context:null, scanning:false, waitingOnPermission:false, scanRetry:null,
-  reports:[], figures:[]
+  reports:[], figures:[], sizing:null
 };
 
 const $ = (s) => document.querySelector(s);
@@ -701,6 +701,12 @@ async function selectDataset(datasetId){
   try {
     S.detail = await get("/api/datasets/" + datasetId);
     S.gateOpen = !!(S.detail.gate && S.detail.gate.status === "validated_ready");
+    // Sizing is a second round trip on purpose: it reads a run's clustering and
+    // must not hold up the gate verdict, which is what the screen is for.
+    S.sizing = null;
+    get("/api/datasets/" + datasetId + "/sizing")
+      .then((body) => { if (S.dsId === datasetId){ S.sizing = body; renderGate(); } })
+      .catch(() => { S.sizing = {sizable: false}; });
     const entry = S.detail.dataset;
     const meta = S.detail.n_cells
       ? num(S.detail.n_cells) + " cells · " + Object.keys(S.detail.cluster_sizes || {}).length +
@@ -805,6 +811,63 @@ function renderDatasets(){
 }
 
 /* ------------------------------------------------------------------ gate */
+/* How much review opens this gate. The readiness screen said what was missing
+   and never how much work it was, and the answer is small enough to change
+   whether someone starts. */
+function renderSizing(){
+  const s = S.sizing;
+  if (!s) return '<div class="card" style="margin-top:12px"><h5>Review sizing</h5>' +
+    '<p style="font-size:12px;color:var(--ink-3)">Working it out…</p></div>';
+  if (!s.sizable) return "";
+  if (s.opens_gate && (s.labels || {}).decisions === 0) return "";
+  // No clustering means there is nothing to decide on yet, and printing
+  // "1 decision" for a single all-cells bucket would be the most encouraging
+  // and least true number on the screen.
+  if ((s.labels || {}).no_cluster_solution)
+    return '<div class="card" style="margin-top:12px"><h5>Review sizing</h5>' +
+      '<p style="font-size:12px;color:var(--ink-3)">This bundle ships no cluster solution, so ' +
+      'there is nothing to review cluster by cluster yet. Run the descriptive lane and the ' +
+      'sizing appears here.</p></div>';
+
+  const labels = s.labels || {};
+  const regions = s.regions;
+  const chosen = labels.groups || [];
+  const groups = chosen.slice(0, 6).map((g) =>
+    '<div class="kv"><span>' + esc(g.group) + '</span><b>' + num(g.cells) + ' cells</b></div>').join("") +
+    (chosen.length > 6
+      ? '<div class="kv"><span>and ' + (chosen.length - 6) + ' more</span><b></b></div>' : "");
+  // Built HTML, not user text: escaping it printed the <b> tags as characters.
+  // Only the decision count is interpolated, and it is a number.
+  const total = s.total_is_complete
+    ? '<b>' + Number(s.total_decisions) + ' decisions</b> to open the gate'
+    : '<b>at least ' + Number(s.total_decisions) + ' decisions</b>, one side not counted yet';
+
+  const overlap = ((s.separability || {}).pairs || []).slice(0, 4).map((p) =>
+    '<div style="font-size:11.5px;color:var(--warn)">clusters ' + esc(p.clusters[0]) + ' and ' +
+    esc(p.clusters[1]) + ' share ' + esc(p.shared.slice(0, 4).join(", ")) +
+    ' (overlap ' + p.overlap.toFixed(2) + ')</div>').join("");
+
+  const tumour = (s.tumour || {}).neoplastic
+    ? '<p style="font-size:11.5px;color:var(--warn);margin-top:8px">This section names itself ' +
+      'neoplastic. The overlap check compares clusters with each other and cannot see a ' +
+      'malignant cell mimicking a lineage &mdash; it carries that lineage\u2019s markers. Every ' +
+      'normal-lineage call here is provisional, and that work is not in the count above.</p>'
+    : "";
+
+  return '<div class="card" style="margin-top:12px"><h5>Review sizing &mdash; ' + total + '</h5>' +
+    '<div class="kv"><span>label decisions</span><b>' + (labels.decisions || 0) + ' &rarr; ' +
+      pct(labels.achieved_coverage || 0) + '</b></div>' +
+    (regions ? '<div class="kv"><span>region decisions</span><b>' + regions.decisions + ' &rarr; ' +
+      pct(regions.achieved_coverage || 0) + '</b></div>'
+     : '<div class="kv"><span>region decisions</span><b>not proposed yet</b></div>') +
+    '<div class="kv"><span>clusters from</span><b>' + esc(s.cluster_source || "") + '</b></div>' +
+    groups + overlap + tumour +
+    '<p style="font-size:11.5px;color:var(--ink-3);margin-top:8px">A cluster decision asserts ' +
+    'every cell in it is the class you name, so this is the arithmetic floor and not an estimate ' +
+    'of careful work. The run records the decision count beside the coverage.</p>' +
+    '</div>';
+}
+
 function renderGate(){
   const detail = S.detail;
   const pill = $("#gatePill"), badge = $("#gateBadge"), body = $("#gateBody");
@@ -840,7 +903,7 @@ function renderGate(){
       '<div class="kv"><span>cell classes</span><b>' + (gate.cell_classes || []).length + '</b></div>' +
       '<div class="kv"><span>regions</span><b>' + (gate.regions || []).length + '</b></div>' +
       '<div class="kv"><span>index build</span><b>' + (detail.index_build_seconds || 0) + ' s</b></div>' +
-    '</div></div></div>' + contextHtml + resourcesHtml;
+    '</div></div></div>' + renderSizing() + contextHtml + resourcesHtml;
 
   const saveBtn = $("#saveContext");
   if (saveBtn) saveBtn.addEventListener("click", saveContext);

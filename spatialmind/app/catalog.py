@@ -112,6 +112,26 @@ def _is_tabular(candidate: Path) -> bool:
     return Path(name).suffix in TABULAR_SUFFIXES
 
 
+# The same three markers `infer_data_type` routes on. Requiring
+# `experiment.xenium` here meant a bundle deposited to GEO -- which ships
+# cells.parquet and no experiment file -- loaded fine through the ingestion
+# layer and was never listed, so the app could not see data it could read.
+XENIUM_MARKERS = ("experiment.xenium", "cells.csv.gz", "cells.parquet",
+                  "cell_feature_matrix.h5")
+
+
+def _looks_like_xenium_dir(candidate: Path) -> bool:
+    try:
+        present = {child.name for child in candidate.iterdir()}
+    except OSError:
+        return False
+    if any(marker in present for marker in XENIUM_MARKERS):
+        return True
+    # GEO leaves the gzip on: cells.parquet.gz, cell_boundaries.parquet.gz.
+    return any(name.startswith("cells.parquet") or name.startswith("cells.csv")
+               for name in present)
+
+
 def _looks_like_visium_dir(candidate: Path) -> bool:
     try:
         present = {child.name for child in candidate.iterdir()}
@@ -151,7 +171,7 @@ def discover_datasets(data_root: str) -> List[DatasetEntry]:
             # A Xenium bundle's own cells.csv.gz is not a second dataset.
             continue
         if candidate.is_dir():
-            if (candidate / "experiment.xenium").exists() or _looks_like_visium_dir(candidate):
+            if _looks_like_xenium_dir(candidate) or _looks_like_visium_dir(candidate):
                 resolved = candidate.resolve()
             elif candidate.suffix.lower() == ".zarr":
                 resolved = candidate.resolve()
@@ -289,23 +309,40 @@ def build_cell_index(dataset_path: str, cluster_method: str = "") -> CellIndex:
 
 
 def _read_cell_table(root: Path) -> Tuple[List[str], List[float], List[float], List[float]]:
-    parquet = root / "cells.parquet"
-    if parquet.exists():
-        try:
-            return _read_cell_parquet(parquet)
-        except Exception:
-            pass  # fall through to the CSV, which every bundle ships
+    # `cells.parquet.gz` is not a variant to be tidy about: it is how GEO
+    # deposits a Xenium bundle, and "every bundle ships the CSV" is false for
+    # exactly those. Without it the catalogue listed such a dataset and then
+    # failed to index it.
+    for name in ("cells.parquet", "cells.parquet.gz"):
+        candidate = root / name
+        if candidate.exists():
+            try:
+                return _read_cell_parquet(candidate)
+            except Exception:
+                break  # fall through to the CSV where there is one
     for name in ("cells.csv.gz", "cells.csv"):
         candidate = root / name
         if candidate.exists():
             return _read_cell_csv(candidate)
-    raise FileNotFoundError("No cell table (cells.parquet / cells.csv.gz) under %s" % root)
+    raise FileNotFoundError(
+        "No cell table (cells.parquet[.gz] / cells.csv[.gz]) under %s" % root)
+
+
+def _open_parquet(path: Path):
+    """Read a parquet cell table, unwrapping the gzip GEO leaves on it."""
+    import pandas as pd
+
+    if str(path).lower().endswith(".gz"):
+        import gzip
+        import io
+
+        with gzip.open(path, "rb") as handle:
+            return pd.read_parquet(io.BytesIO(handle.read()))
+    return pd.read_parquet(path)
 
 
 def _read_cell_parquet(path: Path) -> Tuple[List[str], List[float], List[float], List[float]]:
-    import pandas as pd
-
-    frame = pd.read_parquet(path)
+    frame = _open_parquet(path)
     ids = [_decode_id(value) for value in frame["cell_id"].tolist()]
     xs = [float(v) for v in frame["x_centroid"].tolist()]
     ys = [float(v) for v in frame["y_centroid"].tolist()]
