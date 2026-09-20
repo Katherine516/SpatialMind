@@ -796,12 +796,16 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         newest = -1.0
         root = Path(studio.output_root)
         if root.exists():
-            for candidate in sorted(root.glob("*/descriptive_qc_and_cluster.json")):
-                if not _run_matches(candidate.parent, entry.path):
-                    continue
-                stamp = candidate.stat().st_mtime
-                if stamp > newest:
-                    run_dir, newest = str(candidate.parent), stamp
+            # Both shapes: a pilot writes per-tool files, a plan run writes one
+            # `plan_results.json`. Globbing only the first meant the app could
+            # not size against a clustering it had just produced itself.
+            for pattern in ("*/descriptive_qc_and_cluster.json", "*/plan_results.json"):
+                for candidate in sorted(root.glob(pattern)):
+                    if not _run_matches(candidate.parent, entry.path):
+                        continue
+                    stamp = candidate.stat().st_mtime
+                    if stamp > newest:
+                        run_dir, newest = str(candidate.parent), stamp
         clusters = review_sizing.read_run_clusters(run_dir) if run_dir else {}
         markers = review_sizing.read_run_markers(run_dir) if run_dir else {}
         source = "this dataset's descriptive run"

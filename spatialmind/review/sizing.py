@@ -165,6 +165,40 @@ def read_candidate_regions(path: str) -> Dict[str, int]:
 
 
 
+
+def _tool_metrics(run_dir: str, tool: str) -> Dict[str, Any]:
+    """One tool's metrics from a run, whichever kind of run it was.
+
+    A pilot writes `descriptive_<tool>.json` per tool; a Studio plan run writes
+    one `plan_results.json` holding every tool's output. Reading only the first
+    meant the app could not size a review against a clustering it had just
+    produced itself.
+    """
+    import json
+
+    directory = Path(run_dir)
+    path = directory / ("descriptive_%s.json" % tool)
+    if path.exists():
+        try:
+            with open(path, encoding="utf-8") as handle:
+                return (json.load(handle) or {}).get("metrics") or {}
+        except (OSError, ValueError):
+            return {}
+
+    combined = directory / "plan_results.json"
+    if not combined.exists():
+        return {}
+    try:
+        with open(combined, encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+    except (OSError, ValueError):
+        return {}
+    for result in (payload.get("results") or []):
+        if str(result.get("tool")) == tool:
+            return result.get("metrics") or {}
+    return {}
+
+
 def read_run_clusters(run_dir: str) -> Dict[str, int]:
     """Cluster sizes from a descriptive run's own clustering.
 
@@ -175,14 +209,7 @@ def read_run_clusters(run_dir: str) -> Dict[str, int]:
     """
     import json
 
-    path = Path(run_dir) / "descriptive_qc_and_cluster.json"
-    if not path.exists():
-        return {}
-    try:
-        with open(path, encoding="utf-8") as handle:
-            metrics = (json.load(handle) or {}).get("metrics") or {}
-    except (OSError, ValueError):
-        return {}
+    metrics = _tool_metrics(run_dir, "qc_and_cluster")
     counts = metrics.get("cluster_counts") or metrics.get("cluster_sizes") or {}
     return {str(name): int(count) for name, count in counts.items()}
 
@@ -195,14 +222,7 @@ def read_run_markers(run_dir: str, top_n: int = 6) -> Dict[str, List[str]]:
     """
     import json
 
-    path = Path(run_dir) / "descriptive_marker_detection.json"
-    if not path.exists():
-        return {}
-    try:
-        with open(path, encoding="utf-8") as handle:
-            metrics = (json.load(handle) or {}).get("metrics") or {}
-    except (OSError, ValueError):
-        return {}
+    metrics = _tool_metrics(run_dir, "marker_detection")
     markers: Dict[str, List[str]] = {}
     for group, rows in (metrics.get("markers_by_group") or {}).items():
         genes = []

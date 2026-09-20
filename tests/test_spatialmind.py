@@ -6304,3 +6304,70 @@ class NoClusterSolutionPlanTests(unittest.TestCase):
             self.sizing.size_region_review({"r1": 600, "r2": 400})))
         self.assertNotIn("Nothing to review cluster by cluster", text)
         self.assertIn("decision(s) reach", text)
+
+
+class RunArtifactShapeTests(unittest.TestCase):
+    """Two kinds of run, one reader.
+
+    A pilot writes `descriptive_<tool>.json` per tool; a Studio plan run writes
+    a single `plan_results.json` holding every tool's output. The sizing read
+    only the first, so the app could not size a review against a clustering it
+    had just produced itself -- it silently fell back to the bundle's 10x
+    clusters and gave a different answer than the CLI on the same section.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+        self.root = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _pilot_run(self):
+        run = self.root / "pilot"
+        run.mkdir()
+        (run / "descriptive_qc_and_cluster.json").write_text(
+            json.dumps({"metrics": {"cluster_counts": {"0": 60, "1": 40}}}), encoding="utf-8")
+        (run / "descriptive_marker_detection.json").write_text(
+            json.dumps({"metrics": {"markers_by_group": {"0": [{"gene": "AQP4"}]}}}),
+            encoding="utf-8")
+        return run
+
+    def _plan_run(self):
+        run = self.root / "plan"
+        run.mkdir()
+        (run / "plan_results.json").write_text(json.dumps({"results": [
+            {"tool": "qc_and_cluster", "metrics": {"cluster_counts": {"0": 60, "1": 40}}},
+            {"tool": "marker_detection", "metrics": {"markers_by_group": {"0": [{"gene": "AQP4"}]}}},
+        ]}), encoding="utf-8")
+        return run
+
+    def test_both_run_shapes_yield_the_same_clusters_and_markers(self):
+        pilot, plan = self._pilot_run(), self._plan_run()
+        self.assertEqual(self.sizing.read_run_clusters(str(pilot)),
+                         self.sizing.read_run_clusters(str(plan)))
+        self.assertEqual(self.sizing.read_run_markers(str(pilot)),
+                         self.sizing.read_run_markers(str(plan)))
+        self.assertEqual(self.sizing.read_run_clusters(str(plan)), {"0": 60, "1": 40})
+
+    def test_a_directory_with_neither_shape_returns_nothing(self):
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.assertEqual(self.sizing.read_run_clusters(str(empty)), {})
+        self.assertEqual(self.sizing.read_run_markers(str(empty)), {})
+
+    def test_a_plan_run_missing_that_tool_returns_nothing_for_it(self):
+        run = self.root / "partial"
+        run.mkdir()
+        (run / "plan_results.json").write_text(json.dumps({"results": [
+            {"tool": "spatial_variable_genes", "metrics": {"n_top": 25}},
+        ]}), encoding="utf-8")
+        self.assertEqual(self.sizing.read_run_clusters(str(run)), {})
+
+    def test_malformed_json_does_not_take_the_sizing_down_with_it(self):
+        run = self.root / "broken"
+        run.mkdir()
+        (run / "plan_results.json").write_text("{not json", encoding="utf-8")
+        self.assertEqual(self.sizing.read_run_clusters(str(run)), {})
