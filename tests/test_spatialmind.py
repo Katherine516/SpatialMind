@@ -6476,3 +6476,124 @@ class CandidateProposalTests(unittest.TestCase):
 
         for name in LABEL_TABLE_NAMES:
             self.assertNotIn("candidate", name)
+
+
+class WorksheetIsAPlainCsvTests(unittest.TestCase):
+    """The sheet is opened in Excel and read by scripts. It stays a plain CSV.
+
+    A `#` caveat line at the top broke `csv.DictReader` -- the header became the
+    comment -- and would have shown as a junk first row in a spreadsheet. The
+    caveat belongs beside the file, not inside it.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+        self.root = Path(tempfile.mkdtemp())
+        self.run = self.root / "run"
+        (self.run / "tables").mkdir(parents=True)
+        (self.run / "descriptive_qc_and_cluster.json").write_text(
+            json.dumps({"metrics": {"cluster_counts": {"0": 10}}}), encoding="utf-8")
+        with open(self.run / "tables" / "cells.tsv", "w", newline="", encoding="utf-8") as handle:
+            handle.write("cell_id\tcluster\n")
+            for i in range(10):
+                handle.write("c%d\t0\n" % i)
+        path = self.root / "cand.csv"
+        with open(path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["cell_id", "candidate_label", "confidence"])
+            for i in range(10):
+                writer.writerow(["c%d" % i, "oligodendrocyte", 0.9])
+        self.candidates = str(path)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_a_naive_dictreader_sees_the_header_first(self):
+        sheet = self.root / "ws.csv"
+        self.sizing.write_cluster_worksheet(str(self.run), str(sheet),
+                                            candidates=self.candidates)
+        with open(sheet, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(rows[0]["cluster"], "0")
+        self.assertIn("oligodendrocyte", rows[0]["reference_proposes"])
+        self.assertFalse(sheet.read_text().startswith("#"))
+
+    def test_the_caveat_is_written_beside_the_sheet(self):
+        sheet = self.root / "ws.csv"
+        result = self.sizing.write_cluster_worksheet(str(self.run), str(sheet),
+                                                     candidates=self.candidates)
+        readme = Path(result["readme"])
+        self.assertTrue(readme.exists())
+        text = readme.read_text()
+        self.assertIn("transferred, not reviewed", text)
+        self.assertIn("sampled per file", text)
+
+    def test_no_readme_when_there_is_nothing_to_caveat(self):
+        sheet = self.root / "plain.csv"
+        result = self.sizing.write_cluster_worksheet(str(self.run), str(sheet))
+        self.assertEqual(result["readme"], "")
+
+
+class MarkerDisagreementTests(unittest.TestCase):
+    """A proposal the cluster's own markers contradict is worse than none.
+
+    A confident wrong label is easier to accept than a blank, so the flag is the
+    loudest thing on the row when it fires -- and its range is documented,
+    because trusting a flag past its range is worse than having none.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+
+    def _cells(self, n, label, disagree):
+        return {"c%d" % i: {"label": label, "confidence": 0.9,
+                            "marker_disagreement": i < disagree}
+                for i in range(n)}
+
+    def test_a_cluster_whose_markers_contradict_the_proposal_is_flagged(self):
+        summary = self.sizing.candidates_by_cluster(
+            [("c%d" % i, "0") for i in range(20)],
+            self._cells(20, "endothelial cell", disagree=8))
+        self.assertEqual(summary["0"]["marker_disagreement_share"], 0.4)
+        self.assertIn("MARKERS DISAGREE", self.sizing.format_candidate(summary["0"]))
+        self.assertIn("trust the markers column", self.sizing.format_candidate(summary["0"]))
+
+    def test_a_clean_cluster_carries_no_flag(self):
+        summary = self.sizing.candidates_by_cluster(
+            [("c%d" % i, "0") for i in range(20)],
+            self._cells(20, "oligodendrocyte", disagree=0))
+        self.assertNotIn("MARKERS DISAGREE", self.sizing.format_candidate(summary["0"]))
+
+    def test_a_few_disagreeing_cells_do_not_trip_it(self):
+        """Every cluster has margins. The flag is for a systematic mismatch."""
+        summary = self.sizing.candidates_by_cluster(
+            [("c%d" % i, "0") for i in range(100)],
+            self._cells(100, "astrocyte", disagree=5))
+        self.assertNotIn("MARKERS DISAGREE", self.sizing.format_candidate(summary["0"]))
+
+    def test_the_flags_range_is_written_down_where_the_reviewer_reads_it(self):
+        """It is a lineage-level check. The two GABAergic clusters on the
+        healthy brain section were proposed as glutamatergic and it stayed
+        silent, because both are neuronal."""
+        text = self.sizing.MARKER_DISAGREEMENT_LIMIT
+        self.assertIn("lineage-level", text)
+        self.assertIn("INSIDE the right lineage", text)
+        self.assertIn("does not replace looking", text)
+
+    def test_a_candidate_file_without_the_column_reads_as_no_disagreement(self):
+        """Older candidate files predate the column; absent must not read True."""
+        root = Path(tempfile.mkdtemp())
+        try:
+            path = root / "cand.csv"
+            with open(path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["cell_id", "candidate_label", "confidence"])
+                writer.writerow(["c0", "astrocyte", 0.9])
+            loaded = self.sizing.read_candidate_labels(str(path))
+            self.assertFalse(loaded["c0"]["marker_disagreement"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)

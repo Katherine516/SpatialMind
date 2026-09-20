@@ -429,6 +429,8 @@ WORKSHEET_FIELDS = [
     "loader_guess", "expert_label", "confidence", "uncertain", "notes",
 ]
 WORKSHEET_NAME = "cluster_label_worksheet.csv"
+WORKSHEET_README = "cluster_label_worksheet_README.txt"
+WORKSHEET_README_TITLE = "Before you fill this in"
 
 
 def read_run_cell_clusters(run_dir: str) -> List[Tuple[str, str]]:
@@ -509,10 +511,20 @@ def write_cluster_worksheet(run_dir: str, output_path: str,
                 "notes": "",
             })
 
+    # Beside the sheet, not inside it: a `#` line in a CSV breaks a plain
+    # DictReader and shows up as a junk first row in Excel, which is where this
+    # file is going to be opened.
+    if proposals:
+        (target.parent / WORKSHEET_README).write_text(
+            "%s\n\n%s\n\n%s\n" % (WORKSHEET_README_TITLE, CANDIDATE_SAMPLING_CAVEAT,
+                                     MARKER_DISAGREEMENT_LIMIT),
+            encoding="utf-8")
+
     plan = decisions_for_coverage(sizes)
     return {
         "status": "written",
         "path": str(target),
+        "readme": str(target.parent / WORKSHEET_README) if proposals else "",
         "clusters": len(rows),
         "total_cells": total,
         "decisions_for_gate": plan["decisions"],
@@ -735,6 +747,14 @@ def malignant_caveat(evidence: str,
 # malignant count 13.5x is not something to report a bare majority from.
 CANDIDATE_CONSENSUS_FLOOR = 0.5
 
+# Above this share of a cluster carrying marker evidence that contradicts its
+# transferred label, the proposal is reporting the reference's composition
+# rather than this section's biology. On the healthy brain section the two
+# GABAergic clusters -- GAD1, GAD2, LHX6 -- were proposed as glutamatergic
+# neurons, because the reference set holds 5,000 IT-glutamatergic cells and
+# interneurons appear in one file only.
+MARKER_DISAGREEMENT_FLOOR = 0.15
+
 
 def read_candidate_labels(path: str) -> Dict[str, Dict[str, Any]]:
     """cell_id -> {label, confidence} from a candidate label file.
@@ -756,7 +776,16 @@ def read_candidate_labels(path: str) -> Dict[str, Dict[str, Any]]:
                 confidence = float(row.get("confidence") or 0.0)
             except (TypeError, ValueError):
                 confidence = 0.0
-            found[cell_id] = {"label": label, "confidence": confidence}
+            found[cell_id] = {
+                "label": label,
+                "confidence": confidence,
+                # The candidate writer already checks each cell's own marker
+                # evidence against the label transferred onto it. Aggregated per
+                # cluster, that is the signal which catches a reference voting
+                # its own composition rather than reading the target.
+                "marker_disagreement": str(row.get("marker_disagreement") or "").strip().lower()
+                == "true",
+            }
     return found
 
 
@@ -772,12 +801,15 @@ def candidates_by_cluster(assignments: Sequence[Tuple[str, str]],
     """
     per_cluster: Dict[str, Counter] = {}
     confidence: Dict[str, List[float]] = {}
+    disagreeing: Dict[str, int] = {}
     for cell_id, cluster in assignments:
         entry = candidates.get(cell_id)
         if not entry:
             continue
         per_cluster.setdefault(cluster, Counter())[entry["label"]] += 1
         confidence.setdefault(cluster, []).append(entry["confidence"])
+        if entry.get("marker_disagreement"):
+            disagreeing[cluster] = disagreeing.get(cluster, 0) + 1
 
     summary: Dict[str, Dict[str, Any]] = {}
     for cluster, counts in per_cluster.items():
@@ -794,6 +826,7 @@ def candidates_by_cluster(assignments: Sequence[Tuple[str, str]],
             "runner_up": (ranked[1][0] if len(ranked) > 1 else ""),
             "runner_up_share": round(ranked[1][1] / total, 4) if len(ranked) > 1 else 0.0,
             "classes_seen": len(ranked),
+            "marker_disagreement_share": round(disagreeing.get(cluster, 0) / total, 4),
             # Strictly greater, not >=: an exact 50/50 split is the coin toss
             # this floor exists to catch, and it passed.
             "consensus": share > floor,
@@ -801,16 +834,47 @@ def candidates_by_cluster(assignments: Sequence[Tuple[str, str]],
     return summary
 
 
+# Said once on the sheet rather than once per row. The reference set is sampled
+# per *file*, and those files range from 9,932 cells to 455,006, so the mix a
+# transfer votes over does not preserve true abundance: rare lineages are
+# over-represented and common ones diluted. `docs/cell_label_resources.md`
+# records a 13.5x swing in one class's count from the sampling choice alone.
+CANDIDATE_SAMPLING_CAVEAT = (
+    "reference_proposes is transferred, not reviewed. The references are sampled per file "
+    "(equal cells from each, not equal to true abundance), so a share here is evidence about "
+    "the reference mix as much as about this section. Confirm or correct every row."
+)
+
+# The limit of the flag above, stated because it is not obvious and because
+# trusting a flag past its range is worse than having none.
+MARKER_DISAGREEMENT_LIMIT = (
+    "MARKERS DISAGREE is a lineage-level check: it compares each cell's marker lineage "
+    "(neuronal, oligodendrocyte, astrocyte, myeloid, opc, endothelial) with the lineage of the "
+    "label transferred onto it. A wrong class INSIDE the right lineage does not trip it. On this "
+    "workspace's healthy brain section, two clusters carrying GAD1, GAD2 and LHX6 -- "
+    "unambiguously GABAergic interneurons -- were proposed as glutamatergic cortical neurons, "
+    "and the flag stayed silent because both are neuronal. Read the markers column on every row; "
+    "the flag narrows where to look hardest, it does not replace looking."
+)
+
+
 def format_candidate(entry: Optional[Dict[str, Any]]) -> str:
     """The proposal as one worksheet cell, with its own uncertainty attached."""
     if not entry:
         return ""
     if not entry.get("consensus"):
-        return "mixed: %s %.0f%% / %s %.0f%% -- look at this one" % (
+        text = "mixed: %s %.0f%% / %s %.0f%% -- look at this one" % (
             entry["label"], 100 * entry["share"],
             entry["runner_up"] or "other", 100 * entry["runner_up_share"])
-    text = "%s (%.0f%% of cells, mean conf %.2f)" % (
-        entry["label"], 100 * entry["share"], entry["mean_confidence"])
-    if entry.get("runner_up"):
-        text += "; then %s %.0f%%" % (entry["runner_up"], 100 * entry["runner_up_share"])
+    else:
+        text = "%s (%.0f%% of cells, mean conf %.2f)" % (
+            entry["label"], 100 * entry["share"], entry["mean_confidence"])
+        if entry.get("runner_up"):
+            text += "; then %s %.0f%%" % (entry["runner_up"], 100 * entry["runner_up_share"])
+    # The loudest thing on the row when it fires, and it should be: a proposal
+    # the cluster's own markers contradict is worse than no proposal, because a
+    # confident wrong label is easier to accept than a blank.
+    share = entry.get("marker_disagreement_share") or 0.0
+    if share >= MARKER_DISAGREEMENT_FLOOR:
+        text += " -- MARKERS DISAGREE on %.0f%% of cells; trust the markers column" % (100 * share)
     return text

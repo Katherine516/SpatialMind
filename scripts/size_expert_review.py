@@ -165,6 +165,11 @@ def main() -> None:
                 if written.get("with_proposals"):
                     print("           %d carry a reference proposal to confirm or correct."
                           % written["with_proposals"])
+                    from spatialmind.review.sizing import (
+                        CANDIDATE_SAMPLING_CAVEAT, MARKER_DISAGREEMENT_LIMIT)
+
+                    print("           %s" % CANDIDATE_SAMPLING_CAVEAT)
+                    print("           %s" % MARKER_DISAGREEMENT_LIMIT)
                 for mixed in written.get("mixed_proposals") or []:
                     print("           cluster %s: the reference is split; look at that one."
                           % mixed)
