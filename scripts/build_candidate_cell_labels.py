@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 
 from spatialmind.ingestion import load_scrna_reference_set, load_xenium
 from spatialmind.ingestion.labels import MARKER_EVIDENCE_FEATURES, NON_BIOLOGICAL_FEATURES
+from spatialmind.schemas import expression_feature_names
 from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.implementations import (
     assess_reference_lineage_coverage,
@@ -134,10 +135,14 @@ def _inspect_references(args) -> bool:
     # counts cells per lineage: a 300-cell sample leaves minor populations under
     # the evidence floor and reports a missing lineage as absent.
     target = load_xenium(args.data, max_records=min(args.max_records, 3000))
-    panel = {gene.upper() for gene in target.genes}
+    # Measured genes only, and labelled as detected rather than as "the panel":
+    # `dataset.genes` holds the features with a nonzero count in this sample, so
+    # counting it raw reported 367 at 3,000 cells and 483 at 20,000 for one
+    # section -- a panel size that moved with how many cells you loaded.
+    panel = {gene.upper() for gene in expression_feature_names(target)}
     target_organism = str(target.metadata.get("organism") or "").strip()
     print("TARGET   %s" % args.data)
-    print("         organism=%s  panel_genes=%d  cells_sampled=%d\n"
+    print("         organism=%s  genes_detected=%d  cells_sampled=%d\n"
           % (target_organism or "unknown", len(panel), len(target.records)))
 
     all_classes, organisms, ok = set(), set(), True
@@ -221,7 +226,9 @@ def main() -> None:
     parser.add_argument("--n-neighbors", type=int, default=15)
     parser.add_argument("--min-shared-features", type=int, default=20)
     parser.add_argument("--confidence-threshold", type=float, default=0.6)
-    parser.add_argument("--reference-max-records", type=int, default=5000, help="Reference cells sampled for KNN.")
+    parser.add_argument("--reference-max-records", type=int, default=5000,
+                        help="Reference cells sampled for KNN, PER FILE. An atlas split one class per file "
+                             "multiplies this by the file count: 7 files at 30000 is 210000 cells.")
     parser.add_argument("--allow-cross-species", action="store_true", help="Only for pre-mapped orthologs.")
     parser.add_argument(
         "--allow-incomplete-reference",
@@ -244,12 +251,28 @@ def main() -> None:
     summary = {
         "dataset_path": args.data,
         "records_loaded": len(dataset.records),
-        "features_loaded": len(dataset.genes),
+        "features_loaded": len(expression_feature_names(dataset)),
         "reference_path": args.reference,
     }
 
     if args.reference:
-        reference = load_scrna_reference_set(args.reference, max_records_per_file=args.reference_max_records)
+        # The transfer intersects the reference against this panel and discards
+        # every other gene, so restrict the read to it. Without this each row is
+        # built as a dict over all ~58,000 reference genes before the
+        # intersection throws ~99.5% of them away, and a seven-file atlas does
+        # not finish.
+        panel = sorted({str(gene).upper() for gene in expression_feature_names(dataset)})
+        print("reference: %d files, up to %d cells EACH (%d total), restricted to %d panel genes"
+              % (len(args.reference), args.reference_max_records,
+                 len(args.reference) * args.reference_max_records, len(panel)), flush=True)
+        reference = load_scrna_reference_set(
+            args.reference,
+            max_records_per_file=args.reference_max_records,
+            keep_features=panel,
+            progress=lambda line: print("  " + line, flush=True),
+        )
+        print("reference: %d cells across %d classes" % (len(reference.records), len(reference.cell_types)),
+              flush=True)
         reference_labels = sorted({record.cell_type for record in reference.records if record.cell_type})
         try:
             result = reference_label_transfer(

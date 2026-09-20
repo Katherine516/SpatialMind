@@ -3,7 +3,7 @@ import json
 import os
 import platform
 import uuid
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +58,10 @@ class MVPRunRecord:
     table_md5: Dict[str, str]
     created_at: str
     run_record_path: str = ""
+    # What each digest actually covers. A field named `input_file_md5` reads as a
+    # content hash of everything; for a 2.5 GB bundle it is not, and saying which
+    # files it covers is the difference between a provenance record and a claim.
+    input_hash_scope: Dict[str, str] = field(default_factory=dict)
 
 
 class StorageLayer:
@@ -170,6 +174,19 @@ class StorageLayer:
             random_seed=random_seed,
             env_versions=_safe_versions(),
             input_file_md5={path: _file_md5(path) for path in input_files if os.path.exists(path)},
+            input_hash_scope={
+                path: (
+                    "content of %s; names and sizes for the rest"
+                    % ", ".join(
+                        name for name in HASHED_BUNDLE_FILES
+                        if os.path.isfile(os.path.join(path, name))
+                    )
+                    if os.path.isdir(path)
+                    else "full file content"
+                )
+                for path in input_files
+                if os.path.exists(path)
+            },
             artifact_paths={key: path for key, path in artifacts.items() if os.path.exists(path)},
             artifact_md5={key: _file_md5(path) for key, path in artifacts.items() if os.path.exists(path)},
             figure_paths=[path for path in figures if os.path.exists(path)],
@@ -201,16 +218,73 @@ def _stable_hash(payload: Dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+# The files a Xenium run actually reads, plus the two tables a reviewer writes.
+# About 6 MB of a 2.5 GB bundle, so hashing them by content costs a second and
+# answers the question a provenance record is asked: was this report produced
+# from this data?
+HASHED_BUNDLE_FILES = (
+    "experiment.xenium",
+    "cells.csv.gz",
+    "cells.parquet",
+    "cell_feature_matrix.h5",
+    "gene_panel.json",
+    "metrics_summary.csv",
+    # Both serialisations, because the loader reads either and which one a bundle
+    # ships depends on its Xenium Analyzer version. Listing only the parquet form
+    # silently demoted the 2022-vintage bundles -- which is the only expertly
+    # labelled section in the workspace -- to the names-and-sizes fallback.
+    "cell_boundaries.parquet",
+    "cell_boundaries.csv.gz",
+    "nucleus_boundaries.parquet",
+    "nucleus_boundaries.csv.gz",
+    "expert_cell_labels.csv",
+    "cell_regions.csv",
+    "dataset_context.json",
+)
+
+
 def _file_md5(path: str) -> str:
+    """Content hash of a file, or of the read set of a bundle directory.
+
+    A directory used to digest relative paths and `getsize` values and nothing
+    else, so an in-place edit that preserved file length left the hash unchanged
+    and `replay_run.py` still printed "verified". That is the weakest possible
+    answer for the one input that matters most -- the bundle holds the reviewer's
+    `expert_cell_labels.csv`, which is precisely the file whose content a reader
+    needs pinned.
+
+    So: hash by content every file the loader reads, including the two reviewed
+    tables, and fold in the names and sizes of everything else as a cheap
+    tripwire for files appearing or disappearing. Hashing all 2.5 GB is not worth
+    it -- the transcript and zarr archives are catalogued for provenance and
+    never parsed -- and this is stated in the record rather than implied.
+    """
     digest = hashlib.md5()
     if os.path.isdir(path):
+        hashed_by_content = []
+        for name in HASHED_BUNDLE_FILES:
+            file_path = os.path.join(path, name)
+            if not os.path.isfile(file_path):
+                continue
+            digest.update(name.encode("utf-8"))
+            digest.update(_content_md5(file_path).encode("utf-8"))
+            hashed_by_content.append(name)
+        # Everything else: names and sizes only, so an added or removed file is
+        # still visible without reading gigabytes that were never parsed.
         for root, _dirs, files in os.walk(path):
             for name in sorted(files):
                 file_path = os.path.join(root, name)
                 rel_path = os.path.relpath(file_path, path)
+                if rel_path in hashed_by_content:
+                    continue
                 digest.update(rel_path.encode("utf-8"))
                 digest.update(str(os.path.getsize(file_path)).encode("utf-8"))
         return digest.hexdigest()
+    return _content_md5(path)
+
+
+def _content_md5(path: str) -> str:
+    digest = hashlib.md5()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
