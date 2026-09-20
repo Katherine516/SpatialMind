@@ -111,6 +111,39 @@ Real regions cannot be downloaded from anywhere. Replacing this table with a
 pathologist's — the same 19 domains, named from morphology — is the single step
 that turns the region-level results from illustration into evidence.
 
+### The packet for doing that
+
+```bash
+python scripts/build_region_review_packet.py \
+    --data data/Xenium_Breast_Cancer_Rep1_Janesick2023 \
+    --out outputs/region_review
+```
+
+Renders all 19 domains on this section's own DAPI morphology — each with its
+cells marked, a scale bar, and a locator showing where it sits — and writes
+`region_naming_sheet.csv` to name them on. Fill the sheet, then:
+
+```bash
+python scripts/apply_region_naming.py \
+    --data data/Xenium_Breast_Cancer_Rep1_Janesick2023 \
+    --sheet outputs/region_review/region_naming_sheet.csv \
+    --reviewer "Dr Name, DAPI morphology review, <date>"
+```
+
+**The packet is blinded by default.** Cell composition is not shown, because
+these domains were named from their composition in the first place — showing it
+and asking for a name would reproduce the circularity the exercise removes.
+`--unblind` is for a second pass, after names are written, and the page says so.
+
+Two limits it states on its own front page: Xenium images DAPI rather than H&E,
+so a call needing cytoplasm or IHC is one this image cannot support (the sheet
+has an `uncertain` column); and the boundaries are the algorithm's — they can be
+accepted, renamed or merged here, but redrawing them means Review Studio.
+
+Once applied, the `reviewer_id` stops reading `composition-derived`, and the
+report's circularity caveat stops firing — which is the point, and is asserted
+by a test rather than left to be noticed.
+
 ## Reproducing this
 
 ```bash

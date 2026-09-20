@@ -5399,3 +5399,160 @@ class ReportExportTests(unittest.TestCase):
         self.assertEqual(self.exports._table_kind("markers.tsv"), "genes")
         self.assertEqual(self.exports._table_kind("region_composition.tsv"), "regions")
         self.assertEqual(self.exports._table_kind("celltype_pairs.tsv"), "pairs")
+
+
+class RegionReviewPacketTests(unittest.TestCase):
+    """Naming regions from tissue, not from the counts that defined them.
+
+    The one validated section in this workspace has expert labels and machine
+    regions: its domains were named from their own reviewed cell composition,
+    which makes a composition summary over them circular. This packet exists to
+    let a pathologist replace those names from morphology, and its most
+    important property is what it does *not* show.
+    """
+
+    def setUp(self):
+        from spatialmind.review import regions
+
+        self.regions = regions
+        self.root = Path(tempfile.mkdtemp())
+        self.bundle = self.root / "bundle"
+        self.bundle.mkdir()
+        import gzip
+
+        with gzip.open(self.bundle / "cells.csv.gz", "wt", newline="") as handle:
+            handle.write("cell_id,x_centroid,y_centroid,transcript_counts\n")
+            for i in range(200):
+                handle.write("c%d,%.1f,%.1f,40\n" % (i, (i % 20) * 30.0, (i // 20) * 30.0))
+        with open(self.bundle / "expert_cell_labels.csv", "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["cell_id", "expert_label"])
+            for i in range(200):
+                writer.writerow(["c%d" % i, "Tumor" if i < 100 else "Stromal"])
+        self.table = self.root / "cell_regions.csv"
+        with open(self.table, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["cell_id", "region", "reviewer_id"])
+            for i in range(200):
+                writer.writerow(["c%d" % i, "tumor_rich" if i < 100 else "stroma_rich",
+                                 "composition-derived, not a pathologist call"])
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _build(self, blinded=True):
+        return self.regions.build_region_review_packet(
+            dataset_path=str(self.bundle), region_table=str(self.table),
+            output_dir=str(self.root / "packet"), blinded=blinded)
+
+    def test_the_packet_is_blinded_by_default(self):
+        """Showing "this domain is 80% Tumor" and then asking what to call it
+        reproduces exactly the circularity the packet exists to remove."""
+        manifest = self._build(blinded=True)
+        self.assertTrue(manifest["blinded"])
+        page = Path(manifest["page"]).read_text()
+        self.assertIn("Blinded", page)
+        self.assertNotIn("Cell composition &mdash; not the thing to name from", page)
+        self.assertNotIn("Stromal", page)
+
+    def test_unblinding_says_on_the_page_that_it_is_a_second_pass(self):
+        manifest = self._build(blinded=False)
+        page = Path(manifest["page"]).read_text()
+        self.assertIn("Unblinded", page)
+        self.assertIn("after", page)
+        self.assertIn("Stromal", page)
+
+    def test_the_sheet_has_a_row_per_domain_and_no_prefilled_names(self):
+        manifest = self._build()
+        with open(manifest["naming_sheet"], newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual({r["domain_id"] for r in rows}, {"tumor_rich", "stroma_rich"})
+        # A prefilled name is a leading question.
+        self.assertTrue(all(r["pathologist_label"] == "" for r in rows))
+
+    def test_a_missing_morphology_image_still_produces_a_sheet(self):
+        """The sheet is the thing that gets filled in; losing the crops should
+        not lose the packet."""
+        manifest = self._build()
+        self.assertEqual(manifest["morphology"], "unavailable")
+        self.assertTrue(Path(manifest["naming_sheet"]).exists())
+        self.assertIn("No morphology image", Path(manifest["page"]).read_text())
+
+    def test_domain_geometry_is_computed_from_the_cells(self):
+        assignments = self.regions._read_region_table(self.table)
+        coordinates = self.regions._read_coordinates(self.bundle)
+        domains = self.regions.summarise_domains(assignments, coordinates)
+        self.assertEqual({d["domain_id"] for d in domains}, {"tumor_rich", "stroma_rich"})
+        for domain in domains:
+            self.assertEqual(domain["n_cells"], 100)
+            self.assertGreater(domain["area_um2"], 0)
+            # Blinded: no composition unless labels were asked for.
+            self.assertNotIn("composition", domain)
+
+    def test_naming_writes_the_reviewer_into_every_row(self):
+        """The gate counts a reviewed region table and cannot read who wrote it.
+        That column is where the distinction survives into the report."""
+        sheet = self.root / "sheet.csv"
+        with open(sheet, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.regions.SHEET_FIELDS)
+            writer.writeheader()
+            writer.writerow({"domain_id": "tumor_rich", "pathologist_label": "invasive carcinoma",
+                             "confidence": "0.95"})
+            writer.writerow({"domain_id": "stroma_rich", "pathologist_label": "fibrous stroma",
+                             "confidence": "0.9"})
+        out = self.root / "named.csv"
+        result = self.regions.apply_region_naming(
+            str(self.bundle), str(sheet), str(self.table),
+            reviewer_id="Dr Chen, DAPI morphology review", output_path=str(out))
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["cells_written"], 200)
+        self.assertEqual(result["distinct_regions"], 2)
+        with open(out, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertTrue(all(r["reviewer_id"] == "Dr Chen, DAPI morphology review" for r in rows))
+        self.assertEqual({r["region"] for r in rows}, {"invasive carcinoma", "fibrous stroma"})
+        # The scope records which machine domain each call covered, so a reader
+        # can see that two clicks covered 200 cells.
+        self.assertEqual({r["assignment_scope"] for r in rows},
+                         {"domain:tumor_rich", "domain:stroma_rich"})
+
+    def test_an_unnamed_domain_is_dropped_rather_than_kept_under_its_old_name(self):
+        """A half-named table that still says `tumor_rich` for the rest is the
+        worst of both: it looks reviewed and is partly machine-made."""
+        sheet = self.root / "sheet.csv"
+        with open(sheet, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.regions.SHEET_FIELDS)
+            writer.writeheader()
+            writer.writerow({"domain_id": "tumor_rich", "pathologist_label": "invasive carcinoma"})
+            writer.writerow({"domain_id": "stroma_rich", "pathologist_label": ""})
+        out = self.root / "named.csv"
+        result = self.regions.apply_region_naming(
+            str(self.bundle), str(sheet), str(self.table), reviewer_id="Dr Chen",
+            output_path=str(out))
+        self.assertEqual(result["domains_left_blank"], ["stroma_rich"])
+        self.assertEqual(result["cells_written"], 100)
+        self.assertEqual(result["coverage_of_assigned"], 0.5)
+        with open(out, newline="", encoding="utf-8") as handle:
+            self.assertEqual({r["region"] for r in csv.DictReader(handle)}, {"invasive carcinoma"})
+
+    def test_an_empty_sheet_is_reported_rather_than_writing_an_empty_table(self):
+        sheet = self.root / "sheet.csv"
+        with open(sheet, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.regions.SHEET_FIELDS)
+            writer.writeheader()
+            writer.writerow({"domain_id": "tumor_rich", "pathologist_label": ""})
+        result = self.regions.apply_region_naming(
+            str(self.bundle), str(sheet), str(self.table), reviewer_id="Dr Chen",
+            output_path=str(self.root / "named.csv"))
+        self.assertEqual(result["status"], "empty")
+        self.assertFalse((self.root / "named.csv").exists())
+
+    def test_a_named_table_no_longer_reads_as_composition_derived(self):
+        """The whole point: the report's circularity caveat keys on the reviewer
+        column, so a pathologist's table must stop triggering it."""
+        from spatialmind.pilot.xenium import _composition_derived_regions
+
+        self.assertTrue(_composition_derived_regions(
+            {"region_report": {"reviewers": {"composition-derived, not a pathologist call": 10}}}))
+        self.assertFalse(_composition_derived_regions(
+            {"region_report": {"reviewers": {"Dr Chen, DAPI morphology review": 10}}}))
