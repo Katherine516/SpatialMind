@@ -2,8 +2,16 @@
 
 Analysis takes minutes -- 72 seconds for the descriptive lane on a full section,
 longer with permutations -- so nothing runs inside a request. Jobs run on a
-worker thread and the UI polls. One job runs at a time per process: two Scanpy
-pipelines on the same machine contend for the same cores and finish no sooner.
+worker thread and the UI polls. One *analysis* job runs at a time per process:
+two Scanpy pipelines on the same machine contend for the same cores and finish
+no sooner.
+
+Exports are jobs too, and they are not exclusive. Writing 163,920 cells x 35
+columns to .xlsx takes about 75 seconds, nearly all of it openpyxl serialising
+XML -- too long to hold a browser request open, and no reason at all to block an
+analysis run, since it is one core writing a file. So `exclusive` separates the
+two: work that competes for the machine queues, work that does not runs beside
+it.
 """
 
 from dataclasses import dataclass, field
@@ -35,6 +43,8 @@ class Job:
     result: Optional[Dict[str, Any]] = None
     error: str = ""
     log: List[str] = field(default_factory=list)
+    # False for work that does not compete for the machine, such as an export.
+    exclusive: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -53,6 +63,7 @@ class Job:
             "finished_at": self.finished_at,
             "result": self.result,
             "error": self.error,
+            "exclusive": self.exclusive,
             "log": self.log[-40:],
         }
 
@@ -70,9 +81,10 @@ class JobRunner:
         self._active: Optional[str] = None
 
     def submit(self, kind: str, label: str, dataset_id: str, dataset_path: str,
-               params: Dict[str, Any], work: Callable[[Job], Dict[str, Any]]) -> Job:
+               params: Dict[str, Any], work: Callable[[Job], Dict[str, Any]],
+               exclusive: bool = True) -> Job:
         with self._lock:
-            if self._active is not None:
+            if exclusive and self._active is not None:
                 active = self._jobs.get(self._active)
                 if active is not None and active.state in {"queued", "running"}:
                     raise RuntimeError(
@@ -87,11 +99,13 @@ class JobRunner:
                 params=params,
                 created_at=_now(),
             )
+            job.exclusive = exclusive
             self._jobs[job.job_id] = job
             self._order.append(job.job_id)
             while len(self._order) > self._max_history:
                 self._jobs.pop(self._order.pop(0), None)
-            self._active = job.job_id
+            if exclusive:
+                self._active = job.job_id
 
         thread = Thread(target=self._run, args=(job, work), name=job.job_id, daemon=True)
         thread.start()

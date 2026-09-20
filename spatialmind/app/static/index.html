@@ -234,6 +234,109 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
   .navbtn{white-space:nowrap;width:auto}
   .two,.rev,.ask{grid-template-columns:1fr}
 }
+/* ------------------------------------------------ modals, wizard, reports */
+.modal{position:fixed;inset:0;background:rgba(4,8,9,.78);display:flex;align-items:center;
+  justify-content:center;z-index:60;padding:26px}
+.modalbox{background:var(--surface);border:1px solid var(--line-2);border-radius:10px;
+  display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);min-height:0}
+.wizardbox{width:min(920px,100%);max-height:min(780px,92vh)}
+.previewbox{width:min(1080px,100%);max-height:92vh}
+.wizhead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
+  padding:14px 16px;border-bottom:1px solid var(--line);flex:none}
+.wizhead h2{font-size:17px;font-weight:600}
+.wizhead p{font-size:12px;color:var(--ink-3);margin-top:3px}
+.wizsteps{display:flex;gap:4px;list-style:none;margin:0;padding:10px 16px;border-bottom:1px solid var(--line);flex:none}
+.wizsteps li{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-3);
+  padding:4px 10px;border-radius:20px;white-space:nowrap}
+.wizsteps li b{display:inline-flex;width:17px;height:17px;border-radius:50%;background:var(--surface-3);
+  color:var(--ink-3);align-items:center;justify-content:center;font-size:10.5px;font-weight:700}
+.wizsteps li[aria-current="true"]{background:var(--accent-soft);color:var(--accent-2)}
+.wizsteps li[aria-current="true"] b{background:var(--accent);color:#04191b}
+.wizsteps li.done{color:var(--ok)}
+.wizsteps li.done b{background:var(--ok-soft);color:var(--ok)}
+.wizbody{padding:16px;overflow-y:auto;flex:1;min-height:0}
+.wizfoot{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:12px 16px;border-top:1px solid var(--line);flex:none}
+.wizmsg{font-size:12px;color:var(--ink-3);flex:1;min-width:0}
+.wizmsg.bad{color:var(--stop)}
+.drop{border:1.5px dashed var(--line-2);border-radius:9px;padding:24px;text-align:center;
+  background:var(--surface-2);transition:border-color .15s,background .15s}
+.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.drop h3{font-size:14.5px;margin-bottom:5px}
+.drop p{font-size:12px;color:var(--ink-3)}
+.pickrow{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+.dslist{display:flex;flex-direction:column;gap:5px;margin-top:14px;max-height:250px;overflow-y:auto}
+.dsrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:7px;background:var(--surface-2);cursor:pointer;text-align:left;width:100%}
+.dsrow:hover{border-color:var(--line-2)}
+.dsrow[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+.dsrow .nm{font-weight:600;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.dsrow .ty{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:none}
+.qcard{display:block;width:100%;text-align:left;padding:10px 12px;border:1px solid var(--line);
+  border-radius:8px;background:var(--surface-2);margin-bottom:7px;cursor:pointer}
+.qcard:hover{border-color:var(--line-2)}
+.qcard[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+.qcard .q{font-size:13.5px;font-weight:500;margin-bottom:3px}
+.qcard .w{font-size:11.5px;color:var(--ink-3)}
+.ask{width:100%;min-height:74px;resize:vertical;font-size:13.5px;line-height:1.55}
+.analysis{margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:11px 12px;
+  background:var(--surface-2);font-size:12.5px}
+.analysis .rs{font-size:13px;color:var(--ink);margin-bottom:6px}
+.analysis .warn{color:var(--warn)}
+.analysis .bad{color:var(--stop)}
+.qgroup{border:1px solid var(--line);border-radius:8px;padding:11px 12px;margin-bottom:9px;
+  background:var(--surface-2)}
+.qgroup .q{font-size:13.5px;font-weight:500;margin-bottom:6px}
+.qgroup .w{font-size:11.5px;color:var(--ink-3);margin-top:6px}
+.opts{display:flex;gap:6px;flex-wrap:wrap}
+.opt{padding:5px 11px;border:1px solid var(--line-2);border-radius:18px;font-size:12.5px;
+  background:var(--surface);color:var(--ink-2)}
+.opt[aria-pressed="true"]{background:var(--accent);color:#04191b;border-color:var(--accent);font-weight:600}
+.steprow{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--line);
+  border-radius:7px;background:var(--surface-2);margin-bottom:6px}
+.steprow .nm{font-family:var(--mono);font-size:12.5px;flex:1;min-width:0}
+.steprow .why{font-size:11.5px;color:var(--ink-3);flex:2;min-width:0}
+.steprow.blocked{border-color:var(--warn-soft);background:var(--warn-soft)}
+.rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:10px}
+.rcard{border:1px solid var(--line);border-radius:9px;background:var(--surface-2);padding:12px;
+  display:flex;flex-direction:column;gap:7px}
+.rcard.pinned{border-color:var(--accent)}
+.rcard h3{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rcard .meta{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);display:flex;gap:8px;flex-wrap:wrap}
+.rcard .acts{display:flex;gap:5px;flex-wrap:wrap;margin-top:auto;padding-top:4px}
+.rcard .acts .btn{padding:4px 9px;font-size:11.5px}
+.vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+.vcard{border:1px solid var(--line);border-radius:9px;background:var(--surface-2);overflow:hidden;
+  display:flex;flex-direction:column}
+.vcard img{width:100%;height:178px;object-fit:contain;background:#05090a;display:block}
+.vcard .cap{padding:8px 10px;font-size:12px;display:flex;flex-direction:column;gap:3px}
+.vcard .cap .rid{font-family:var(--mono);font-size:10px;color:var(--ink-3)}
+.previewbody{padding:0;overflow:hidden;flex:1;min-height:0;display:flex}
+.previewbody .doc{flex:1;overflow-y:auto;padding:18px 22px;font-size:13.5px;line-height:1.62}
+.previewbody .doc h1{font-size:21px;margin:18px 0 8px}
+.previewbody .doc h2{font-size:17px;margin:20px 0 7px;padding-bottom:4px;border-bottom:1px solid var(--line)}
+.previewbody .doc h3{font-size:14.5px;margin:15px 0 5px;color:var(--accent-2)}
+.previewbody .doc p{margin:7px 0}
+.previewbody .doc ul{margin:7px 0;padding-left:20px}
+.previewbody .doc li{margin:3px 0}
+.previewbody .doc table{border-collapse:collapse;margin:9px 0;font-size:12px;width:100%}
+.previewbody .doc th,.previewbody .doc td{border:1px solid var(--line);padding:4px 8px;text-align:left}
+.previewbody .doc th{background:var(--surface-2);font-weight:600}
+.previewbody .doc code{font-family:var(--mono);font-size:12px;background:var(--surface-2);
+  padding:1px 5px;border-radius:3px}
+.previewbody textarea{flex:1;border:none;border-radius:0;background:var(--paper);
+  font-family:var(--mono);font-size:12.5px;line-height:1.6;padding:18px 22px;resize:none}
+.taskrow{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);
+  border-radius:8px;background:var(--surface-2);margin-bottom:6px}
+.taskrow .nm{font-size:13px;font-weight:500;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.taskrow .pg{font-size:11.5px;color:var(--ink-3);flex:1.4;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.taskrow .tm{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:none}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.tabs button{padding:6px 12px;font-size:12.5px;color:var(--ink-3);border-bottom:2px solid transparent}
+.tabs button[aria-current="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -243,20 +346,21 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
     <div class="brand">Spatial<span>Mind</span> Studio</div>
     <div class="ctx" id="ctx">Loading workspace…</div>
     <span id="gatePill" class="pill mute"><i></i>no dataset</span>
+    <button class="btn pri" id="createBtn">+ Create</button>
     <button class="btn" id="refreshBtn">Rescan</button>
   </header>
   <div class="main">
     <nav class="rail" aria-label="Primary">
-      <div class="grp">Data</div>
+      <div class="grp">Home</div>
       <button class="navbtn" data-p="datasets" aria-current="true">Datasets<span class="cnt" id="cDs">–</span></button>
+      <button class="navbtn" data-p="tools">Tools<span class="cnt" id="cTools">–</span></button>
+      <button class="navbtn" data-p="visualization">Visualization<span class="cnt" id="cViz">–</span></button>
+      <button class="navbtn" data-p="runs">Tasks<span class="cnt" id="cRuns">–</span></button>
+      <button class="navbtn" data-p="reports">Reports<span class="cnt" id="cReports">–</span></button>
+      <div class="grp">Selected dataset</div>
       <button class="navbtn" data-p="gate">Readiness<span class="cnt" id="cGate">–</span></button>
-      <div class="grp">Human in the loop</div>
       <button class="navbtn" data-p="review">Review Studio<span class="cnt" id="cRev">–</span></button>
-      <div class="grp">Analysis</div>
       <button class="navbtn" data-p="ask">Ask</button>
-      <button class="navbtn" data-p="tools">Tool Bench<span class="cnt" id="cTools">–</span></button>
-      <div class="grp">Output</div>
-      <button class="navbtn" data-p="runs">Runs<span class="cnt" id="cRuns">–</span></button>
     </nav>
     <div class="stage" id="stage">
 
@@ -340,16 +444,99 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
 
       <section class="panel" data-panel="runs" hidden>
         <div class="phead">
-          <div><h2>Runs</h2><p>Each run writes a hashed record with tool trace, parameters, input digests and
-            captured library versions.</p></div>
+          <div><h2>Tasks</h2><p>Every task this session started, finished or failed. Each analysis run
+            writes a hashed record with its tool trace, parameters, input digests and library versions.</p></div>
           <button class="btn" id="refreshRuns">Refresh</button>
         </div>
         <div id="runsBody"><div class="empty">No runs yet.</div></div>
       </section>
 
+      <section class="panel" data-panel="visualization" hidden>
+        <div class="phead">
+          <div><h2>Visualization</h2><p>Every figure any run produced. A figure from a blocked run
+            describes data-derived clusters and names no cell type &mdash; the badge says which.</p></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <select id="vizFilter" style="font-size:12px"><option value="">All runs</option></select>
+            <button class="btn" id="refreshViz">Refresh</button>
+          </div>
+        </div>
+        <div id="vizBody"><div class="empty">No figures yet.</div></div>
+      </section>
+
+      <section class="panel" data-panel="reports" hidden>
+        <div class="phead">
+          <div><h2>Reports</h2><p>Pin, rename, preview, edit and export. An edit is saved beside the
+            run&rsquo;s own report, never over it, so the run record still replays.</p></div>
+          <button class="btn" id="refreshReports">Refresh</button>
+        </div>
+        <div id="reportsBody"><div class="empty">No reports yet.</div></div>
+      </section>
+
     </div>
   </div>
 </div>
+
+<!-- ------------------------------------------------------- Create wizard -->
+<div class="modal" id="wizard" hidden>
+  <div class="modalbox wizardbox">
+    <header class="wizhead">
+      <div>
+        <h2 id="wizTitle">Create an analysis</h2>
+        <p id="wizSub">Four steps. Nothing runs until you approve the plan.</p>
+      </div>
+      <button class="btn" id="wizClose">Close</button>
+    </header>
+    <ol class="wizsteps" id="wizSteps">
+      <li data-s="1" aria-current="true"><b>1</b> Data</li>
+      <li data-s="2"><b>2</b> Question</li>
+      <li data-s="3"><b>3</b> Details</li>
+      <li data-s="4"><b>4</b> Tools</li>
+      <li data-s="5"><b>5</b> Run</li>
+    </ol>
+    <div class="wizbody" id="wizBody"></div>
+    <footer class="wizfoot">
+      <div class="wizmsg" id="wizMsg"></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" id="wizBack" disabled>Back</button>
+        <button class="btn pri" id="wizNext">Next</button>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------ Report preview -->
+<div class="modal" id="preview" hidden>
+  <div class="modalbox previewbox">
+    <header class="wizhead">
+      <div>
+        <h2 id="pvTitle">Report</h2>
+        <p id="pvSub" class="mono"></p>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn" id="pvEdit">Edit</button>
+        <button class="btn" id="pvSave" hidden>Save</button>
+        <button class="btn" id="pvRevert" hidden>Discard edits</button>
+        <select id="pvExport" style="font-size:12px">
+          <option value="">Export&hellip;</option>
+          <option value="docx">Word (.docx)</option>
+          <option value="pdf">PDF</option>
+          <option value="txt">Plain text</option>
+          <option value="md">Markdown</option>
+        </select>
+        <select id="pvResults" style="font-size:12px">
+          <option value="">Results&hellip;</option>
+          <option value="xlsx|">Excel &mdash; everything</option>
+          <option value="xlsx|cells">Excel &mdash; all cells</option>
+          <option value="xlsx|genes">Excel &mdash; all genes</option>
+          <option value="csv|">CSV (zip) &mdash; everything</option>
+        </select>
+        <button class="btn" id="pvClose">Close</button>
+      </div>
+    </header>
+    <div class="previewbody" id="pvBody"></div>
+  </div>
+</div>
+
 <div id="toast" hidden></div>
 <script>
 (function(){
@@ -397,7 +584,8 @@ const S = {
   tools:[], recipes:[], capability:{}, gateOpen:false,
   plan:[], overrides:{}, planInfo:null, selTool:null, filter:"all",
   mode:"label", colorBy:"cluster", selCluster:null, drag:null, rect:null,
-  thread:[], jobs:[], job:null, poll:null, panel:"datasets", dataRoot:"", resources:null, context:null, scanning:false, waitingOnPermission:false, scanRetry:null
+  thread:[], jobs:[], job:null, poll:null, panel:"datasets", dataRoot:"", resources:null, context:null, scanning:false, waitingOnPermission:false, scanRetry:null,
+  reports:[], figures:[]
 };
 
 const $ = (s) => document.querySelector(s);
@@ -435,6 +623,8 @@ function showPanel(name){
   $$(".panel").forEach((p) => { p.hidden = p.dataset.panel !== name; });
   if (name === "review") drawMap();
   if (name === "runs") loadRuns();
+  if (name === "reports") loadReports();
+  if (name === "visualization") loadVisualizations();
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -1321,6 +1511,684 @@ function renderResult(job){
     '<div class="kv"><span>report</span><b><a href="/api/runs/' + esc(job.job_id) + '/report" data-external>open</a></b></div>' +
     '</div>';
 }
+
+
+/* =================================================================== create
+   The guided flow. Five steps, and the only one that starts work is the last.
+
+   The wizard never decides for the user which lane they are in: every step
+   shows the gate status of the dataset it is working on, so a plan that will
+   run descriptively is visible as such before it runs, not after. */
+const W = {
+  open:false, step:1, dsId:null, facts:null, suggested:[], text:"",
+  analysis:null, answers:{}, tools:[], plan:null, intake:null, busy:false, catalog:[], picked:null
+};
+
+function openWizard(){
+  W.open = true; W.step = 1; W.analysis = null; W.answers = {}; W.tools = []; W.plan = null;
+  W.dsId = S.dsId || null; W.facts = null; W.intake = null; W.text = "";
+  $("#wizard").hidden = false;
+  renderWizard();
+}
+function closeWizard(){ W.open = false; $("#wizard").hidden = true; }
+
+function wizMsg(text, bad){
+  const el = $("#wizMsg");
+  el.textContent = text || "";
+  el.className = "wizmsg" + (bad ? " bad" : "");
+}
+
+function renderWizard(){
+  $$("#wizSteps li").forEach((li) => {
+    const n = Number(li.dataset.s);
+    li.setAttribute("aria-current", String(n === W.step));
+    li.classList.toggle("done", n < W.step);
+  });
+  $("#wizBack").disabled = W.step === 1 || W.busy;
+  const next = $("#wizNext");
+  next.textContent = W.step === 5 ? "Run analysis" : "Next";
+  next.disabled = W.busy;
+  const render = [wizData, wizQuestion, wizDetails, wizTools, wizRun][W.step - 1];
+  $("#wizBody").innerHTML = render();
+  const after = [afterData, afterQuestion, afterDetails, afterTools, afterRun][W.step - 1];
+  if (after) after();
+}
+
+/* ------------------------------------------------------------- step 1 data */
+function wizData(){
+  const rows = S.datasets.map((d) => (
+    '<button class="dsrow" data-ds="' + esc(d.dataset_id) + '" aria-pressed="' +
+    String(d.dataset_id === W.dsId) + '">' +
+    '<span class="nm">' + esc(d.display_name || d.name) + '</span>' +
+    '<span class="ty mono">' + esc(d.data_type) + '</span>' +
+    (d.reviewable ? '<span class="pill ok" style="flex:none"><i></i>gateable</span>'
+                  : '<span class="pill mute" style="flex:none"><i></i>reference</span>') +
+    '</button>'
+  )).join("") || '<div class="empty">No datasets yet. Upload one above.</div>';
+
+  const intake = W.intake ? (
+    '<div class="analysis"><div class="rs">' + esc(W.intake.name) + ' &mdash; <span class="mono">' +
+    esc(W.intake.data_type) + '</span></div><div class="' +
+    (W.intake.usable ? "" : "warn") + '">' + esc(W.intake.note) + '</div></div>'
+  ) : "";
+
+  return '' +
+    '<div class="drop" id="drop">' +
+      '<h3>Add data</h3>' +
+      '<p>Drop files or a folder here. <span class="mono">.h5ad</span>, <span class="mono">.csv</span>, ' +
+      'a Xenium output folder, Visium, zarr.</p>' +
+      '<div class="pickrow">' +
+        '<button class="btn" id="pickFiles">Choose files</button>' +
+        '<button class="btn" id="pickFolder">Choose folder</button>' +
+      '</div>' +
+      '<input type="file" id="fileInput" multiple hidden>' +
+      '<input type="file" id="folderInput" webkitdirectory directory multiple hidden>' +
+      '<div style="margin-top:14px;display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:wrap">' +
+        '<input id="linkPath" class="mono" style="font-size:11.5px;width:330px" ' +
+          'placeholder="&hellip;or paste a folder path already on this Mac" spellcheck="false">' +
+        '<button class="btn" id="linkBtn">Link folder</button>' +
+      '</div>' +
+      '<p style="margin-top:8px;font-size:11px">A Xenium bundle is routinely 10&nbsp;GB. Linking ' +
+        'registers it where it is instead of copying it through the browser.</p>' +
+    '</div>' +
+    intake +
+    '<h3 style="margin:16px 0 7px;font-size:13px">Choose the dataset to analyse</h3>' +
+    '<div class="dslist" id="dsList">' + rows + '</div>';
+}
+
+function afterData(){
+  const drop = $("#drop");
+  const fileInput = $("#fileInput"), folderInput = $("#folderInput");
+  $("#pickFiles").onclick = () => fileInput.click();
+  $("#pickFolder").onclick = () => folderInput.click();
+  fileInput.onchange = () => uploadFiles(Array.from(fileInput.files));
+  folderInput.onchange = () => uploadFiles(Array.from(folderInput.files));
+  $("#linkBtn").onclick = () => linkFolder($("#linkPath").value);
+
+  ["dragenter","dragover"].forEach((ev) => drop.addEventListener(ev, (e) => {
+    e.preventDefault(); drop.classList.add("over");
+  }));
+  ["dragleave","drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+    e.preventDefault(); drop.classList.remove("over");
+  }));
+  drop.addEventListener("drop", (e) => {
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (files.length) uploadFiles(files);
+  });
+
+  $$("#dsList .dsrow").forEach((btn) => btn.onclick = () => {
+    W.dsId = btn.dataset.ds;
+    $$("#dsList .dsrow").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+    wizMsg("");
+  });
+}
+
+async function uploadFiles(files){
+  if (!files.length) return;
+  W.busy = true; wizMsg("Uploading " + files.length + " file(s)…"); renderWizard();
+  try {
+    const form = new FormData();
+    const paths = [];
+    files.forEach((f) => {
+      form.append("files", f);
+      paths.push(f.webkitRelativePath || f.name);
+    });
+    form.append("paths", paths.join("\n"));
+    form.append("name", files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : files[0].name);
+    const res = await fetch("/api/uploads", {method:"POST", body:form});
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || ("HTTP " + res.status));
+    W.intake = body.intake;
+    applyDatasets({data_root:S.dataRoot, datasets:body.datasets});
+    W.dsId = pickDatasetByPath(body.intake.path) || W.dsId;
+    wizMsg(body.intake.usable ? "Stored and recognised." : "Stored, but not recognised as a dataset.",
+           !body.intake.usable);
+  } catch (err) {
+    wizMsg(err.message, true);
+  } finally {
+    W.busy = false; renderWizard();
+  }
+}
+
+async function linkFolder(path){
+  if (!path || !path.trim()) { wizMsg("Paste a folder path first.", true); return; }
+  W.busy = true; wizMsg("Checking…"); renderWizard();
+  try {
+    const body = await post("/api/uploads/link", {path:path.trim()});
+    W.intake = body.intake;
+    applyDatasets({data_root:S.dataRoot, datasets:body.datasets});
+    W.dsId = pickDatasetByPath(body.path) || W.dsId;
+    wizMsg(body.note || (body.intake.usable ? "Linked and recognised." : "Linked, but not recognised."),
+           !!body.note || !body.intake.usable);
+  } catch (err) {
+    wizMsg(err.message, true);
+  } finally {
+    W.busy = false; renderWizard();
+  }
+}
+
+function pickDatasetByPath(path){
+  const hit = S.datasets.find((d) => d.path === path);
+  return hit ? hit.dataset_id : null;
+}
+
+/* --------------------------------------------------------- step 2 question */
+function wizQuestion(){
+  const f = W.facts || {};
+  const gate = f.gate_open
+    ? '<span class="pill ok"><i></i>gate open &mdash; ' + (f.cell_types||[]).length + ' reviewed cell types</span>'
+    : '<span class="pill warn"><i></i>gate closed &mdash; descriptive lane only</span>';
+  const cards = (W.suggested || []).map((q, i) => (
+    '<button class="qcard" data-q="' + i + '" aria-pressed="false">' +
+    '<div class="q">' + esc(q.question) + '</div>' +
+    '<div class="w">' + esc(q.why) + ' <span class="mono">[' + esc(q.lane) + ']</span></div>' +
+    '</button>'
+  )).join("");
+
+  return '' +
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
+      '<b style="font-size:13.5px">' + esc(f.display_name || "dataset") + '</b>' + gate +
+      '<span class="mono" style="font-size:11px;color:var(--ink-3)">' +
+        num(f.n_cells || 0) + ' cells &middot; ' + (f.panel_size || 0) + ' genes</span>' +
+    '</div>' +
+    '<h3 style="font-size:13px;margin-bottom:7px">Suggested &mdash; these are questions this dataset can answer</h3>' +
+    cards +
+    '<h3 style="font-size:13px;margin:16px 0 7px">Or describe it in your own words</h3>' +
+    '<textarea class="ask" id="askText" placeholder="e.g. do invasive tumour cells sit next to myoepithelial cells?">' +
+      esc(W.text) + '</textarea>' +
+    '<div id="analysisBox"></div>';
+}
+
+function afterQuestion(){
+  $$(".qcard").forEach((btn) => btn.onclick = () => {
+    const q = W.suggested[Number(btn.dataset.q)];
+    $("#askText").value = q.question;
+    W.text = q.question;
+    // A suggestion already carries the tools it resolves to, so it is used
+    // directly rather than re-derived by matching its own words. Round-tripping
+    // it through the keyword matcher meant the app could offer a question and
+    // then answer "no implemented tool matches that" -- which it did, for the
+    // first suggestion on every unlabelled section.
+    W.picked = q;
+    $$(".qcard").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+    analyzeNow();
+  });
+  const box = $("#askText");
+  let timer = null;
+  box.oninput = () => {
+    W.text = box.value;
+    W.picked = null;           // typing means they are no longer on a suggestion
+    clearTimeout(timer);
+    timer = setTimeout(analyzeNow, 420);
+  };
+  if (W.analysis) renderAnalysis();
+}
+
+async function analyzeNow(){
+  if (!W.text.trim()){ W.analysis = null; renderAnalysis(); return; }
+  try {
+    const analysis = await post("/api/workflow/analyze",
+      {dataset_id:W.dsId, text:W.text, tools:(W.picked ? W.picked.tools : [])});
+    W.analysis = analysis;
+    W.tools = analysis.tools.slice();
+    renderAnalysis();
+  } catch (err) { wizMsg(err.message, true); }
+}
+
+function renderAnalysis(){
+  const box = $("#analysisBox");
+  if (!box) return;
+  const a = W.analysis;
+  if (!a){ box.innerHTML = ""; return; }
+  const cls = a.status === "understood" ? "" : (a.status === "unsupported" ? "bad" : "warn");
+  const unsupported = (a.not_supported || []).map((n) => '<div class="bad">' + esc(n) + '</div>').join("");
+  const ents = [];
+  if (a.entities.genes.length) ents.push("genes: " + a.entities.genes.join(", "));
+  if (a.entities.cell_types.length) ents.push("cell types: " + a.entities.cell_types.join(", "));
+  if (a.entities.regions.length) ents.push("regions: " + a.entities.regions.join(", "));
+  box.innerHTML =
+    '<div class="analysis">' +
+      (a.prompt ? '<div class="rs">' + esc(a.prompt) + '</div>' : "") +
+      unsupported +
+      '<div class="' + cls + '">' + esc(a.note) + '</div>' +
+      (ents.length ? '<div class="mono" style="margin-top:5px;color:var(--ink-3);font-size:11px">' +
+        esc(ents.join(" · ")) + '</div>' : "") +
+    '</div>';
+}
+
+/* ---------------------------------------------------------- step 3 details */
+function wizDetails(){
+  const qs = (W.analysis && W.analysis.questions) || [];
+  if (!qs.length){
+    return '<div class="empty">Nothing to clarify &mdash; the plan is fully determined by your ' +
+           'question. Next step shows the tools.</div>';
+  }
+  return '<p style="font-size:12.5px;color:var(--ink-3);margin-bottom:12px">' +
+    'Each of these changes what runs. There are no questions here for the sake of asking.</p>' +
+    qs.map((q) => {
+      const current = W.answers[q.id] !== undefined ? W.answers[q.id] : q.default;
+      const opts = (q.options || []).map((o) => (
+        '<button class="opt" data-qid="' + esc(q.id) + '" data-v="' + esc(o.value) + '" ' +
+        'aria-pressed="' + String(String(current) === String(o.value)) + '">' + esc(o.label) + '</button>'
+      )).join("");
+      const free = (!q.options || !q.options.length)
+        ? '<input class="mono" data-free="' + esc(q.id) + '" style="width:220px;font-size:12px" value="' +
+          esc(current || "") + '" placeholder="gene symbol">'
+        : "";
+      return '<div class="qgroup"><div class="q">' + esc(q.question) + '</div>' +
+        '<div class="opts">' + opts + free + '</div>' +
+        '<div class="w">' + esc(q.why) + '</div></div>';
+    }).join("");
+}
+
+function afterDetails(){
+  $$(".opt").forEach((btn) => btn.onclick = () => {
+    W.answers[btn.dataset.qid] = btn.dataset.v;
+    $$('.opt[data-qid="' + btn.dataset.qid + '"]').forEach(
+      (b) => b.setAttribute("aria-pressed", String(b === btn)));
+  });
+  $$("input[data-free]").forEach((input) => input.oninput = () => {
+    W.answers[input.dataset.free] = input.value.trim();
+  });
+}
+
+/* ------------------------------------------------------------ step 4 tools */
+function wizTools(){
+  const plan = W.plan;
+  if (!plan) return '<div class="empty">Working out the plan…</div>';
+  const rows = (plan.steps || []).map((s) => {
+    const blocked = s.lane === "blocked";
+    return '<label class="steprow' + (blocked ? " blocked" : "") + '">' +
+      '<input type="checkbox" data-tool="' + esc(s.tool) + '" ' +
+        (W.tools.indexOf(s.tool) >= 0 ? "checked" : "") + (blocked ? " disabled" : "") + '>' +
+      '<span class="nm">' + esc(s.tool) + '</span>' +
+      '<span class="why">' + esc(s.method || "") + '</span>' +
+      '<span class="pill ' + (blocked ? "warn" : (s.lane === "validated" ? "ok" : "mute")) + '">' +
+        '<i></i>' + esc(s.lane) + '</span>' +
+      '<span class="mono" style="font-size:10.5px;color:var(--ink-3)">' + esc(s.estimated_runtime || "") + '</span>' +
+      '</label>';
+  }).join("");
+  const blockedNote = plan.blocked_steps
+    ? '<div class="analysis"><div class="warn">' + plan.blocked_steps + ' step(s) need reviewed ' +
+      'labels or regions this dataset does not have. They are disabled here rather than failing later.</div>' +
+      (plan.blocking_reasons || []).map((r) => '<div class="mono" style="font-size:11px;color:var(--ink-3)">' +
+        esc(r) + '</div>').join("") + '</div>'
+    : "";
+  const extra = availableTools(plan).map((t) => (
+    '<label class="steprow"><input type="checkbox" data-tool="' + esc(t.name) + '" ' +
+    (W.tools.indexOf(t.name) >= 0 ? "checked" : "") + '>' +
+    '<span class="nm">' + esc(t.name) + '</span>' +
+    '<span class="why">' + esc(t.description || "") + '</span>' +
+    '<span class="pill ' + (t.lane === "blocked" ? "warn" : (t.lane === "validated" ? "ok" : "mute")) +
+    '"><i></i>' + esc(t.lane) + '</span></label>'
+  )).join("");
+
+  return '<h3 style="font-size:13px;margin-bottom:8px">Proposed plan &mdash; uncheck anything you do not want</h3>' +
+    rows + blockedNote +
+    (extra ? '<h3 style="font-size:13px;margin:16px 0 8px">Other implemented tools</h3>' + extra : "") +
+    '<p style="font-size:11.5px;color:var(--ink-3);margin-top:12px">Scaffolded tools are not listed. ' +
+    'A tool that returns a placeholder is not something you can choose.</p>';
+}
+
+function availableTools(plan){
+  const inPlan = new Set((plan.steps || []).map((s) => s.tool));
+  // W.catalog, not S.tools: the Tools tab's catalog is for whichever dataset is
+  // selected there, and using it here labelled region_summary "blocked" on a
+  // gate-open section because the Tools tab had last loaded a blocked one.
+  return (W.catalog || []).filter((t) => t.plannable && !inPlan.has(t.name));
+}
+
+function afterTools(){
+  $$('#wizBody input[data-tool]').forEach((box) => box.onchange = () => {
+    const name = box.dataset.tool;
+    const at = W.tools.indexOf(name);
+    if (box.checked && at < 0) W.tools.push(name);
+    if (!box.checked && at >= 0) W.tools.splice(at, 1);
+    wizMsg(W.tools.length + " tool(s) selected.");
+  });
+}
+
+/* -------------------------------------------------------------- step 5 run */
+function wizRun(){
+  const plan = W.plan || {};
+  const runnable = (plan.steps || []).filter((s) => s.lane !== "blocked");
+  const f = W.facts || {};
+  return '<h3 style="font-size:13px;margin-bottom:8px">Ready to run</h3>' +
+    '<div class="analysis">' +
+      '<div class="rs">' + esc((W.analysis && W.analysis.prompt) || W.text || "Selected tools") + '</div>' +
+      '<div class="mono" style="font-size:11.5px;color:var(--ink-3)">' +
+        esc(f.display_name || "") + ' &middot; ' + num(f.n_cells || 0) + ' cells &middot; ' +
+        runnable.length + ' step(s) &middot; ' +
+        (f.gate_open ? "validated lane" : "descriptive lane") +
+      '</div>' +
+    '</div>' +
+    '<div style="margin-top:12px">' + runnable.map((s) =>
+      '<div class="steprow"><span class="nm">' + esc(s.tool) + '</span>' +
+      '<span class="why mono" style="font-size:11px">' + esc(JSON.stringify(s.params || {})) + '</span></div>'
+    ).join("") + '</div>' +
+    '<label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:12.5px">' +
+      '<input type="checkbox" id="wizFull" ' +
+      (String(W.answers.scope || "") === "sample" ? "" : "checked") + '>' +
+      'Run on the full section. Unchecked runs a deterministic sample, which every report marks provisional.' +
+    '</label>';
+}
+
+function afterRun(){}
+
+/* ------------------------------------------------------------- navigation */
+async function wizNext(){
+  wizMsg("");
+  if (W.step === 1){
+    if (!W.dsId){ wizMsg("Choose a dataset first.", true); return; }
+    // Building the cell index for a full section takes tens of seconds the
+    // first time. Saying nothing here reads as a dead button.
+    W.busy = true; renderWizard();
+    wizMsg("Reading the dataset and checking the gate\u2026 (first time on a full section takes a moment)");
+    try {
+      W.facts = await get("/api/workflow/facts?dataset_id=" + encodeURIComponent(W.dsId));
+      const q = await get("/api/workflow/questions?dataset_id=" + encodeURIComponent(W.dsId));
+      W.suggested = q.questions || [];
+    } catch (err){ wizMsg(err.message, true); W.busy = false; renderWizard(); return; }
+    W.busy = false; W.step = 2; renderWizard(); wizMsg(""); return;
+  }
+  if (W.step === 2){
+    if (!W.text.trim()){ wizMsg("Pick a suggested question or type one.", true); return; }
+    if (!W.analysis) await analyzeNow();
+    if (!W.analysis || !W.analysis.tools.length){
+      wizMsg("No implemented tool matches that, so there is nothing to plan. " +
+             "Try a suggested question.", true);
+      return;
+    }
+    W.step = 3; renderWizard(); return;
+  }
+  if (W.step === 3){ await refreshPlan(); W.step = 4; renderWizard(); return; }
+  if (W.step === 4){
+    if (!W.tools.length){ wizMsg("Select at least one tool.", true); return; }
+    await refreshPlan(); W.step = 5; renderWizard(); return;
+  }
+  await startWizardRun();
+}
+
+async function refreshPlan(){
+  W.busy = true; renderWizard();
+  wizMsg("Validating the plan\u2026");
+  try {
+    const [plan, catalog] = await Promise.all([
+      post("/api/workflow/plan", {dataset_id:W.dsId, tools:W.tools, answers:W.answers}),
+      get("/api/tools?dataset_id=" + encodeURIComponent(W.dsId))
+    ]);
+    W.plan = plan;
+    W.catalog = catalog.tools || [];
+    W.tools = (W.plan.steps || []).filter((s) => s.lane !== "blocked").map((s) => s.tool);
+    wizMsg("");
+  } catch (err){ wizMsg(err.message, true); }
+  W.busy = false;
+}
+
+async function startWizardRun(){
+  const full = $("#wizFull") ? $("#wizFull").checked : true;
+  const runnable = (W.plan.steps || []).filter((s) => s.lane !== "blocked").map((s) => s.tool);
+  if (!runnable.length){ wizMsg("Every step is gate-blocked. Nothing to run.", true); return; }
+  W.busy = true; wizMsg("Submitting…"); renderWizard();
+  try {
+    const job = await post("/api/runs", {
+      dataset_id:W.dsId, kind:"plan", tools:runnable,
+      overrides:(W.plan.overrides || {}),
+      max_records: full ? 0 : 20000,
+      label:(W.text || "Studio run").slice(0, 70)
+    });
+    closeWizard();
+    S.job = job;
+    showPanel("runs");
+    pollJob(job.job_id);
+    toast("Running: " + job.label);
+    // Move the rest of the app onto the dataset the run is using. Setting S.dsId
+    // directly left the title bar and the gate pill describing whichever dataset
+    // had been selected before the wizard opened.
+    if (S.dsId !== W.dsId) selectDataset(W.dsId);
+  } catch (err){
+    wizMsg(err.message, true);
+  } finally {
+    W.busy = false;
+    if (W.open) renderWizard();
+  }
+}
+
+/* ============================================================== reports tab */
+async function loadReports(){
+  try {
+    const body = await get("/api/reports");
+    S.reports = body.reports || [];
+    $("#cReports").textContent = S.reports.length;
+    renderReports();
+  } catch (err){ toast(err.message, true); }
+}
+
+function renderReports(){
+  const host = $("#reportsBody");
+  if (!S.reports || !S.reports.length){
+    host.innerHTML = '<div class="empty">No reports yet. Create an analysis to make one.</div>';
+    return;
+  }
+  host.innerHTML = '<div class="rgrid">' + S.reports.map((r) => {
+    const badge = r.status === "validated_ready"
+      ? '<span class="pill ok"><i></i>validated</span>'
+      : '<span class="pill warn"><i></i>descriptive</span>';
+    return '<div class="rcard' + (r.pinned ? " pinned" : "") + '">' +
+      '<h3 title="' + esc(r.title) + '">' + (r.pinned ? "★ " : "") + esc(r.title) + '</h3>' +
+      '<div class="meta">' + badge +
+        '<span>' + esc(r.dataset || "—") + '</span>' +
+        '<span>' + r.artifact_count + ' files</span>' +
+        (r.edited ? '<span style="color:var(--magenta)">edited</span>' : "") +
+      '</div>' +
+      '<div class="acts">' +
+        '<button class="btn" data-pv="' + esc(r.report_id) + '">Preview</button>' +
+        '<button class="btn" data-pin="' + esc(r.report_id) + '">' + (r.pinned ? "Unpin" : "Pin") + '</button>' +
+        '<button class="btn" data-rn="' + esc(r.report_id) + '">Rename</button>' +
+        '<button class="btn danger" data-del="' + esc(r.report_id) + '">Delete</button>' +
+      '</div></div>';
+  }).join("") + '</div>';
+
+  $$("#reportsBody [data-pv]").forEach((b) => b.onclick = () => openPreview(b.dataset.pv));
+  $$("#reportsBody [data-pin]").forEach((b) => b.onclick = async () => {
+    const row = S.reports.find((r) => r.report_id === b.dataset.pin);
+    await post("/api/reports/" + encodeURIComponent(b.dataset.pin) + "/pin", {pinned:!row.pinned});
+    loadReports();
+  });
+  $$("#reportsBody [data-rn]").forEach((b) => b.onclick = async () => {
+    const row = S.reports.find((r) => r.report_id === b.dataset.rn);
+    const title = window.prompt("Rename this report", row.title);
+    if (!title) return;
+    await post("/api/reports/" + encodeURIComponent(b.dataset.rn) + "/rename", {title:title});
+    loadReports();
+  });
+  $$("#reportsBody [data-del]").forEach((b) => b.onclick = async () => {
+    const row = S.reports.find((r) => r.report_id === b.dataset.del);
+    if (!window.confirm('Delete "' + row.title + '"?\n\nThis removes the run directory and its ' +
+        'record, so that run can no longer be replayed. This cannot be undone.')) return;
+    await api("/api/reports/" + encodeURIComponent(b.dataset.del), {method:"DELETE"});
+    toast("Deleted " + row.title);
+    loadReports();
+  });
+}
+
+/* --------------------------------------------------------- report preview */
+const P = {id:null, detail:null, editing:false};
+
+async function openPreview(reportId){
+  try {
+    P.id = reportId; P.editing = false;
+    P.detail = await get("/api/reports/" + encodeURIComponent(reportId));
+    $("#preview").hidden = false;
+    renderPreview();
+  } catch (err){ toast(err.message, true); }
+}
+
+function renderPreview(){
+  const d = P.detail;
+  $("#pvTitle").textContent = d.title;
+  $("#pvSub").textContent = [d.status, d.dataset, d.run_id, d.edited ? "edited" : ""]
+    .filter(Boolean).join("  ·  ");
+  $("#pvEdit").hidden = P.editing;
+  $("#pvSave").hidden = !P.editing;
+  $("#pvRevert").hidden = !d.edited;
+  $("#pvBody").innerHTML = P.editing
+    ? '<textarea id="pvText">' + esc(d.markdown) + '</textarea>'
+    : '<div class="doc">' + markdownToHtml(d.markdown, d.report_id) + '</div>';
+}
+
+function closePreview(){ $("#preview").hidden = true; P.id = null; P.editing = false; }
+
+/* A small renderer for exactly what the pilot report emits. Anything it does
+   not recognise falls through as text, which looks plain but never drops a
+   caveat -- and dropping a caveat is the only failure that matters here. */
+function markdownToHtml(md, reportId){
+  const lines = String(md || "").split("\n");
+  const out = [];
+  let i = 0, inList = false;
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<i>$2</i>");
+  const closeList = () => { if (inList){ out.push("</ul>"); inList = false; } };
+
+  while (i < lines.length){
+    const line = lines[i], t = line.trim();
+    if (!t){ closeList(); i++; continue; }
+    const img = t.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+    if (img){
+      closeList();
+      const src = /^https?:|^\//.test(img[2]) ? img[2]
+        : "/artifacts/" + encodeURIComponent(reportId) + "/" + img[2];
+      out.push('<img src="' + esc(src) + '" alt="' + esc(img[1]) +
+               '" style="max-width:100%;border:1px solid var(--line);border-radius:6px;margin:8px 0">');
+      i++; continue;
+    }
+    const h = t.match(/^(#{1,6})\s+(.*)$/);
+    if (h){ closeList(); const n = Math.min(h[1].length, 4);
+      out.push("<h" + n + ">" + inline(h[2]) + "</h" + n + ">"); i++; continue; }
+    if (/^\|/.test(t)){
+      closeList();
+      const rows = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])){
+        const cells = lines[i].trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+        if (!/^[\s:|-]+$/.test(cells.join("|"))) rows.push(cells);
+        i++;
+      }
+      if (rows.length){
+        out.push("<table><thead><tr>" + rows[0].map((c) => "<th>" + inline(c) + "</th>").join("") +
+          "</tr></thead><tbody>" + rows.slice(1).map((r) =>
+          "<tr>" + r.map((c) => "<td>" + inline(c) + "</td>").join("") + "</tr>").join("") +
+          "</tbody></table>");
+      }
+      continue;
+    }
+    const b = line.match(/^\s*[-*]\s+(.*)$/);
+    if (b){ if (!inList){ out.push("<ul>"); inList = true; }
+      out.push("<li>" + inline(b[1]) + "</li>"); i++; continue; }
+    closeList();
+    out.push("<p>" + inline(t) + "</p>");
+    i++;
+  }
+  closeList();
+  return out.join("");
+}
+
+/* ============================================================ visualization */
+async function loadVisualizations(){
+  try {
+    const body = await get("/api/visualizations");
+    S.figures = body.figures || [];
+    $("#cViz").textContent = S.figures.length;
+    const runs = Array.from(new Set(S.figures.map((f) => f.report_id))).sort();
+    const sel = $("#vizFilter"), current = sel.value;
+    sel.innerHTML = '<option value="">All runs</option>' +
+      runs.map((r) => '<option value="' + esc(r) + '">' + esc(r) + '</option>').join("");
+    sel.value = current;
+    renderVisualizations();
+  } catch (err){ toast(err.message, true); }
+}
+
+function renderVisualizations(){
+  const host = $("#vizBody");
+  const only = $("#vizFilter").value;
+  const figures = S.figures.filter((f) => !only || f.report_id === only);
+  if (!figures.length){
+    host.innerHTML = '<div class="empty">No figures yet.</div>';
+    return;
+  }
+  host.innerHTML = '<div class="vgrid">' + figures.map((f) => (
+    '<div class="vcard">' +
+      (f.kind === "interactive"
+        ? '<div style="height:178px;display:flex;align-items:center;justify-content:center;' +
+          'background:#05090a;color:var(--accent)">interactive view</div>'
+        : '<img src="' + esc(f.url) + '" alt="' + esc(f.title) + '" loading="lazy">') +
+      '<div class="cap"><b>' + esc(f.title) + '</b>' +
+        '<span class="rid">' + esc(f.report_id) + '</span>' +
+        '<a href="' + esc(f.url) + '" data-external style="font-size:11.5px">open full size</a>' +
+      '</div>' +
+    '</div>'
+  )).join("") + '</div>';
+}
+
+
+/* ------------------------------------------------------------ wiring up */
+$("#createBtn").onclick = openWizard;
+$("#wizClose").onclick = closeWizard;
+$("#wizNext").onclick = wizNext;
+$("#wizBack").onclick = () => { if (W.step > 1){ W.step--; renderWizard(); } };
+$("#refreshReports").onclick = loadReports;
+$("#refreshViz").onclick = loadVisualizations;
+$("#vizFilter").onchange = renderVisualizations;
+$("#pvClose").onclick = closePreview;
+$("#pvEdit").onclick = () => { P.editing = true; renderPreview(); };
+$("#pvSave").onclick = async () => {
+  const text = $("#pvText").value;
+  await post("/api/reports/" + encodeURIComponent(P.id) + "/edit", {markdown:text});
+  P.editing = false;
+  P.detail = await get("/api/reports/" + encodeURIComponent(P.id));
+  renderPreview();
+  toast("Saved. The run's own report is untouched.");
+  loadReports();
+};
+$("#pvRevert").onclick = async () => {
+  if (!window.confirm("Discard your edits and go back to the report this run produced?")) return;
+  await post("/api/reports/" + encodeURIComponent(P.id) + "/revert", {});
+  P.editing = false;
+  P.detail = await get("/api/reports/" + encodeURIComponent(P.id));
+  renderPreview();
+  loadReports();
+};
+$("#pvExport").onchange = (e) => {
+  const format = e.target.value;
+  e.target.value = "";
+  if (!format) return;
+  openExternal("/api/reports/" + encodeURIComponent(P.id) + "/export?format=" + format);
+};
+$("#pvResults").onchange = async (e) => {
+  const value = e.target.value;
+  e.target.value = "";
+  if (!value) return;
+  const parts = value.split("|");
+  try {
+    const res = await post("/api/reports/" + encodeURIComponent(P.id) + "/results",
+                           {format:parts[0], kind:parts[1] || ""});
+    if (res.status === "ready"){
+      openExternal(res.url);
+    } else {
+      toast("Export running in the background \u2014 " + (res.note || "see Tasks."));
+      showPanel("runs");
+      loadRuns();
+    }
+  } catch (err){ toast(err.message, true); }
+};
+
+// Esc closes whichever layer is on top.
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("#preview").hidden) closePreview();
+  else if (!$("#wizard").hidden) closeWizard();
+});
 
 /* ------------------------------------------------------------------ go */
 renderPrompts();

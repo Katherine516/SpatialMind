@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, List, Optional, Tuple
 import hashlib
+import json
 import time
 
 from ..ingestion import (
@@ -97,6 +98,40 @@ class DatasetEntry:
         }
 
 
+
+# Tables that stand alone as a dataset. A `.csv.gz` inside a Xenium bundle is
+# excluded by `_inside_dataset`, not by its name.
+TABULAR_SUFFIXES = {".csv", ".tsv"}
+VISIUM_MARKERS = ("filtered_feature_bc_matrix.h5", "spatial")
+
+
+def _is_tabular(candidate: Path) -> bool:
+    name = candidate.name.lower()
+    if name.endswith(".gz"):
+        name = name[:-3]
+    return Path(name).suffix in TABULAR_SUFFIXES
+
+
+def _looks_like_visium_dir(candidate: Path) -> bool:
+    try:
+        present = {child.name for child in candidate.iterdir()}
+    except OSError:
+        return False
+    return all(marker in present for marker in VISIUM_MARKERS)
+
+
+def _inside_dataset(candidate: Path, seen: set) -> bool:
+    """True when this path sits inside a dataset already catalogued."""
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return False
+    for parent in resolved.parents:
+        if parent in seen:
+            return True
+    return False
+
+
 def discover_datasets(data_root: str) -> List[DatasetEntry]:
     """Find analysable datasets under ``data_root``.
 
@@ -112,12 +147,23 @@ def discover_datasets(data_root: str) -> List[DatasetEntry]:
     for candidate in sorted(root.rglob("*")):
         if candidate.name.startswith("."):
             continue
+        if _inside_dataset(candidate, seen):
+            # A Xenium bundle's own cells.csv.gz is not a second dataset.
+            continue
         if candidate.is_dir():
-            if not (candidate / "experiment.xenium").exists():
+            if (candidate / "experiment.xenium").exists() or _looks_like_visium_dir(candidate):
+                resolved = candidate.resolve()
+            elif candidate.suffix.lower() == ".zarr":
+                resolved = candidate.resolve()
+            else:
                 continue
-            resolved = candidate.resolve()
         elif candidate.suffix.lower() in {".h5ad", ".xenium"}:
             resolved = resolve_xenium_root(candidate).resolve()
+        elif _is_tabular(candidate):
+            # An uploaded table is a dataset in its own right. Listing only
+            # .h5ad and Xenium meant a user could upload a CSV, get a success
+            # message, and never see it again.
+            resolved = candidate.resolve()
         else:
             continue
         if resolved in seen:
@@ -334,3 +380,37 @@ class IndexCache:
             for key in [k for k in self._order if k.startswith("%s::" % dataset_path)]:
                 self._entries.pop(key, None)
                 self._order.remove(key)
+
+
+# Control probes are named by prefix in every Xenium panel file; they are not
+# genes and offering one as "a gene to overlay" is a bug the user cannot see.
+CONTROL_PREFIXES = ("negcontrol", "blank", "antisense", "unassigned", "deprecated")
+
+
+def panel_genes(dataset_path: str) -> List[str]:
+    """Measured gene symbols for a Xenium bundle, in panel order.
+
+    Read so the app can check a gene a user typed against what the slide
+    actually measured. On a targeted assay that check is the difference between
+    "not expressed" and "not looked for".
+    """
+    path = Path(dataset_path)
+    candidate = path / "gene_panel.json" if path.is_dir() else path.parent / "gene_panel.json"
+    if not candidate.exists():
+        return []
+    try:
+        with open(candidate, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    names: List[str] = []
+    for target in ((payload.get("payload") or {}).get("targets") or []):
+        if not isinstance(target, dict):
+            continue
+        data = (target.get("type") or {}).get("data") or {}
+        name = str(data.get("name") or "").strip()
+        if not name or name.lower().startswith(CONTROL_PREFIXES):
+            continue
+        if name not in names:
+            names.append(name)
+    return names

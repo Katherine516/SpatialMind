@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Lock, Thread
 from typing import Any, Dict, List, Optional
 import os
+import re
 import time
 
 from ..ingestion import (
@@ -20,11 +21,13 @@ from ..ingestion import (
 from ..pilot import run_pilot
 from ..storage import StorageLayer
 from ..tools import build_default_registry
+from ..schemas import expression_feature_names
+from ..viz.tables import write_result_tables
 from .. import dataset_context, gatekeeper
 from . import config
 from . import gate as gate_module
-from . import planner, resources, review
-from .catalog import DEFAULT_DISPLAY_CELLS, IndexCache, discover_datasets
+from . import exports, library, plan_report, planner, resources, review, uploads, workflow
+from .catalog import DEFAULT_DISPLAY_CELLS, IndexCache, discover_datasets, panel_genes
 from .jobs import JobRunner, step
 
 # macOS gates these behind a consent prompt; a scan of one blocks until answered.
@@ -53,6 +56,29 @@ def jsonable(value: Any) -> Any:
     return str(value)
 
 
+
+def _slug(text: str) -> str:
+    """A filename a user can find again, from a report title."""
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", str(text or "report")).strip("_")
+    return (cleaned or "report")[:60]
+
+
+
+def _human_bytes(count: int) -> str:
+    value = float(count)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return "%.0f %s" % (value, unit)
+        value /= 1024
+    return "%.0f GB" % value
+
+
+def _figure_title(filename: str) -> str:
+    stem = re.sub(r"\.[A-Za-z0-9]+$", "", filename)
+    stem = re.sub(r"^(descriptive|review|validated)_", "", stem)
+    return stem.replace("_", " ").strip().capitalize() or filename
+
+
 class Studio:
     """Holds the session state a local single-user app needs: what datasets
     exist, their cell indexes, and the one job that may be running."""
@@ -62,6 +88,7 @@ class Studio:
         self.output_root = str(Path(output_root or config.default_output_root()).expanduser().resolve())
         self.indexes = IndexCache()
         self.jobs = JobRunner()
+        self.reports = library.ReportLibrary(self.output_root)
         self._datasets: Dict[str, Any] = {}
         self._scanned = False
         self._scan_thread: Optional[Thread] = None
@@ -183,11 +210,13 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
 
         registry = build_default_registry()
         results = []
+        tool_results = []
         started = time.time()
         for position, spec in enumerate(plan):
             step(job, "Running %s (%d of %d)." % (spec.tool_name, position + 1, len(plan)), position + 2)
             tool_started = time.time()
             result = registry.get(spec.tool_name).run(dataset, dict(spec.params))
+            tool_results.append(result)
             results.append(
                 {
                     "tool": spec.tool_name,
@@ -217,10 +246,45 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
             "label_report": jsonable(label_report.to_dict()),
             "region_report": jsonable(region_report.to_dict()),
             "records_loaded": len(dataset.records),
+            "features_loaded": len(expression_feature_names(dataset)),
+            "scope": "full_section" if not max_records else "sample",
             "wall_seconds": round(time.time() - started, 2),
             "run_record_path": record.run_record_path,
+            "run_id": job.job_id,
+            "title": job.label,
             "output_dir": str(output_dir),
         }
+
+        # A run that leaves only JSON behind is not a finished piece of work. The
+        # tables are what a collaborator opens, and the report is what they read
+        # first; neither existed for a plan run, so the Studio could complete an
+        # analysis and hand back nothing anyone could send on.
+        step(job, "Writing result tables.", len(plan) + 2)
+        try:
+            payload["result_tables"] = write_result_tables(
+                payload, dataset, output_dir, run_id=job.job_id, results=tool_results)
+        except Exception as exc:  # a table failure must not lose a completed run
+            payload["result_tables"] = {"status": "failed", "error": str(exc)}
+            job.log.append("Result tables failed: %s" % exc)
+
+        step(job, "Drawing figures.", len(plan) + 2)
+        try:
+            payload["figures"] = plan_report.write_figures(dataset, payload, output_dir)
+        except Exception as exc:
+            payload["figures"] = []
+            job.log.append("Figures failed: %s" % exc)
+
+        step(job, "Writing the report.", len(plan) + 2)
+        try:
+            gate = studio.gate(dataset_id) if entry.reviewable else None
+        except Exception:
+            gate = None
+        try:
+            payload["report_paths"] = plan_report.write(payload, output_dir, gate=gate)
+        except Exception as exc:
+            payload["report_paths"] = {}
+            job.log.append("Report failed: %s" % exc)
+
         (output_dir / "plan_results.json").write_text(_dumps(payload), encoding="utf-8")
         return payload
 
@@ -241,13 +305,14 @@ def make_pilot_worker(studio: Studio, dataset_id: str, options: Dict[str, Any]):
             dataset_path=entry.path,
             output_dir=output_dir,
             max_records=0 if full_section else int(options.get("max_records") or 5000),
-            min_label_coverage=float(options.get("min_label_coverage", 0.7)),
-            min_region_coverage=float(options.get("min_region_coverage", 0.7)),
+            min_label_coverage=float(options.get("min_label_coverage", gatekeeper.DEFAULT_MIN_LABEL_COVERAGE)),
+            min_region_coverage=float(options.get("min_region_coverage", gatekeeper.DEFAULT_MIN_REGION_COVERAGE)),
             allow_single_region=bool(options.get("allow_single_region", False)),
             report_format=str(options.get("report_format", "html")),
             readiness_only=readiness_only,
             require_complete_section=True,
-            review_max_records=int(options.get("review_max_records") or 5000),
+            review_max_records=int(options.get("review_max_records") or 0),
+            acknowledge_low_coverage=bool(options.get("acknowledge_low_coverage", False)),
             query=job.label,
         )
         step(job, "Pilot finished.", 1)
@@ -268,7 +333,7 @@ def _dumps(payload: Any) -> str:
 
 def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str] = None):
     try:
-        from fastapi import FastAPI, HTTPException, Query
+        from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
         from fastapi.responses import FileResponse, JSONResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel, Field
@@ -415,16 +480,24 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         if request.kind not in review.KINDS:
             raise HTTPException(status_code=400, detail="kind must be 'labels' or 'regions'")
 
+        # `scope` is the human sentence for the UI; `scope_key` is the stable
+        # token written to every row this assignment touches, so one reviewer
+        # decision stays countable as one decision after the fact.
         if request.cell_ids:
             cell_ids = request.cell_ids
             scope = "%d cells" % len(cell_ids)
+            scope_key = "cells:%d" % len(cell_ids)
         elif request.cluster is not None:
             cell_ids = index.ids_in_cluster(request.cluster)
             scope = "cluster %s" % request.cluster
+            scope_key = "cluster:%s" % request.cluster
         elif request.bounds:
             b = request.bounds
             cell_ids = index.ids_in_rect(b.get("x0", 0.0), b.get("y0", 0.0), b.get("x1", 0.0), b.get("y1", 0.0))
             scope = "rectangle"
+            scope_key = "rect:%.0f,%.0f,%.0f,%.0f" % (
+                b.get("x0", 0.0), b.get("y0", 0.0), b.get("x1", 0.0), b.get("y1", 0.0)
+            )
         else:
             raise HTTPException(status_code=400, detail="Provide cluster, bounds, or cell_ids.")
 
@@ -433,7 +506,7 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         try:
             result = review.assign(
                 entry.path, request.kind, cell_ids, request.value,
-                confidence=request.confidence, notes=request.notes,
+                confidence=request.confidence, notes=request.notes, scope=scope_key,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -610,6 +683,357 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
             if path.is_file()
         ]
         return {"job_id": job_id, "artifacts": artifacts}
+
+    # ---------------------------------------------------------------- intake
+
+    @app.post("/api/uploads")
+    async def upload(files: List[UploadFile] = File(...),
+                     name: str = Form(""),
+                     paths: str = Form("")) -> Dict[str, Any]:
+        """Store an uploaded file or folder, then say what the app made of it.
+
+        `paths` carries the browser's relative paths for a folder upload, in the
+        same order as `files`. A Xenium bundle is only a bundle when its files
+        keep their names beside each other.
+        """
+        relatives = [item for item in (paths or "").split("\n") if item.strip()]
+        payloads: List[Any] = []
+        for index, item in enumerate(files):
+            relative = relatives[index] if index < len(relatives) else (item.filename or "file")
+            payloads.append((relative, await item.read()))
+        if not payloads:
+            raise HTTPException(status_code=400, detail="No files were uploaded.")
+
+        label = name.strip() or Path(payloads[0][0]).parts[0] or "upload"
+        stored = uploads.store_files(studio.data_root, label, payloads)
+        if stored["status"] != "stored":
+            raise HTTPException(status_code=400, detail=stored.get("reason", "Upload failed."))
+        stored["intake"] = uploads.describe(stored["path"])
+        stored["datasets"] = studio.refresh_datasets()
+        return jsonable(stored)
+
+    class LinkRequest(BaseModel):
+        path: str
+
+    @app.post("/api/uploads/link")
+    def link(request: LinkRequest) -> Dict[str, Any]:
+        """Register a folder already on this machine instead of copying it.
+
+        A Xenium bundle is routinely 10 GB. Pushing that through a browser form
+        to land it on the same disk costs minutes and twice the space.
+        """
+        linked = uploads.link_folder(request.path)
+        if linked["status"] != "linked":
+            raise HTTPException(status_code=400, detail=linked.get("reason", "Cannot use that path."))
+        linked["intake"] = uploads.describe(linked["path"])
+        inside_root = True
+        try:
+            Path(linked["path"]).relative_to(Path(studio.data_root))
+        except ValueError:
+            inside_root = False
+        linked["in_data_root"] = inside_root
+        linked["note"] = ("" if inside_root else
+                          "That folder is outside the current data root, so it will not appear in "
+                          "the dataset list until the data root is changed to a parent of it.")
+        linked["datasets"] = studio.refresh_datasets()
+        return jsonable(linked)
+
+    # -------------------------------------------------------------- workflow
+
+    def _facts(dataset_id: str) -> Dict[str, Any]:
+        entry = _entry_or_404(dataset_id)
+        if not entry.reviewable:
+            return workflow.dataset_facts({"dataset": entry.to_dict()}, panel=[])
+        detail = {
+            "dataset": entry.to_dict(),
+            "n_cells": studio.index(dataset_id).n_cells,
+            "cluster_sizes": studio.index(dataset_id).cluster_sizes(),
+            "gate": studio.gate(dataset_id),
+        }
+        return workflow.dataset_facts(detail, panel=panel_genes(entry.path))
+
+    @app.get("/api/workflow/facts")
+    def workflow_facts(dataset_id: str = Query(...)) -> Dict[str, Any]:
+        facts = _facts(dataset_id)
+        # The panel can be 5,000 genes on a Prime run; the UI needs the count and
+        # a sample, not the whole list in every poll.
+        panel = facts.get("panel") or []
+        trimmed = dict(facts)
+        trimmed["panel"] = panel[:400]
+        trimmed["panel_size"] = len(panel)
+        return jsonable(trimmed)
+
+    @app.get("/api/workflow/questions")
+    def workflow_questions(dataset_id: str = Query(...)) -> Dict[str, Any]:
+        facts = _facts(dataset_id)
+        return jsonable({
+            "dataset_id": dataset_id,
+            "gate_open": facts["gate_open"],
+            "gate_status": facts["gate_status"],
+            "questions": workflow.recommend_questions(facts),
+        })
+
+    class AnalyzeRequest(BaseModel):
+        dataset_id: str
+        text: str = ""
+        # Set when the text is a suggestion the app itself offered, which
+        # already knows the tools it resolves to.
+        tools: List[str] = Field(default_factory=list)
+
+    @app.post("/api/workflow/analyze")
+    def workflow_analyze(request: AnalyzeRequest) -> Dict[str, Any]:
+        facts = _facts(request.dataset_id)
+        analysis = workflow.analyze_text(request.text, facts, tools=request.tools)
+        analysis["gate_open"] = facts["gate_open"]
+        return jsonable(analysis)
+
+    class WorkflowPlanRequest(BaseModel):
+        dataset_id: str
+        tools: List[str] = Field(default_factory=list)
+        answers: Dict[str, Any] = Field(default_factory=dict)
+
+    @app.post("/api/workflow/plan")
+    def workflow_plan(request: WorkflowPlanRequest) -> Dict[str, Any]:
+        facts = _facts(request.dataset_id)
+        overrides = workflow.apply_answers(request.tools, request.answers)
+        described = workflow.recommend_tools(request.tools, facts["gate_open"], overrides=overrides)
+        described["overrides"] = overrides
+        described["gate_open"] = facts["gate_open"]
+        described["blocking_reasons"] = facts["blocking_reasons"]
+        return jsonable(described)
+
+    # --------------------------------------------------------------- reports
+
+    @app.get("/api/reports")
+    def list_reports() -> Dict[str, Any]:
+        return jsonable({"reports": studio.reports.scan(), "output_root": studio.output_root})
+
+    @app.get("/api/reports/{report_id}")
+    def get_report_detail(report_id: str, original: bool = Query(False)) -> Dict[str, Any]:
+        described = studio.reports.get(report_id)
+        if not described:
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        described["markdown"] = studio.reports.markdown(report_id, original=original)
+        described["tables"] = exports.list_tables(Path(described["directory"]))
+        return jsonable(described)
+
+    class RenameRequest(BaseModel):
+        title: str
+
+    @app.post("/api/reports/{report_id}/rename")
+    def rename_report(report_id: str, request: RenameRequest) -> Dict[str, Any]:
+        if not studio.reports.rename(report_id, request.title):
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        return {"report_id": report_id, "title": request.title.strip()}
+
+    class PinRequest(BaseModel):
+        pinned: bool = True
+
+    @app.post("/api/reports/{report_id}/pin")
+    def pin_report(report_id: str, request: PinRequest) -> Dict[str, Any]:
+        if not studio.reports.set_pinned(report_id, request.pinned):
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        return {"report_id": report_id, "pinned": request.pinned}
+
+    class EditRequest(BaseModel):
+        markdown: str
+
+    @app.post("/api/reports/{report_id}/edit")
+    def edit_report(report_id: str, request: EditRequest) -> Dict[str, Any]:
+        """Save the user's version beside the run's, never over it.
+
+        The run record stays byte-identical so replay keeps working; every
+        export of an edited report says it was edited.
+        """
+        if not studio.reports.save_edit(report_id, request.markdown):
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        return {"report_id": report_id, "edited": True}
+
+    @app.post("/api/reports/{report_id}/revert")
+    def revert_report(report_id: str) -> Dict[str, Any]:
+        if not studio.reports.revert_edit(report_id):
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        return {"report_id": report_id, "edited": False}
+
+    @app.delete("/api/reports/{report_id}")
+    def delete_report(report_id: str) -> Dict[str, Any]:
+        if not studio.reports.delete(report_id):
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        return {"report_id": report_id, "deleted": True}
+
+    EXPORT_FORMATS = {
+        "docx": ("report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "pdf": ("report.pdf", "application/pdf"),
+        "txt": ("report.txt", "text/plain"),
+        "md": ("report.md", "text/markdown"),
+    }
+
+    @app.get("/api/reports/{report_id}/export")
+    def export_report(report_id: str, format: str = Query("docx")):
+        described = studio.reports.get(report_id)
+        if not described:
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        if format not in EXPORT_FORMATS:
+            raise HTTPException(status_code=400, detail="format must be one of %s"
+                                % ", ".join(sorted(EXPORT_FORMATS)))
+        markdown = studio.reports.markdown(report_id)
+        if not markdown:
+            raise HTTPException(status_code=404, detail="This run produced no report text to export.")
+        filename, media_type = EXPORT_FORMATS[format]
+        directory = Path(described["directory"])
+        target = directory / "exports" / filename
+        provenance = studio.reports.provenance(report_id)
+        title = described.get("title") or report_id
+        try:
+            if format == "docx":
+                exports.write_docx(markdown, target, title=title, provenance=provenance,
+                                   figure_root=directory)
+            elif format == "pdf":
+                exports.write_pdf(markdown, target, title=title, provenance=provenance)
+            elif format == "txt":
+                exports.write_text(markdown, target, provenance=provenance)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(markdown, encoding="utf-8")
+        except ImportError as exc:
+            raise HTTPException(status_code=501, detail="That export needs a package this build "
+                                                        "does not ship: %s" % exc)
+        download = "%s.%s" % (_slug(title), format)
+        return FileResponse(str(target), media_type=media_type, filename=download)
+
+    # An .xlsx of 163,920 cells x 35 columns takes ~75 seconds, nearly all of it
+    # openpyxl serialising XML. Past this much source data the export becomes a
+    # background task instead of a held-open request.
+    SYNCHRONOUS_EXPORT_BYTES = 2 * 1024 * 1024
+
+    def _result_tables(report_id: str, kind: str):
+        described = studio.reports.get(report_id)
+        if not described:
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        tables = exports.list_tables(Path(described["directory"]))
+        if kind:
+            tables = [table for table in tables if table["kind"] == kind]
+        if not tables:
+            raise HTTPException(status_code=404,
+                                detail="This run wrote no result tables%s."
+                                       % (" of kind '%s'" % kind if kind else ""))
+        return described, tables
+
+    def _write_results(described, tables, format: str, report_id: str):
+        directory = Path(described["directory"])
+        provenance = studio.reports.provenance(report_id)
+        slug = _slug(described.get("title") or report_id)
+        if format == "xlsx":
+            target = directory / "exports" / "results.xlsx"
+            exports.write_xlsx(tables, target, provenance=provenance)
+            return target, "%s_results.xlsx" % slug, \
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if format == "csv":
+            target = directory / "exports" / "results_csv.zip"
+            exports.write_csv_bundle(tables, target, provenance=provenance)
+            return target, "%s_results_csv.zip" % slug, "application/zip"
+        raise HTTPException(status_code=400, detail="format must be xlsx or csv")
+
+    class ResultsRequest(BaseModel):
+        format: str = "xlsx"
+        kind: str = ""
+
+    @app.post("/api/reports/{report_id}/results")
+    def start_results_export(report_id: str, request: ResultsRequest) -> Dict[str, Any]:
+        """Export the numbers behind a report, in the background when it is big.
+
+        `kind` narrows to one family -- cells, genes, regions, pairs, cell_types
+        -- and empty means everything the run produced.
+        """
+        described, tables = _result_tables(report_id, request.kind)
+        total = sum(int(table.get("bytes") or 0) for table in tables)
+        if total <= SYNCHRONOUS_EXPORT_BYTES:
+            target, filename, _media = _write_results(described, tables, request.format, report_id)
+            return {"status": "ready", "report_id": report_id, "filename": filename,
+                    "url": "/api/reports/%s/results?format=%s&kind=%s"
+                           % (report_id, request.format, request.kind),
+                    "bytes": target.stat().st_size}
+
+        def work(job):
+            step(job, "Reading %d result tables." % len(tables), 0)
+            job.steps_total = 2
+            target, filename, _media = _write_results(described, tables, request.format, report_id)
+            step(job, "Wrote %s." % filename, 2)
+            return {"filename": filename, "bytes": target.stat().st_size,
+                    "download_url": "/api/reports/%s/results?format=%s&kind=%s"
+                                    % (report_id, request.format, request.kind)}
+
+        try:
+            job = studio.jobs.submit(
+                kind="export", label="Export %s (%s)" % (described.get("title") or report_id, request.format),
+                dataset_id="", dataset_path=str(described["directory"]),
+                params={"report_id": report_id, "format": request.format, "kind": request.kind},
+                work=work, exclusive=False,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"status": "running", "job_id": job.job_id, "report_id": report_id,
+                "note": "%s of tables; this runs in the background and appears under Tasks."
+                        % _human_bytes(total)}
+
+    @app.get("/api/reports/{report_id}/results")
+    def export_results(report_id: str, format: str = Query("xlsx"),
+                       kind: str = Query("")) -> Any:
+        """Download a results export, writing it first if it is not there yet."""
+        described, tables = _result_tables(report_id, kind)
+        target, filename, media = _write_results(described, tables, format, report_id)
+        return FileResponse(str(target), media_type=media, filename=filename)
+
+    @app.get("/api/reports/{report_id}/table")
+    def preview_table(report_id: str, name: str = Query(...),
+                      limit: int = Query(200, ge=1, le=5000)) -> Dict[str, Any]:
+        described = studio.reports.get(report_id)
+        if not described:
+            raise HTTPException(status_code=404, detail="Unknown report: %s" % report_id)
+        for table in exports.list_tables(Path(described["directory"])):
+            if table["name"] == name:
+                header, rows, comments = exports.read_table(Path(table["path"]), limit=limit)
+                return jsonable({"name": name, "header": header, "rows": rows,
+                                 "provenance": comments, "truncated": len(rows) >= limit})
+        raise HTTPException(status_code=404, detail="No table named %s in this run." % name)
+
+    # --------------------------------------------------------- visualization
+
+    FIGURE_SUFFIXES = (".png", ".svg", ".jpg", ".jpeg", ".gif")
+
+    @app.get("/api/visualizations")
+    def list_visualizations(report_id: str = Query("")) -> Dict[str, Any]:
+        """Every figure any run produced, newest first.
+
+        Interactive HTML views are listed alongside the static figures rather
+        than in a separate place, because to a user they are the same thing:
+        something to look at.
+        """
+        root = Path(studio.output_root)
+        figures: List[Dict[str, Any]] = []
+        directories = ([root / report_id] if report_id
+                       else [d for d in sorted(root.iterdir()) if d.is_dir()] if root.exists() else [])
+        for directory in directories:
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.rglob("*")):
+                if not path.is_file():
+                    continue
+                suffix = path.suffix.lower()
+                interactive = suffix == ".html" and "interactive" in path.name.lower()
+                if suffix not in FIGURE_SUFFIXES and not interactive:
+                    continue
+                figures.append({
+                    "report_id": directory.name,
+                    "name": path.name,
+                    "title": _figure_title(path.name),
+                    "url": "/artifacts/%s" % path.relative_to(root).as_posix(),
+                    "kind": "interactive" if interactive else "image",
+                    "bytes": path.stat().st_size,
+                    "modified": path.stat().st_mtime,
+                })
+        figures.sort(key=lambda item: -item["modified"])
+        return jsonable({"figures": figures})
 
     Path(studio.output_root).mkdir(parents=True, exist_ok=True)
     app.mount("/artifacts", StaticFiles(directory=studio.output_root), name="artifacts")
