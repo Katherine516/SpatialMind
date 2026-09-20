@@ -615,18 +615,30 @@ def build_xenium_label_intake_report(
     )
 
 
+
+# The containers a Xenium table arrives in. Named once here because the same
+# list was spelled out independently in the type inference, the catalogue, the
+# Studio's cell index and this readiness check, and they disagreed.
+ASSET_SUFFIXES = (".csv.gz", ".csv", ".parquet", ".parquet.gz")
+
+
+def _any_asset(root: Path, stem: str) -> bool:
+    return any((root / ("%s%s" % (stem, suffix))).exists() for suffix in ASSET_SUFFIXES)
+
+
 def summarize_xenium_expert_readiness(dataset_path: str) -> XeniumExpertReadiness:
     root = _resolve_xenium_path(Path(dataset_path))
-    has_cell_table = any((root / name).exists() for name in ("cells.csv.gz", "cells.csv", "cells.parquet"))
+    # Every container these tables arrive in, including the gzipped parquet a
+    # GEO deposit ships. This check reported "missing Xenium cell table" for a
+    # bundle whose `cells.parquet.gz` the loader reads without complaint, and
+    # the gate refused it on an asset it had.
+    has_cell_table = _any_asset(root, "cells")
     has_feature_matrix = any((root / name).exists() for name in ("cell_feature_matrix.h5", "cell_feature_matrix.zarr.zip", "cell_feature_matrix.tar.gz"))
     has_morphology = (
         any((root / name).exists() for name in ("morphology.ome.tif", "morphology_focus.ome.tif", "morphology_mip.ome.tif"))
         or (root / "morphology_focus").exists()
     )
-    has_boundaries = any(
-        (root / name).exists()
-        for name in ("cell_boundaries.csv.gz", "cell_boundaries.parquet", "nucleus_boundaries.csv.gz", "nucleus_boundaries.parquet")
-    )
+    has_boundaries = _any_asset(root, "cell_boundaries") or _any_asset(root, "nucleus_boundaries")
     label_tables = discover_label_tables(dataset_path)
     region_tables = discover_region_label_tables(dataset_path)
     cluster_methods = list_xenium_cluster_methods(dataset_path)

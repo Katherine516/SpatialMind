@@ -6597,3 +6597,65 @@ class MarkerDisagreementTests(unittest.TestCase):
             self.assertFalse(loaded["c0"]["marker_disagreement"])
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class AssetContainerAgreementTests(unittest.TestCase):
+    """Four places named the containers a Xenium table arrives in, and disagreed.
+
+    The type inference, the catalogue, the Studio's cell index and the readiness
+    check each spelled out their own list. A GEO deposit ships
+    `cells.parquet.gz` and `cell_boundaries.parquet.gz`; the loader reads both,
+    and the readiness check called them missing -- so the gate refused a section
+    on assets it had.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.bundle = self.root / "geo"
+        self.bundle.mkdir()
+        for name in ("cells.parquet.gz", "cell_boundaries.parquet.gz",
+                     "nucleus_boundaries.parquet.gz", "cell_feature_matrix.h5"):
+            (self.bundle / name).write_bytes(b"x")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_readiness_sees_a_gzipped_parquet_cell_table_and_boundaries(self):
+        from spatialmind.ingestion import summarize_xenium_expert_readiness
+
+        readiness = summarize_xenium_expert_readiness(str(self.bundle))
+        self.assertTrue(readiness.has_cell_table)
+        self.assertTrue(readiness.has_boundaries)
+        self.assertTrue(readiness.has_feature_matrix)
+        # Genuinely absent, and still reported absent.
+        self.assertFalse(readiness.has_morphology)
+
+    def test_every_container_form_is_accepted_for_each_table(self):
+        from spatialmind.ingestion.labels import ASSET_SUFFIXES, _any_asset
+
+        for suffix in ASSET_SUFFIXES:
+            one = self.root / ("only%s" % suffix.replace(".", "_"))
+            one.mkdir()
+            (one / ("cells%s" % suffix)).write_bytes(b"x")
+            self.assertTrue(_any_asset(one, "cells"), suffix)
+
+    def test_a_bundle_with_none_of_them_is_still_reported_missing(self):
+        from spatialmind.ingestion import summarize_xenium_expert_readiness
+
+        empty = self.root / "empty"
+        empty.mkdir()
+        (empty / "experiment.xenium").write_text("{}", encoding="utf-8")
+        readiness = summarize_xenium_expert_readiness(str(empty))
+        self.assertFalse(readiness.has_cell_table)
+        self.assertFalse(readiness.has_boundaries)
+
+    def test_the_four_readers_agree_on_one_bundle(self):
+        """The regression that matters is them drifting apart again."""
+        from spatialmind.app.catalog import _looks_like_xenium_dir
+        from spatialmind.ingestion import infer_data_type, summarize_xenium_expert_readiness
+        from spatialmind.ingestion.pipeline import _looks_like_xenium
+
+        self.assertEqual(infer_data_type(str(self.bundle)), "xenium_directory")
+        self.assertTrue(_looks_like_xenium(str(self.bundle)))
+        self.assertTrue(_looks_like_xenium_dir(self.bundle))
+        self.assertTrue(summarize_xenium_expert_readiness(str(self.bundle)).has_cell_table)

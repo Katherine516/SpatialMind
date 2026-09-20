@@ -1025,6 +1025,19 @@ def _looks_like_visium(path: str) -> bool:
     return any(name in names for name in expected)
 
 
+
+# Every container a Xenium table arrives in. Listed once because the same set
+# was spelled out separately in four places -- the type inference, the
+# catalogue, the Studio's cell index and this readiness check -- and they
+# disagreed: a GEO deposit ships `cells.parquet.gz` and `cell_boundaries.parquet.gz`,
+# and this check reported both as missing on a bundle the loader reads fine.
+ASSET_SUFFIXES = (".csv.gz", ".csv", ".parquet", ".parquet.gz")
+
+
+def _asset_present(names, stem: str) -> bool:
+    return any(("%s%s" % (stem, suffix)) in names for suffix in ASSET_SUFFIXES)
+
+
 def _looks_like_xenium(path: str) -> bool:
     names = set(os.listdir(path)) if os.path.isdir(path) else set()
     if names & {"experiment.xenium", "cells.csv.gz", "cell_feature_matrix.h5"}:
@@ -1476,11 +1489,11 @@ def _summarize_xenium_files(path: str) -> Dict[str, bool]:
     names = set(os.listdir(path)) if os.path.isdir(path) else set()
     return {
         "experiment_xenium": "experiment.xenium" in names,
-        "cells": "cells.csv.gz" in names or "cells.csv" in names or "cells.parquet" in names,
+        "cells": _asset_present(names, "cells"),
         "cell_feature_matrix_h5": "cell_feature_matrix.h5" in names,
-        "transcripts": "transcripts.csv.gz" in names or "transcripts.parquet" in names,
-        "cell_boundaries": "cell_boundaries.csv.gz" in names or "cell_boundaries.parquet" in names,
-        "nucleus_boundaries": "nucleus_boundaries.csv.gz" in names or "nucleus_boundaries.parquet" in names,
+        "transcripts": _asset_present(names, "transcripts"),
+        "cell_boundaries": _asset_present(names, "cell_boundaries"),
+        "nucleus_boundaries": _asset_present(names, "nucleus_boundaries"),
         "morphology": any(name.startswith("morphology") and name.endswith((".tif", ".ome.tif")) for name in names),
         "analysis": "analysis.tar.gz" in names or "analysis.zarr.zip" in names,
     }

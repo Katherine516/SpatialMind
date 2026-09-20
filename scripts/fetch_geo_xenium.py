@@ -121,6 +121,26 @@ def group_samples(rows):
     return samples
 
 
+def decompress_image(path: Path) -> Path:
+    """Unwrap a gzipped OME-TIFF, because nothing downstream reads one.
+
+    GEO gzips the morphology stack. `tifffile` needs a real TIFF, and so does
+    every asset check that looks for `morphology_focus.ome.tif`. Teaching five
+    readers about gzip would be five places to get it wrong; unwrapping once at
+    intake is the same bytes and none of the ambiguity.
+    """
+    import gzip
+    import shutil
+
+    target = path.with_suffix("")          # drops the trailing .gz
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    with gzip.open(path, "rb") as source, open(target, "wb") as handle:
+        shutil.copyfileobj(source, handle, length=1 << 22)
+    path.unlink()                          # the archive is no longer useful
+    return target
+
+
 def download(url: str, destination: Path) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with _urlopen(url, timeout=900) as response, open(destination, "wb") as handle:
@@ -179,10 +199,20 @@ def main() -> None:
                 print("  have %s" % suffix)
                 got[suffix] = target.stat().st_size
                 continue
+            unwrapped = bundle / suffix[:-3] if suffix.endswith(".gz") else None
+            if unwrapped is not None and unwrapped.exists() and unwrapped.stat().st_size > 0:
+                print("  have %s (already unwrapped)" % unwrapped.name)
+                got[suffix] = unwrapped.stat().st_size
+                continue
             url = "%s/samples/%s/%s/suppl/%s" % (FTP, sample_prefix(entry["gsm"]),
                                                  entry["gsm"], row["name"])
             print("  fetching %s (%.1f MB)" % (suffix, row["bytes"] / 1048576))
             got[suffix] = download(url, target)
+            if suffix.endswith(".ome.tif.gz"):
+                unwrapped = decompress_image(target)
+                print("    unwrapped -> %s (%.0f MB)"
+                      % (unwrapped.name, unwrapped.stat().st_size / 1048576))
+                got[suffix] = unwrapped.stat().st_size
         manifest.append({"sample": name, "gsm": entry["gsm"], "path": str(bundle), "files": got})
 
     out = Path(args.dest) / "geo_fetch_manifest.json"
