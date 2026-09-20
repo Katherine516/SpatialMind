@@ -252,6 +252,8 @@ class IngestionTests(unittest.TestCase):
         populations, and the healthy brain section printed "attached ... to
         24404/24362 loaded cells" -- which reads as a load that gained cells.
         """
+        if not os.path.isdir(XENIUM_LYMPH):
+            self.skipTest("local Xenium dataset not available")
         dataset = DataIngestionLayer().load_xenium_directory(XENIUM_LYMPH, max_records=2000)
         attachment = [note for note in dataset.notes if "attached top expressed genes" in note]
         self.assertEqual(len(attachment), 1, dataset.notes)
