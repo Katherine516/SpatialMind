@@ -50,6 +50,40 @@ Coordinates are already in microns so the loader reads these bundles anyway, but
 the morphology viewer cannot align an image without a pixel size, and the panel
 is identified only by the 541 feature names in the matrix.
 
+It also means nothing in the tooling can tell these are tumour sections — the
+review sizing correctly reported `TISSUE UNKNOWN`. Each bundle therefore carries
+a `tissue_context.json` saying so, with who said it and on what basis.
+Fabricating an `experiment.xenium` to fix that would be inventing instrument
+output; a separate file that names its author is the same pattern as
+`reviewer_id` on a label table, and the plan prints "Asserted neoplastic by
+hand" rather than "names itself".
+
+**No morphology, yet.** Only the analysis files were fetched. The gate's
+first condition needs a morphology image, so these sections cannot open it until
+that is downloaded — one command, ~240 MB each, and NCBI throttled it when
+tried:
+
+```bash
+python scripts/fetch_geo_xenium.py --series GSE311609 --match breast_B2_B2 \
+    --dest data/GSE311609_breast --with-morphology
+```
+
+The fetch unwraps the gzipped OME-TIFF on arrival, because `tifffile` cannot
+read one and every asset check looks for `morphology_focus.ome.tif`.
+
+## What the review would cost
+
+Both donors have had the descriptive lane run, so their reviews are sized:
+
+```text
+                     cells    clusters  labels  regions  total
+breast_breast_B1_B1_1   124,513      9        4       7     11
+breast_breast_B2_B2     130,791      8        3      11     14
+```
+
+Labels are cheap on both; B2's regions are not — 27 proposed domains, 11 of them
+needed to cover 70%.
+
 **One condition.** Everything here is breast carcinoma. A condition *comparison*
 needs two conditions with at least two donors each; `scripts/assess_replication.py`
 says so against `docs/replication_design.json`.

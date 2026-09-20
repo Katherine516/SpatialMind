@@ -6659,3 +6659,75 @@ class AssetContainerAgreementTests(unittest.TestCase):
         self.assertTrue(_looks_like_xenium(str(self.bundle)))
         self.assertTrue(_looks_like_xenium_dir(self.bundle))
         self.assertTrue(summarize_xenium_expert_readiness(str(self.bundle)).has_cell_table)
+
+
+class AssertedTissueContextTests(unittest.TestCase):
+    """When the bundle cannot say what the tissue is, a person can.
+
+    A GEO deposit carries no `experiment.xenium`, so `tumour_context` correctly
+    answered "cannot tell" for two breast carcinoma sections. Fabricating an
+    experiment file to fix that would be inventing instrument output; a separate
+    file naming who said so is the same pattern as `reviewer_id` on a label
+    table.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+        self.root = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _bundle(self, name, **files):
+        bundle = self.root / name
+        bundle.mkdir()
+        for filename, payload in files.items():
+            (bundle / filename).write_text(json.dumps(payload), encoding="utf-8")
+        return bundle
+
+    def test_an_assertion_answers_where_metadata_cannot(self):
+        bundle = self._bundle("geo", **{
+            self.sizing.TISSUE_CONTEXT_FILE: {"neoplastic": True, "evidence": "GSE311609 cohort"}})
+        context = self.sizing.tumour_context(str(bundle))
+        self.assertTrue(context["neoplastic"])
+        self.assertTrue(context["known"])
+        self.assertTrue(context["asserted"])
+        self.assertIn("GSE311609 cohort", context["evidence"])
+
+    def test_an_assertion_wins_over_inferred_metadata(self):
+        """An explicit human statement beats a keyword match on a run name."""
+        bundle = self._bundle("both", **{
+            "experiment.xenium": {"run_name": "Human Healthy Brain"},
+            self.sizing.TISSUE_CONTEXT_FILE: {"neoplastic": True, "evidence": "reclassified"}})
+        self.assertTrue(self.sizing.tumour_context(str(bundle))["neoplastic"])
+
+    def test_an_assertion_can_also_say_not_neoplastic(self):
+        bundle = self._bundle("normal", **{
+            self.sizing.TISSUE_CONTEXT_FILE: {"neoplastic": False, "evidence": "adjacent normal"}})
+        context = self.sizing.tumour_context(str(bundle))
+        self.assertFalse(context["neoplastic"])
+        self.assertTrue(context["known"])
+
+    def test_a_malformed_assertion_falls_through_rather_than_crashing(self):
+        bundle = self.root / "broken"
+        bundle.mkdir()
+        (bundle / self.sizing.TISSUE_CONTEXT_FILE).write_text("{not json", encoding="utf-8")
+        (bundle / "experiment.xenium").write_text(
+            json.dumps({"run_name": "Glioblastoma"}), encoding="utf-8")
+        context = self.sizing.tumour_context(str(bundle))
+        self.assertTrue(context["neoplastic"])
+        self.assertFalse(context.get("asserted", False))
+
+    def test_the_plan_says_asserted_rather_than_names_itself(self):
+        """"Names itself" is true of instrument metadata and false of a human's
+        statement, and the difference is the kind this project tracks."""
+        asserted = "\n".join(self.sizing.malignant_caveat(
+            "tissue_context.json: a cohort", {"0": ["KRT7"]}, "0", asserted=True))
+        self.assertIn("Asserted neoplastic by hand", asserted)
+        self.assertNotIn("names itself", asserted)
+
+        read = "\n".join(self.sizing.malignant_caveat(
+            "run_name = Glioblastoma", {"0": ["MOG"]}, "0", asserted=False))
+        self.assertIn("names itself", read)

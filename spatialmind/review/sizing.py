@@ -397,7 +397,8 @@ def format_plan(summary: Dict[str, Any]) -> str:
         lines.append("")
         biggest = labels["groups"][0]["group"] if labels.get("groups") else ""
         lines.extend(malignant_caveat(tumour["evidence"],
-                                      summary.get("cluster_markers"), biggest))
+                                      summary.get("cluster_markers"), biggest,
+                                      asserted=bool(tumour.get("asserted"))))
     elif tumour.get("known") is False:
         lines.append("")
         lines.append("TISSUE UNKNOWN")
@@ -662,6 +663,10 @@ def marker_overlap(markers: Dict[str, Sequence[str]],
 # Words a section uses about itself when it is neoplastic. This is a heuristic
 # on the bundle's own `run_name`/`region_name`, not a biological determination:
 # it decides whether to print a caveat, never whether a cell is malignant.
+# Written by a person when the bundle cannot say. Read before the instrument
+# metadata so an explicit human statement wins over an inferred one.
+TISSUE_CONTEXT_FILE = "tissue_context.json"
+
 NEOPLASM_WORDS = (
     "glioblastoma", "glioma", "carcinoma", "tumor", "tumour", "cancer",
     "sarcoma", "lymphoma", "melanoma", "neoplasm", "neoplastic", "metasta",
@@ -680,6 +685,23 @@ def tumour_context(dataset_path: str) -> Dict[str, Any]:
     import json
 
     path = Path(dataset_path)
+
+    # A human's assertion, when the instrument metadata cannot answer. GEO
+    # deposits carry no `experiment.xenium`, and fabricating one to make this
+    # work would be inventing instrument output; a separate file that names who
+    # said so is the same pattern as `reviewer_id` on a label table.
+    asserted = path / TISSUE_CONTEXT_FILE if path.is_dir() else path.parent / TISSUE_CONTEXT_FILE
+    if asserted.exists():
+        try:
+            with open(asserted, encoding="utf-8") as handle:
+                stated = json.load(handle) or {}
+            return {"neoplastic": bool(stated.get("neoplastic")),
+                    "evidence": "%s: %s" % (TISSUE_CONTEXT_FILE,
+                                            stated.get("evidence") or "asserted by hand"),
+                    "known": True, "asserted": True}
+        except (OSError, ValueError):
+            pass
+
     candidate = path / "experiment.xenium" if path.is_dir() else path
     try:
         with open(candidate, encoding="utf-8") as handle:
@@ -702,7 +724,7 @@ def tumour_context(dataset_path: str) -> Dict[str, Any]:
 
 def malignant_caveat(evidence: str,
                      markers: Optional[Dict[str, Sequence[str]]] = None,
-                     largest: str = "") -> List[str]:
+                     largest: str = "", asserted: bool = False) -> List[str]:
     """What the overlap check is blind to on a neoplastic section.
 
     The example is drawn from the section's own clusters, not written in. A
@@ -712,7 +734,10 @@ def malignant_caveat(evidence: str,
     """
     lines = [
         "THE CALL THIS CANNOT SIZE",
-        "  This section names itself neoplastic (%s)." % evidence,
+        # "names itself" is true of instrument metadata and false of a human's
+        # assertion, and the difference is exactly the kind this project tracks.
+        ("  Asserted neoplastic by hand (%s)." if asserted
+         else "  This section names itself neoplastic (%s).") % evidence,
         "",
         "  The overlap check above compares clusters with each other. It cannot see the",
         "  ambiguity that matters most here, because that one is not a within-section",
