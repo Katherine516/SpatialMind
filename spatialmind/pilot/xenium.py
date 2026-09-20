@@ -520,7 +520,11 @@ def run_pilot(
         artifacts=report_artifacts,
         figures=figures,
         tables=[label_template, region_template]
-        + [str(item.get("path")) for item in (payload.get("result_tables") or {}).get("tables") or []],
+        + [str(item.get("path")) for item in (payload.get("result_tables") or {}).get("tables") or []]
+        # The region candidates are a draft the gate does not read, and they are
+        # also the file whose contents a reviewer turns into regions. Hashing it
+        # means a run can show the domains it actually proposed.
+        + [str((payload.get("descriptive_analysis") or {}).get("region_proposal", {}).get("candidate_file") or "")],
         run_id=planned_run_id,
     )
     payload["run_record_path"] = run_record.run_record_path

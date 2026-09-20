@@ -1184,6 +1184,9 @@ class ValidatedPilotTests(unittest.TestCase):
             min_label_coverage=0.7,
             min_region_coverage=0.7,
             allow_single_region=False,
+            # A 2-cell fixture exercises the condition wiring, not the
+            # class-size floor; the default 50 is asserted separately.
+            min_cells_per_class=1,
         )
         self.assertEqual(gate["status"], "blocked_missing_validation_inputs")
         self.assertTrue(any("Expert cell labels" in item for item in gate["blocking_reasons"]))
@@ -1212,6 +1215,9 @@ class ValidatedPilotTests(unittest.TestCase):
             min_label_coverage=0.7,
             min_region_coverage=0.7,
             allow_single_region=False,
+            # A 2-cell fixture exercises the condition wiring, not the
+            # class-size floor; the default 50 is asserted separately.
+            min_cells_per_class=1,
         )
         self.assertEqual(gate["status"], "validated_ready")
         self.assertEqual(gate["blocking_reasons"], [])
@@ -3593,6 +3599,9 @@ class GateEvidenceTests(unittest.TestCase):
             min_label_coverage=0.0,
             min_region_coverage=0.0,
             allow_single_region=False,
+            # A 2-cell fixture exercises the condition wiring, not the
+            # class-size floor; the default 50 is asserted separately.
+            min_cells_per_class=1,
         )
         self.assertNotEqual(gate["status"], "validated_ready",
                             "one reviewed cell cleared the gate using loader fallback labels")
@@ -3612,6 +3621,8 @@ class GateEvidenceTests(unittest.TestCase):
             label_report={"status": "expert_labels_applied", "matched_cells": 2, "total_records": 2},
             region_report={"status": "user_regions_applied", "matched_cells": 2, "total_records": 2},
             min_label_coverage=0.7, min_region_coverage=0.7, allow_single_region=False,
+            # 2-cell fixture: exercising the fallback, not the class-size floor.
+            min_cells_per_class=1,
         )
         self.assertEqual(gate["status"], "validated_ready")
         self.assertEqual(gate["reviewed_basis"]["labels"], "record_scan_fallback")
@@ -6731,3 +6742,122 @@ class AssertedTissueContextTests(unittest.TestCase):
         read = "\n".join(self.sizing.malignant_caveat(
             "run_name = Glioblastoma", {"0": ["MOG"]}, "0", asserted=False))
         self.assertIn("names itself", read)
+
+
+class SilentSuccessTests(unittest.TestCase):
+    """A run that does nothing must not report that it did something.
+
+    `order_plan` filtered unknown names out, so asking for a tool this build
+    does not have produced an empty plan, `plan_status: valid`, and -- through
+    `POST /api/runs` -- a job that finished `succeeded`, `Done.`, no error, zero
+    results, while its report named the tool as having run.
+    """
+
+    def test_an_unknown_tool_is_reported_not_dropped(self):
+        from spatialmind.app import planner
+
+        self.assertEqual(planner.unknown_tools(["not_a_tool", "qc_and_cluster"]), ["not_a_tool"])
+        self.assertEqual(planner.unknown_tools(["qc_and_cluster"]), [])
+
+    def test_a_plan_naming_an_unknown_tool_is_invalid(self):
+        from spatialmind.app import planner
+
+        described = planner.describe_plan(["not_a_tool"], gate_open=True)
+        self.assertEqual(described["plan_status"], "invalid")
+        self.assertIn("not_a_tool", " ".join(described["plan_errors"]))
+        self.assertEqual(described["unknown_tools"], ["not_a_tool"])
+
+    def test_a_valid_plan_is_still_valid(self):
+        from spatialmind.app import planner
+
+        described = planner.describe_plan(["qc_and_cluster"], gate_open=False)
+        self.assertEqual(described["plan_status"], "valid")
+        self.assertEqual(described["plan_errors"], [])
+        self.assertTrue(described["steps"])
+
+    def test_a_mixed_request_is_invalid_rather_than_quietly_trimmed(self):
+        """Dropping the bad name and running the good one is the same silent
+        substitution, just harder to notice."""
+        from spatialmind.app import planner
+
+        described = planner.describe_plan(["qc_and_cluster", "not_a_tool"], gate_open=False)
+        self.assertEqual(described["plan_status"], "invalid")
+
+
+class GroupSizePreconditionTests(unittest.TestCase):
+    """Two classes is not the same as two classes a test can use.
+
+    A table with one class on 24,405 cells and a second on one cell satisfied
+    "at least two biological cell labels", the gate returned `validated_ready`,
+    and the run then died inside scanpy: "Could not calculate statistics for
+    groups Other since they only contain one sample."
+    """
+
+    def _gate(self, counts, **kwargs):
+        from spatialmind.gatekeeper import pilot_gate
+
+        records = []
+        for label, n in counts.items():
+            records.extend(SpotRecord(sample_id="S", x=float(i), y=0.0, cell_type=label,
+                                      genes={"A": 1.0}, cell_id="%s_%d" % (label, i))
+                           for i in range(n))
+        dataset = SpatialDataset(sample_id="S", source_path="synthetic",
+                                 modality="xenium_spatial_rna", records=records)
+        dataset.metadata["analysis_scope"] = "full_section"
+        total = len(records)
+        options = {"min_label_coverage": 0.7, "min_region_coverage": 0.7,
+                   "allow_single_region": True}
+        options.update(kwargs)
+        return pilot_gate(
+            dataset=dataset,
+            asset_readiness={k: True for k in ("has_cell_table", "has_feature_matrix",
+                                               "has_morphology", "has_boundaries")},
+            label_report={"status": "expert_labels_applied", "matched_cells": total,
+                          "total_records": total, "reviewed_labels": sorted(counts),
+                          "label_counts": dict(counts)},
+            region_report={"status": "user_regions_applied", "matched_cells": total,
+                           "total_records": total, "reviewed_regions": ["R1", "R2"]},
+            **options)
+
+    def test_a_one_cell_second_class_does_not_open_the_gate(self):
+        gate = self._gate({"Tumor": 999, "Other": 1})
+        self.assertNotEqual(gate["status"], "validated_ready")
+        self.assertTrue(any("or more cells" in r for r in gate["blocking_reasons"]))
+
+    def test_a_genuine_rare_population_does_not_veto_the_section(self):
+        """A rare class should be reported and skipped, not block every other
+        contrast in the section."""
+        gate = self._gate({"Tumor": 500, "Stroma": 480, "Rare": 20})
+        self.assertEqual(gate["status"], "validated_ready")
+
+    def test_two_testable_classes_open_it(self):
+        self.assertEqual(self._gate({"Tumor": 500, "Stroma": 500})["status"], "validated_ready")
+
+    def test_the_floor_is_a_parameter_but_defaults_to_the_marker_floor(self):
+        from spatialmind.gatekeeper import MIN_CELLS_PER_TESTED_CLASS
+
+        self.assertEqual(MIN_CELLS_PER_TESTED_CLASS, 50)
+        # A unit fixture may lower it to exercise wiring; the default is what
+        # the validated lane actually needs.
+        self.assertEqual(self._gate({"A": 1, "B": 1}, min_cells_per_class=1)["status"],
+                         "validated_ready")
+
+    def test_marker_detection_refuses_a_one_cell_group_by_type(self):
+        """Not a scanpy traceback: a typed error naming the group and the fix."""
+        from spatialmind.tools.exceptions import InsufficientDataError
+        from spatialmind.tools.implementations import MIN_CELLS_FOR_GROUP_STATISTICS
+
+        self.assertGreaterEqual(MIN_CELLS_FOR_GROUP_STATISTICS, 3)
+        records = [SpotRecord(sample_id="S", x=float(i), y=0.0,
+                              cell_type="Tumor" if i else "Other",
+                              genes={"A": float(i % 5), "B": float(i % 3)},
+                              cell_id="c%d" % i) for i in range(40)]
+        dataset = SpatialDataset(sample_id="S", source_path="synthetic",
+                                 modality="xenium_spatial_rna", records=records)
+        registry = build_default_registry()
+        with self.assertRaises(InsufficientDataError) as caught:
+            registry.get("marker_detection").run(
+                dataset, {"group_key": "cell_type", "n_top": 3, "strict_engine": True})
+        message = str(caught.exception)
+        self.assertIn("Other", message)
+        self.assertIn("Merge them", message)

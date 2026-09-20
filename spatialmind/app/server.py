@@ -643,6 +643,14 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         if request.kind == "plan":
             if not request.tools:
                 raise HTTPException(status_code=400, detail="A plan run needs at least one tool.")
+            # A name this build does not have used to be dropped in silence, and
+            # the job then reported `succeeded` with no error and no results.
+            unknown = planner.unknown_tools(request.tools)
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No tool named %s in this build. Nothing was run."
+                           % ", ".join("`%s`" % name for name in unknown))
             # The UI declines to submit gate-blocked steps. That is a convention,
             # and a convention is not a guarantee: this endpoint accepted and ran
             # region_summary against a blocked section until it asked here too.

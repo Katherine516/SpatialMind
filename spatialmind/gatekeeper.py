@@ -266,6 +266,41 @@ def _dedupe(items: List[str]) -> List[str]:
             seen.add(item)
             ordered.append(item)
     return ordered
+
+# A reviewed class below this cannot carry a one-vs-rest marker test or a
+# neighbourhood permutation, so it cannot carry a claim either. Classes under it
+# do not block -- a genuine rare population should not veto every other contrast
+# -- they are reported and the analysis skips them.
+MIN_CELLS_PER_TESTED_CLASS = 50
+
+
+def _testable_classes(label_report, dataset, labels,
+                      min_cells: int = MIN_CELLS_PER_TESTED_CLASS):
+    """(classes with enough cells, the rest with their counts).
+
+    Counted from the reviewed table's own `label_counts` when it has them, and
+    from the loaded records otherwise, so this matches whatever the coverage
+    figure beside it was computed from.
+    """
+    counts = {}
+    if isinstance(label_report, dict):
+        counts = dict(label_report.get("label_counts") or {})
+    elif label_report is not None:
+        counts = dict(getattr(label_report, "label_counts", {}) or {})
+    if not counts and dataset is not None:
+        from collections import Counter
+
+        counts = dict(Counter(
+            str(getattr(record, "cell_type", "") or "") for record in dataset.records))
+
+    reviewed = set(labels)
+    sized = [(name, int(counts.get(name, 0))) for name in sorted(reviewed)]
+    testable = [name for name, count in sized if count >= min_cells]
+    small = sorted(((name, count) for name, count in sized if count < min_cells),
+                   key=lambda item: item[1])
+    return testable, small
+
+
 def build_gate_evidence(
     gate: Dict[str, Any],
     label_report: Dict[str, Any],
@@ -330,6 +365,7 @@ def pilot_gate(
     min_label_coverage: float,
     min_region_coverage: float,
     allow_single_region: bool,
+    min_cells_per_class: int = MIN_CELLS_PER_TESTED_CLASS,
 ) -> Dict[str, Any]:
     blockers: List[str] = []
     required: List[str] = []
@@ -383,6 +419,25 @@ def pilot_gate(
             "the reviewed label table supplies %d." % len(labels)
         )
         required.append("Provide at least two reviewed biological cell classes.")
+    else:
+        # Counting distinct classes is not the same as having two a test can
+        # use. A table with one class on 24,405 cells and a second on one cell
+        # satisfied the condition above and opened the gate; the run then died
+        # inside scanpy, which cannot compute statistics for a group of one.
+        # A rare population must not block every other contrast, so the rule is
+        # two classes big enough to test, and the small ones are reported.
+        testable, small = _testable_classes(label_report, dataset, labels,
+                                            min_cells=min_cells_per_class)
+        if len(testable) < 2:
+            blockers.append(
+                "At least two reviewed classes need %d or more cells for marker and "
+                "neighbourhood tests; %s."
+                % (min_cells_per_class,
+                   ", ".join("`%s` has %d" % (name, count) for name, count in small[:4])
+                   or "none reach it")
+            )
+            required.append(
+                "Label more cells in at least two classes, or merge the small ones.")
 
     regions, regions_basis = _reviewed_values(region_report, "reviewed_regions", dataset, "region")
     if not allow_single_region and len(regions) < 2:

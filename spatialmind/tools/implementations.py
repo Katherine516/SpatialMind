@@ -1046,6 +1046,11 @@ def lineages_conflict(predicted: str, observed: str) -> bool:
 # `assess_reference_lineage_coverage`), so requiring a large *share* on top of an
 # undercount penalizes the same sparsity twice. 25+ confidently assigned cells is
 # a population, not noise.
+# Below this a one-vs-rest test has nothing to test. Scanpy's own floor is one
+# cell; this is the floor at which the result means anything, and it matches the
+# figure the review sizing reports.
+MIN_CELLS_FOR_GROUP_STATISTICS = 3
+
 MIN_LINEAGE_EVIDENCE_CELLS = 25
 MIN_LINEAGE_EVIDENCE_FRACTION = 0.002
 
@@ -1508,6 +1513,31 @@ def _scanpy_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[s
         retained_labels = [label for label, include in zip(group_labels, keep) if include]
         adata.obs["spatialmind_group"] = retained_labels
         adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
+
+        # Scanpy raises a bare ValueError for a one-cell group -- "Could not
+        # calculate statistics for groups X since they only contain one sample"
+        # -- and that surfaced as a library traceback from a gate the app had
+        # just called `validated_ready`. Checked here so the refusal is typed,
+        # names the groups, and says what to do about them.
+        counts = Counter(retained_labels)
+        singleton = sorted(name for name, count in counts.items()
+                           if count < MIN_CELLS_FOR_GROUP_STATISTICS)
+        if singleton and len(counts) - len(singleton) < 2:
+            raise InsufficientDataError(
+                "marker_detection needs at least two groups with %d or more cells. %s. "
+                "Merge them into a larger class, or leave those cells unlabelled."
+                % (MIN_CELLS_FOR_GROUP_STATISTICS,
+                   "; ".join("`%s` has %d" % (name, counts[name]) for name in singleton)))
+        if singleton:
+            # Enough testable groups remain, so drop the untestable ones rather
+            # than failing the whole tool -- and say which, because a silently
+            # smaller analysis is the thing a reader cannot see.
+            keep_small = [label not in set(singleton) for label in retained_labels]
+            adata = adata[keep_small].copy()
+            retained_labels = [l for l, k in zip(retained_labels, keep_small) if k]
+            adata.obs["spatialmind_group"] = retained_labels
+            adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
+
         if not dataset.normalized:
             sc.pp.normalize_total(adata, target_sum=1e4)
             sc.pp.log1p(adata)

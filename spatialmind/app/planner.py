@@ -107,6 +107,19 @@ def capability_summary() -> Dict[str, int]:
     return _registry().capability_summary()
 
 
+def unknown_tools(tool_names: Iterable[str]) -> List[str]:
+    """Names that are not in the registry at all.
+
+    Returned rather than dropped. `order_plan` filtered them out silently, so a
+    request for a tool this build does not have produced an empty plan, a
+    `plan_status: valid`, and -- through `POST /api/runs` -- a job that reported
+    `succeeded` with no error and no results. A silent success on nothing is the
+    one outcome this project is built to refuse.
+    """
+    known = {tool.name for tool in _registry().list_all()}
+    return [name for name in dict.fromkeys(tool_names) if name not in known]
+
+
 def order_plan(tool_names: Iterable[str]) -> List[str]:
     """Insert missing dependencies and sort so producers precede consumers."""
     registry = _registry()
@@ -167,10 +180,19 @@ def describe_plan(tool_names: Iterable[str], gate_open: bool, overrides: Optiona
             }
         )
     runnable = [step for step in steps if step["runnable_now"]]
+    # Unknown names never reach `plan`, so the structural validator cannot see
+    # them. They are the caller's own words and have to come back.
+    missing = unknown_tools(tool_names)
+    errors = list(report.errors)
+    for name in missing:
+        errors.append("No tool named `%s` in this build." % name)
+    if missing and not steps:
+        errors.append("Nothing in that request names a tool that exists, so there is no plan.")
     return {
         "steps": steps,
-        "plan_status": report.status,
-        "plan_errors": report.errors,
+        "unknown_tools": missing,
+        "plan_status": "invalid" if errors else report.status,
+        "plan_errors": errors,
         "runnable_steps": len(runnable),
         "blocked_steps": len(steps) - len(runnable),
         "estimated_minutes": round(sum(_minutes(step["estimated_runtime"]) for step in runnable), 1),
