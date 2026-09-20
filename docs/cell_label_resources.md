@@ -243,6 +243,27 @@ That last line is measured, not projected: the gate was run against those ten
 decisions and returned `validated_ready`, 4 reviewed classes and 6 reviewed
 regions. `scripts/size_expert_review.py --all` sizes every section the same way.
 
+The glioblastoma section costs about the same and is not the same job:
+
+```text
+LABELS    5 decisions reach 71.6% coverage   (11 clusters, all with markers)
+REGIONS   6 decisions reach 72.7% coverage   (13 proposed domains)
+TOTAL    11 decisions -> gate: validated_ready
+```
+
+Two of those five label decisions are on clusters markers cannot separate —
+0 and 1 share C3/GPR34/RNASET2/VSIG4 (microglia against tumour-associated
+macrophage), 6 and 7 share ENC1/NPTX1/NRGN/SLC17A7. The plan flags both.
+
+And it flags what it *cannot* size. Cluster 5 — PTPRZ1, BCAN, VCAN, OLIG2,
+PDGFRA — reads as OPC and reads equally as OPC-like tumour; cluster 8 carries
+astrocyte markers plus SERPINA3. Neither is a within-section confusability
+problem, so the overlap check is silent on them: a malignant cell mimicking a
+lineage carries that lineage's markers. Every normal-lineage call in a tumour
+section is provisional in a way the same call on the healthy section is not, and
+resolving it needs CNV (`cnv_inference` is a scaffold), a malignant-carrying
+reference (GBmap Core is here, and swings 13.5× on sampling), or a pathologist.
+
 The catch is in the same number. Ten decisions is the arithmetic **floor**, not
 an estimate of careful work: naming a cluster asserts that all 4,763 of its
 cells are that class, which is wrong at the margins of every cluster. The run

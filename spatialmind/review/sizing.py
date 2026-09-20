@@ -205,7 +205,9 @@ def read_run_markers(run_dir: str, top_n: int = 6) -> Dict[str, List[str]]:
 
 
 def summarise(dataset_name: str, label_plan: Dict[str, Any],
-              region_plan: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+              region_plan: Optional[Dict[str, Any]] = None,
+              markers: Optional[Dict[str, Sequence[str]]] = None,
+              tumour: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """One section's plan, with the blockers it still has."""
     blockers: List[str] = []
     if label_plan.get("no_cluster_solution"):
@@ -218,11 +220,13 @@ def summarise(dataset_name: str, label_plan: Dict[str, Any],
             % (100 * label_plan["achieved_coverage"], 100 * label_plan["required_coverage"]))
     # `.get`, not `[...]`: a caller can hand over a bare coverage plan, and
     # crashing on a missing key would lose every other blocker in the report.
-    markers = label_plan.get("markers") or {}
-    if markers and not markers.get("meets_two_class_minimum"):
+    # Named `readiness`, not `markers`: the parameter of that name holds marker
+    # *genes*, and shadowing it here fed a dict of counts to `marker_overlap`.
+    readiness = label_plan.get("markers") or {}
+    if readiness and not readiness.get("meets_two_class_minimum"):
         blockers.append(
             "Fewer than two groups have %d cells, which is the floor for marker statistics."
-            % markers.get("min_cells_for_markers", MIN_CELLS_FOR_MARKERS))
+            % readiness.get("min_cells_for_markers", MIN_CELLS_FOR_MARKERS))
     if region_plan is None:
         blockers.append(
             "No region candidates yet. Run the descriptive lane to write "
@@ -234,6 +238,11 @@ def summarise(dataset_name: str, label_plan: Dict[str, Any],
                 % (100 * region_plan["achieved_coverage"], 100 * region_plan["required_coverage"]))
         if not region_plan.get("meets_two_region_minimum"):
             blockers.append("Fewer than two regions would be named; a contrast needs two.")
+
+    # Separability is not a blocker: the gate opens on coverage, and it should.
+    # It changes what the decisions *cost* to make well, which is the thing a
+    # decision count on its own hides.
+    separability = marker_overlap(markers) if markers else None
 
     total_decisions = label_plan["decisions"] + (region_plan["decisions"] if region_plan else 0)
     # A total with an uncounted side is a lower bound, and ranking it against a
@@ -247,6 +256,8 @@ def summarise(dataset_name: str, label_plan: Dict[str, Any],
         "regions": region_plan,
         "total_decisions": total_decisions,
         "total_is_complete": complete,
+        "separability": separability,
+        "tumour": tumour or {"neoplastic": False, "evidence": ""},
         "blockers": blockers,
         "opens_gate": not blockers,
     }
@@ -302,6 +313,24 @@ def format_plan(summary: Dict[str, Any]) -> str:
         lines.append("STILL BLOCKED")
         for blocker in summary["blockers"]:
             lines.append("  x %s" % blocker)
+
+    separability = summary.get("separability")
+    if separability and separability["pairs"]:
+        lines.append("")
+        lines.append("MARKERS DO NOT SEPARATE THESE")
+        for pair in separability["pairs"][:6]:
+            lines.append("  clusters %s and %s share %s (overlap %.2f)"
+                         % (pair["clusters"][0], pair["clusters"][1],
+                            ", ".join(pair["shared"][:5]), pair["overlap"]))
+        lines.append("  Naming these apart is not a marker call. It needs CNV, a reference that")
+        lines.append("  carries the class in question, or morphology -- and `cnv_inference` is a")
+        lines.append("  scaffold in this build, so it is not one of the options.")
+
+    tumour = summary.get("tumour") or {}
+    if tumour.get("neoplastic"):
+        lines.append("")
+        lines.extend(line % tumour["evidence"] if "%s" in line else line
+                     for line in MALIGNANT_CAVEAT)
 
     lines.append("")
     lines.append("WHAT THIS BUYS, AND WHAT IT DOES NOT")
@@ -471,3 +500,116 @@ def apply_cluster_labels(run_dir: str, worksheet: str, reviewer_id: str,
         "distinct_classes": len(classes),
         "meets_two_class_minimum": len(classes) >= 2,
     }
+
+
+# -------------------------------------------------------- marker separability
+
+# Jaccard overlap of two clusters' top markers. Calibrated below against real
+# sections rather than picked: on the healthy brain section every pair sits
+# under this, and a pair above it is two groups a reviewer cannot tell apart
+# from the evidence in front of them.
+MARKER_OVERLAP_THRESHOLD = 0.34
+
+
+def marker_overlap(markers: Dict[str, Sequence[str]],
+                   threshold: float = MARKER_OVERLAP_THRESHOLD) -> Dict[str, Any]:
+    """Cluster pairs whose top markers are largely the same genes.
+
+    A cluster decision is only as good as the markers' ability to separate that
+    cluster from its neighbours. Naming one `oligodendrocyte` off MOG and
+    CLDN11 is safe because nothing else in the section carries them; naming one
+    `malignant` off PTPRZ1, BCAN and OLIG2 is not, because OPCs carry those too
+    -- and in a tumour section both are present.
+
+    This does not say which label is right. It says where the marker evidence
+    stops being sufficient on its own, which is where a reviewer needs CNV, a
+    reference that carries the malignant class, or morphology.
+    """
+    names = [str(name) for name in markers]
+    sets = {name: {str(gene).upper() for gene in (markers.get(name) or [])} for name in names}
+    pairs: List[Dict[str, Any]] = []
+    worst: Dict[str, float] = {name: 0.0 for name in names}
+
+    for index, first in enumerate(names):
+        for second in names[index + 1:]:
+            left, right = sets[first], sets[second]
+            if not left or not right:
+                continue
+            union = left | right
+            if not union:
+                continue
+            score = len(left & right) / len(union)
+            worst[first] = max(worst[first], score)
+            worst[second] = max(worst[second], score)
+            if score >= threshold:
+                pairs.append({
+                    "clusters": [first, second],
+                    "overlap": round(score, 3),
+                    "shared": sorted(left & right),
+                })
+
+    pairs.sort(key=lambda item: -item["overlap"])
+    return {
+        "threshold": threshold,
+        "pairs": pairs,
+        "max_overlap_by_cluster": {name: round(value, 3) for name, value in worst.items()},
+        "separable": not pairs,
+    }
+
+
+# --------------------------------------------------------------- tumour context
+
+# Words a section uses about itself when it is neoplastic. This is a heuristic
+# on the bundle's own `run_name`/`region_name`, not a biological determination:
+# it decides whether to print a caveat, never whether a cell is malignant.
+NEOPLASM_WORDS = (
+    "glioblastoma", "glioma", "carcinoma", "tumor", "tumour", "cancer",
+    "sarcoma", "lymphoma", "melanoma", "neoplasm", "neoplastic", "metasta",
+    "adenoma", "blastoma", "myeloma", "leukemia", "leukaemia",
+)
+
+
+def tumour_context(dataset_path: str) -> Dict[str, Any]:
+    """Does this section describe itself as neoplastic?
+
+    Read so the plan can say the thing that matters most about reviewing a
+    tumour section from markers, and which the cluster-overlap check cannot
+    see: a malignant cell mimicking a lineage carries that lineage's markers,
+    so every normal-lineage call in such a section is provisional.
+    """
+    import json
+
+    path = Path(dataset_path)
+    candidate = path / "experiment.xenium" if path.is_dir() else path
+    try:
+        with open(candidate, encoding="utf-8") as handle:
+            metadata = json.load(handle) or {}
+    except (OSError, ValueError):
+        return {"neoplastic": False, "evidence": ""}
+
+    for key in ("run_name", "region_name", "panel_tissue_type"):
+        value = str(metadata.get(key) or "")
+        lowered = value.lower()
+        for word in NEOPLASM_WORDS:
+            if word in lowered:
+                return {"neoplastic": True, "evidence": "%s = %s" % (key, value), "word": word}
+    return {"neoplastic": False, "evidence": ""}
+
+
+MALIGNANT_CAVEAT = [
+    "THE CALL THIS CANNOT SIZE",
+    "  This section names itself neoplastic (%s).",
+    "",
+    "  The overlap check above compares clusters with each other. It cannot see the",
+    "  ambiguity that matters most here, because that one is not a within-section",
+    "  comparison: a malignant cell mimicking a lineage carries that lineage's",
+    "  markers. A cluster of PTPRZ1, BCAN, OLIG2, PDGFRA reads as OPC and reads",
+    "  equally as OPC-like tumour, and nothing in the marker table separates them.",
+    "",
+    "  So every normal-lineage call in this section is provisional in a way the",
+    "  same call on a healthy section is not. Resolving it needs CNV inference",
+    "  (`cnv_inference` is a scaffold in this build), a reference carrying the",
+    "  malignant class (GBmap Core is here, and its candidate malignant count",
+    "  swings 13.5x on the reference sampling choice alone), or a pathologist on",
+    "  the morphology. The decision count below does not include that work.",
+]

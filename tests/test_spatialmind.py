@@ -5928,3 +5928,108 @@ class ClusterWorksheetTests(unittest.TestCase):
         result = self.sizing.write_cluster_worksheet(str(empty), str(self.root / "x.csv"))
         self.assertEqual(result["status"], "unavailable")
         self.assertIn("descriptive lane", result["reason"])
+
+
+class MarkerSeparabilityTests(unittest.TestCase):
+    """Where marker evidence stops being enough to tell two clusters apart.
+
+    A decision count says how much review opens the gate. It says nothing about
+    whether the decisions can be made well, and on a tumour section that is the
+    whole question.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+
+    def test_distinct_markers_are_reported_as_separable(self):
+        """Calibration: on the healthy brain section the highest real overlap is
+        0.2, between two GABAergic populations sharing GAD2 and SLC6A1 -- which
+        is correct biology, not a problem. The threshold sits above it."""
+        result = self.sizing.marker_overlap({
+            "0": ["GJA1", "AQP4", "SOX9"],
+            "1": ["MOG", "CLDN11", "OPALIN"],
+            "2": ["FLT1", "PECAM1", "IGFBP7"],
+        })
+        self.assertTrue(result["separable"])
+        self.assertEqual(result["pairs"], [])
+        self.assertEqual(max(result["max_overlap_by_cluster"].values()), 0.0)
+
+    def test_shared_markers_are_flagged_with_the_genes_that_overlap(self):
+        result = self.sizing.marker_overlap({
+            "0": ["RNASET2", "VSIG4", "C3", "GPR34"],
+            "1": ["P2RY12", "RNASET2", "GPR34", "VSIG4", "C3"],
+            "9": ["AQP4", "GJA1", "SOX9"],
+        })
+        self.assertFalse(result["separable"])
+        self.assertEqual(len(result["pairs"]), 1)
+        pair = result["pairs"][0]
+        self.assertEqual(sorted(pair["clusters"]), ["0", "1"])
+        self.assertIn("RNASET2", pair["shared"])
+        self.assertEqual(result["max_overlap_by_cluster"]["9"], 0.0)
+
+    def test_a_cluster_with_no_markers_is_skipped_not_scored_as_identical(self):
+        """Two empty marker sets are not "the same cluster"; they are two
+        clusters nothing is known about."""
+        result = self.sizing.marker_overlap({"0": [], "1": [], "2": ["AQP4"]})
+        self.assertEqual(result["pairs"], [])
+
+    def test_a_neoplastic_section_is_recognised_from_its_own_metadata(self):
+        root = Path(tempfile.mkdtemp())
+        try:
+            for name, run in (("tumour", "Human Brain Glioblastoma (FFPE)"),
+                              ("healthy", "Human Healthy Brain (FFPE)")):
+                bundle = root / name
+                bundle.mkdir()
+                (bundle / "experiment.xenium").write_text(
+                    json.dumps({"run_name": run}), encoding="utf-8")
+            self.assertTrue(self.sizing.tumour_context(str(root / "tumour"))["neoplastic"])
+            self.assertFalse(self.sizing.tumour_context(str(root / "healthy"))["neoplastic"])
+            # A bundle with no metadata is not assumed to be either.
+            self.assertFalse(self.sizing.tumour_context(str(root / "missing"))["neoplastic"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_a_tumour_section_states_the_call_the_sizing_cannot_make(self):
+        """The overlap check compares clusters with each other, so it is silent
+        on the hardest call in a tumour section: a malignant cell mimicking a
+        lineage carries that lineage's markers, and that is not a within-section
+        comparison. Cluster 5 of the glioblastoma section -- PTPRZ1, BCAN,
+        OLIG2, PDGFRA -- reads as OPC and as OPC-like tumour equally."""
+        label_plan = self.sizing.size_label_review({"5": 700, "9": 300})
+        markers = {"5": ["PTPRZ1", "BCAN", "OLIG2", "PDGFRA"], "9": ["AQP4", "GJA1", "SOX9"]}
+        regions = self.sizing.size_region_review({"r1": 600, "r2": 400})
+
+        tumour = self.sizing.format_plan(self.sizing.summarise(
+            "gbm", label_plan, regions, markers=markers,
+            tumour={"neoplastic": True, "evidence": "run_name = Glioblastoma"}))
+        self.assertIn("THE CALL THIS CANNOT SIZE", tumour)
+        self.assertIn("mimicking a lineage", tumour)
+        self.assertIn("cnv_inference", tumour)
+
+        healthy = self.sizing.format_plan(self.sizing.summarise(
+            "healthy", label_plan, regions, markers=markers,
+            tumour={"neoplastic": False, "evidence": ""}))
+        self.assertNotIn("THE CALL THIS CANNOT SIZE", healthy)
+
+    def test_separability_is_not_a_blocker(self):
+        """The gate opens on coverage, and it should. Overlapping markers change
+        what the decisions cost to make well, which is a different thing from
+        whether they can be made at all."""
+        summary = self.sizing.summarise(
+            "s", self.sizing.size_label_review({"0": 700, "1": 300}),
+            self.sizing.size_region_review({"r1": 600, "r2": 400}),
+            markers={"0": ["C3", "GPR34", "VSIG4"], "1": ["C3", "GPR34", "VSIG4"]})
+        self.assertFalse(summary["separability"]["separable"])
+        self.assertEqual(summary["blockers"], [])
+        self.assertTrue(summary["opens_gate"])
+
+    def test_marker_readiness_does_not_shadow_the_marker_genes(self):
+        """`summarise` held a local `markers` of counts beside a parameter
+        `markers` of genes, and fed the counts to the overlap check."""
+        summary = self.sizing.summarise(
+            "s", self.sizing.size_label_review({"0": 700, "1": 300}), None,
+            markers={"0": ["AQP4"], "1": ["MOG"]})
+        self.assertIsNotNone(summary["separability"])
+        self.assertIn("0", summary["separability"]["max_overlap_by_cluster"])

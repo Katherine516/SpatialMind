@@ -23,9 +23,11 @@ if str(ROOT) not in sys.path:
 from spatialmind.app.catalog import IndexCache, discover_datasets
 from spatialmind.review.sizing import (
     WORKSHEET_NAME,
+    tumour_context,
     format_plan,
     read_candidate_regions,
     read_run_clusters,
+    read_run_markers,
     size_label_review,
     size_region_review,
     summarise,
@@ -93,7 +95,9 @@ def size_one(path: str, name: str, cache: IndexCache, regions_path: str,
         region_plan = size_region_review(read_candidate_regions(resolved_regions),
                                          coverage=coverage)
         region_plan["source"] = resolved_regions
-    summary = summarise(name, label_plan, region_plan)
+    summary = summarise(name, label_plan, region_plan,
+                        markers=read_run_markers(run) if run else None,
+                        tumour=tumour_context(path))
     summary["run_dir"] = run
     return summary
 
