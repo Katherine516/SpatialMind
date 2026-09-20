@@ -693,13 +693,26 @@ class DataIngestionLayer:
         ys = [record.y for record in dataset.records]
         coordinate_pairs = [(record.x, record.y) for record in dataset.records]
         duplicate_coordinates = len(coordinate_pairs) - len(set(coordinate_pairs))
-        expression_values = [
-            {feature: value for feature, value in record.raw_genes.items() if feature not in NON_EXPRESSION_FEATURES}
-            for record in dataset.records
-        ]
-        missing_feature_rows = sum(1 for values in expression_values if not values)
-        negative_values = sum(1 for values in expression_values for value in values.values() if value < 0)
-        totals = [sum(max(value, 0.0) for value in values.values()) for values in expression_values]
+        # These three summaries used to be read off a second copy of every cell's
+        # gene dict, built only to be counted and thrown away -- a whole extra
+        # expression table in memory, and three passes over it. One pass, same
+        # values, same summation order.
+        missing_feature_rows = 0
+        negative_values = 0
+        totals = []
+        for record in dataset.records:
+            total = 0.0
+            has_expression = False
+            for feature, value in record.raw_genes.items():
+                if feature in NON_EXPRESSION_FEATURES:
+                    continue
+                has_expression = True
+                if value < 0:
+                    negative_values += 1
+                total += max(value, 0.0)
+            if not has_expression:
+                missing_feature_rows += 1
+            totals.append(total)
         if not any(totals):
             totals = [
                 max(record.raw_genes.get("TRANSCRIPT_COUNTS", record.raw_genes.get("TOTAL_COUNTS", 0.0)), 0.0)
@@ -756,19 +769,29 @@ class DataIngestionLayer:
         # denominator, which made a cell's normalised expression shift with how
         # much misassignment it happened to carry.
         controls = control_feature_names(dataset)
+        # Whether a feature name is expression depends only on the name, and a
+        # section asks the same few hundred names once per cell: 24,000 cells
+        # meant ~7.8 million `.upper()` calls and set lookups to re-derive an
+        # answer that never changes. Memoised across records, and the clip is
+        # computed once instead of twice -- `max` alone was 6 million calls.
+        # Both are bookkeeping: the arithmetic and its order are untouched.
+        is_expression: Dict[str, bool] = {}
         for record in dataset.records:
             if not record.raw_genes:
                 record.raw_genes = dict(record.genes)
-            expression = {
-                feature: value
-                for feature, value in record.raw_genes.items()
-                if feature not in NON_EXPRESSION_FEATURES and feature.upper() not in controls
-            }
-            total = sum(max(value, 0.0) for value in expression.values())
+            expression = {}
+            for feature, value in record.raw_genes.items():
+                keep = is_expression.get(feature)
+                if keep is None:
+                    keep = feature not in NON_EXPRESSION_FEATURES and feature.upper() not in controls
+                    is_expression[feature] = keep
+                if keep:
+                    expression[feature] = max(value, 0.0)
+            total = sum(expression.values())
             if total <= 0:
                 continue
             for feature, value in expression.items():
-                record.genes[feature] = math.log1p((max(value, 0.0) / total) * 10000.0)
+                record.genes[feature] = math.log1p((value / total) * 10000.0)
         dataset.normalized = True
         dataset.metadata["expression_layers"] = {
             "analysis": "genes: library-size normalized log1p values",

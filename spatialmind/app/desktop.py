@@ -297,6 +297,11 @@ def create_app_for(data_root: Optional[str] = None, output_root: Optional[str] =
 def main() -> int:
     log_path = setup_logging()
     logging.info("SpatialMind Studio starting (frozen=%s, python=%s)", config.is_frozen(), sys.version.split()[0])
+    # The frozen entry point does this earlier and better; this covers every
+    # other way in. Only effective before numba is imported, which is why it is
+    # the first thing after logging.
+    cache_dir = config.configure_numba_cache()
+    logging.info("numba cache : %s", cache_dir or "default (compiled kernels may not be cached)")
 
     try:
         # The port is picked before the app is built: choosing it needs nothing

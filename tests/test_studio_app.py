@@ -14,6 +14,8 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -45,6 +47,91 @@ def write_bundle(root, name="Synthetic_Section_outs"):
         with open(os.path.join(bundle, asset), "wb") as handle:
             handle.write(b"\0")
     return bundle
+
+
+class NumbaCacheTests(unittest.TestCase):
+    """Compiled kernels have to be cached somewhere the user can write.
+
+    scanpy's Moran's I and neighbour kernels are `@numba.njit(cache=True)`, and
+    numba writes that cache into `__pycache__` beside the installed package. In
+    a checkout that is the virtualenv and it works silently. Inside a `.app` in
+    /Applications it is owned by the installer and not writable by the person
+    running it, so numba recompiles on every launch: measured at 35 seconds
+    before the first result, on every analysis, forever.
+    """
+
+    def setUp(self):
+        self._previous_cache = os.environ.pop("NUMBA_CACHE_DIR", None)
+        self._previous_support = os.environ.get("SPATIALMIND_SUPPORT_DIR")
+        self.root = tempfile.mkdtemp(prefix="numba-cache-test-")
+        os.environ["SPATIALMIND_SUPPORT_DIR"] = self.root
+
+    def tearDown(self):
+        if self._previous_cache is None:
+            os.environ.pop("NUMBA_CACHE_DIR", None)
+        else:
+            os.environ["NUMBA_CACHE_DIR"] = self._previous_cache
+        if self._previous_support is None:
+            os.environ.pop("SPATIALMIND_SUPPORT_DIR", None)
+        else:
+            os.environ["SPATIALMIND_SUPPORT_DIR"] = self._previous_support
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_a_writable_cache_directory_is_chosen_and_created(self):
+        """In a fresh interpreter, which is the only place it can work.
+
+        Run in a subprocess on purpose: by the time the rest of this suite has
+        run, scanpy has pulled numba in, and numba reads NUMBA_CACHE_DIR once at
+        import. Asserting this in-process would be asserting against whatever
+        happened to be imported first.
+        """
+        script = (
+            "import json, os, sys\n"
+            "sys.path.insert(0, %r)\n"
+            "from spatialmind.app import config\n"
+            "chosen = config.configure_numba_cache()\n"
+            "print(json.dumps({'chosen': chosen, 'env': os.environ.get('NUMBA_CACHE_DIR'),\n"
+            "                  'numba_imported': 'numba' in sys.modules}))\n"
+            % str(Path(__file__).resolve().parents[1])
+        )
+        env = dict(os.environ, SPATIALMIND_SUPPORT_DIR=self.root)
+        env.pop("NUMBA_CACHE_DIR", None)
+        out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        result = json.loads(out.stdout.strip().splitlines()[-1])
+
+        self.assertFalse(result["numba_imported"], "configuring after numba loads would be a no-op")
+        self.assertIsNotNone(result["chosen"])
+        self.assertTrue(os.path.isdir(result["chosen"]), result["chosen"])
+        self.assertTrue(os.access(result["chosen"], os.W_OK), "numba needs to be able to write here")
+        self.assertEqual(result["env"], result["chosen"])
+
+    def test_it_says_so_rather_than_pretending_once_numba_is_loaded(self):
+        """Setting the variable after the import does nothing, so claiming a
+        cache directory then would be a false report."""
+        import numba  # noqa: F401  -- guaranteed in sys.modules from here
+        from spatialmind.app import config
+
+        self.assertIsNone(config.configure_numba_cache())
+
+    def test_an_explicit_setting_is_left_alone(self):
+        """Someone who pointed numba somewhere on purpose keeps it."""
+        from spatialmind.app import config
+
+        os.environ["NUMBA_CACHE_DIR"] = "/somewhere/deliberate"
+        self.assertEqual(config.configure_numba_cache(), "/somewhere/deliberate")
+
+    def test_the_frozen_entry_point_sets_it_before_importing_anything_heavy(self):
+        """numba reads this at import time, so ordering is the whole point: a
+        call placed after the first `import scanpy` does nothing at all."""
+        entry = Path(__file__).resolve().parents[1] / "packaging" / "entry.py"
+        text = entry.read_text(encoding="utf-8")
+        self.assertIn("configure_numba_cache", text)
+        self.assertLess(
+            text.index("configure_numba_cache()"),
+            text.index("from spatialmind.app.desktop import main"),
+            "the cache has to be configured before anything that imports numba",
+        )
 
 
 class ReadOnlyBundleTests(unittest.TestCase):

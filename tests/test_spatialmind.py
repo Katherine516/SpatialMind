@@ -4916,6 +4916,113 @@ class AnnDataCacheTests(unittest.TestCase):
         )
 
 
+def _median_of(values):
+    """Local copy of the pipeline's median, so the test asserts against the
+    definition rather than re-importing the code under test."""
+    ordered = sorted(v for v in values if v > 0)
+    if not ordered:
+        return 0.0
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+class LoaderArithmeticTests(unittest.TestCase):
+    """The loader's hot paths were rewritten for speed, and may not move a number.
+
+    Normalisation was re-deriving "is this an expression feature" once per cell
+    per feature -- the same answer about the same few hundred names, ~7.8 million
+    times for one section -- and clipping every value twice. QC built a second
+    copy of every cell's gene dict purely to count it. Both are bookkeeping, so
+    the values and, just as importantly, the order they are summed in have to
+    come out identical: `sum()` over floats is not associative, and normalisation
+    divides by that sum.
+    """
+
+    def _dataset(self):
+        records = [
+            SpotRecord(
+                "S", float(i), float(i),
+                "Unannotated cell",
+                {
+                    "GENE_A": float(i + 1), "GENE_B": float(2 * i), "GENE_C": -1.0,
+                    "NegControlProbe_x": 5.0,
+                    "TRANSCRIPT_COUNTS": 100.0, "CELL_AREA": 12.0,
+                },
+                cell_id="c%d" % i,
+            )
+            for i in range(25)
+        ]
+        dataset = SpatialDataset(sample_id="S", source_path="x", records=records)
+        dataset.metadata["control_features"] = ["NegControlProbe_x"]
+        return dataset
+
+    def _normalise_the_old_way(self, dataset):
+        """The exact pre-optimisation expression, kept here as the oracle."""
+        from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES, control_feature_names
+
+        controls = control_feature_names(dataset)
+        out = {}
+        for record in dataset.records:
+            raw = record.raw_genes or dict(record.genes)
+            expression = {
+                feature: value
+                for feature, value in raw.items()
+                if feature not in NON_EXPRESSION_FEATURE_NAMES and feature.upper() not in controls
+            }
+            total = sum(max(value, 0.0) for value in expression.values())
+            if total <= 0:
+                continue
+            out[record.cell_id] = {
+                feature: math.log1p((max(value, 0.0) / total) * 10000.0)
+                for feature, value in expression.items()
+            }
+        return out
+
+    def test_normalisation_is_bit_for_bit_what_it_was(self):
+        oracle_source = self._dataset()
+        for record in oracle_source.records:
+            record.raw_genes = dict(record.genes)
+        expected = self._normalise_the_old_way(oracle_source)
+
+        dataset = self._dataset()
+        DataIngestionLayer()._normalize_features(dataset)
+        for record in dataset.records:
+            if record.cell_id not in expected:
+                continue
+            for feature, value in expected[record.cell_id].items():
+                # Equality, not almost-equal: the point is that nothing moved.
+                self.assertEqual(
+                    record.genes[feature], value,
+                    "%s/%s changed" % (record.cell_id, feature))
+
+    def test_control_probes_stay_out_of_the_denominator(self):
+        """The memoised lookup must keep the exclusion it replaced."""
+        dataset = self._dataset()
+        DataIngestionLayer()._normalize_features(dataset)
+        self.assertEqual(dataset.records[3].genes["NegControlProbe_x"], 5.0,
+                         "a control probe must be left at its source value, not normalised")
+        self.assertEqual(dataset.records[3].genes["TRANSCRIPT_COUNTS"], 100.0)
+
+    def test_qc_counts_match_the_dicts_it_no_longer_builds(self):
+        from spatialmind.schemas import NON_EXPRESSION_FEATURE_NAMES
+
+        dataset = self._dataset()
+        DataIngestionLayer()._qc(dataset)
+        expression = [
+            {f: v for f, v in r.raw_genes.items() if f not in NON_EXPRESSION_FEATURE_NAMES}
+            for r in dataset.records
+        ]
+        self.assertEqual(dataset.qc_metrics["negative_value_count"],
+                         sum(1 for values in expression for v in values.values() if v < 0))
+        self.assertEqual(dataset.qc_metrics["missing_feature_row_count"],
+                         sum(1 for values in expression if not values))
+        self.assertEqual(dataset.qc_metrics["median_total_feature_count"],
+                         round(_median_of([sum(max(v, 0.0) for v in values.values())
+                                           for values in expression]), 4))
+
+
 class SectionSizeTests(unittest.TestCase):
     """A full section is the default, and some sections do not fit.
 

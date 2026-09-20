@@ -6,7 +6,7 @@ remembered somewhere durable and be changeable without editing a file by hand.
 """
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import json
 import os
 import sys
@@ -36,6 +36,33 @@ def support_dir() -> Path:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_NAME
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def configure_numba_cache() -> Optional[str]:
+    """Give numba somewhere writable to cache its compiled kernels.
+
+    scanpy's Moran's I and the neighbour kernels are `@numba.njit(cache=True)`,
+    and numba writes that cache into `__pycache__` *beside the installed
+    package*. In a checkout that is the virtualenv and it works. Inside a
+    `.app` in /Applications it is not writable by the user who runs it, so
+    every launch silently recompiles: measured at 35 seconds before the first
+    result, on every single analysis.
+
+    Must run before numba is imported -- it reads this at import time -- so the
+    frozen entry point calls it first, ahead of everything else.
+    """
+    if os.environ.get("NUMBA_CACHE_DIR"):
+        return os.environ["NUMBA_CACHE_DIR"]
+    if "numba" in sys.modules:
+        # Too late to take effect; say nothing rather than imply it worked.
+        return None
+    try:
+        path = support_dir() / "numba-cache"
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None  # a cache we cannot create is not worth failing a launch for
+    os.environ["NUMBA_CACHE_DIR"] = str(path)
+    return str(path)
 
 
 def config_path() -> Path:
