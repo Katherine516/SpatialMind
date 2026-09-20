@@ -5741,3 +5741,190 @@ class ReplicationDesignTests(unittest.TestCase):
         # Still blocked, and for the right reason: one condition cannot be
         # compared with anything.
         self.assertTrue(any("two conditions" in b for b in result["blockers"]))
+
+
+class ReviewSizingTests(unittest.TestCase):
+    """Sizing the review in decisions, which is the unit the work comes in.
+
+    `plan_expert_review` sizes it in cells -- 70% of whatever the run loads, so
+    17,324 on the healthy brain section. That is correct arithmetic and the
+    wrong unit: the Review Studio's gesture is a cluster click, and four of them
+    cover 73.5% of that section.
+    """
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+
+    def test_decisions_are_counted_largest_first(self):
+        sizes = {"a": 50, "b": 30, "c": 15, "d": 5}
+        plan = self.sizing.decisions_for_coverage(sizes, coverage=0.7)
+        self.assertEqual(plan["decisions"], 2)          # 50 + 30 = 80%
+        self.assertEqual([g["group"] for g in plan["groups"]], ["a", "b"])
+        self.assertEqual(plan["covered_cells"], 80)
+        self.assertAlmostEqual(plan["achieved_coverage"], 0.8)
+
+    def test_unassigned_cells_count_against_coverage_but_cannot_be_labelled(self):
+        """10x leaves cells unassigned. They are part of the denominator -- the
+        gate's coverage is of all cells -- and they are not a decision anyone
+        can make."""
+        sizes = {"1": 60, "2": 10, "unassigned": 30}
+        plan = self.sizing.decisions_for_coverage(sizes, coverage=0.7)
+        self.assertEqual(plan["total_cells"], 100)
+        self.assertEqual([g["group"] for g in plan["groups"]], ["1", "2"])
+        self.assertEqual(plan["covered_cells"], 70)
+        self.assertTrue(plan["reachable"])
+
+    def test_an_unreachable_coverage_is_reported_rather_than_rounded_up(self):
+        plan = self.sizing.decisions_for_coverage({"1": 40, "unassigned": 60}, coverage=0.7)
+        self.assertFalse(plan["reachable"])
+        self.assertEqual(plan["decisions"], 1)
+
+    def test_one_group_covering_everything_is_the_absence_of_a_clustering(self):
+        """A bundle with no cluster solution would otherwise report the most
+        encouraging line in the plan: "1 decision reaches 100%"."""
+        plan = self.sizing.size_label_review({"all": 1000}, coverage=0.7)
+        self.assertTrue(plan["no_cluster_solution"])
+        summary = self.sizing.summarise("nowhere", plan, None)
+        # A bare coverage plan has no marker block; summarising one must not
+        # crash and lose every other blocker with it.
+        bare = self.sizing.decisions_for_coverage({"all": 1000}, coverage=0.7)
+        self.assertTrue(self.sizing.summarise("nowhere", bare, None)["blockers"])
+        self.assertTrue(any("No clustering to review" in b for b in summary["blockers"]))
+
+    def test_groups_too_small_for_marker_statistics_are_named(self):
+        """A section can clear coverage and then fail with
+        `blocked_analysis_backend` because a class is too small to test."""
+        readiness = self.sizing.marker_readiness({"1": 900, "2": 80, "3": 10})
+        self.assertEqual(readiness["testable_groups"], 2)
+        self.assertEqual([g["group"] for g in readiness["too_small"]], ["3"])
+        self.assertTrue(readiness["meets_two_class_minimum"])
+
+        thin = self.sizing.marker_readiness({"1": 900, "2": 10})
+        self.assertFalse(thin["meets_two_class_minimum"])
+
+    def test_a_total_with_an_uncounted_side_is_marked_a_lower_bound(self):
+        """Breast S1 ranked cheapest at 8 decisions purely because nobody had
+        proposed its regions yet. Comparing an incomplete total against a
+        complete one is the kind of number this project exists to avoid."""
+        labels = self.sizing.size_label_review({"1": 700, "2": 300})
+        with_regions = self.sizing.summarise(
+            "counted", labels, self.sizing.size_region_review({"r1": 600, "r2": 400}))
+        without = self.sizing.summarise("uncounted", labels, None)
+        self.assertTrue(with_regions["total_is_complete"])
+        self.assertFalse(without["total_is_complete"])
+        self.assertIn("lower bound", self.sizing.format_plan(without))
+        self.assertNotIn("lower bound", self.sizing.format_plan(with_regions))
+
+    def test_a_single_region_does_not_meet_the_contrast_minimum(self):
+        plan = self.sizing.size_region_review({"only": 1000})
+        self.assertFalse(plan["meets_two_region_minimum"])
+
+    def test_the_plan_states_what_a_cluster_decision_asserts(self):
+        """The cheap path is the honest answer and the dangerous one, so the
+        trade has to be in the output rather than in someone's head."""
+        text = self.sizing.format_plan(self.sizing.summarise(
+            "s", self.sizing.size_label_review({"1": 700, "2": 300}),
+            self.sizing.size_region_review({"r1": 600, "r2": 400})))
+        self.assertIn("asserts that every cell in that cluster", text)
+        self.assertIn("review_decisions", text)
+        self.assertIn("coverage is not review depth", text)
+
+
+class ClusterWorksheetTests(unittest.TestCase):
+    """Four decisions, made on four rows, expanding back to 17,909 cells."""
+
+    def setUp(self):
+        from spatialmind.review import sizing
+
+        self.sizing = sizing
+        self.root = Path(tempfile.mkdtemp())
+        self.run = self.root / "run"
+        (self.run / "tables").mkdir(parents=True)
+        (self.run / "descriptive_qc_and_cluster.json").write_text(json.dumps(
+            {"metrics": {"cluster_counts": {"0": 60, "1": 30, "2": 10}}}), encoding="utf-8")
+        (self.run / "descriptive_marker_detection.json").write_text(json.dumps(
+            {"metrics": {"markers_by_group": {
+                "0": [{"gene": "GJA1"}, {"gene": "AQP4"}],
+                "1": [{"gene": "MOG"}, {"gene": "CLDN11"}],
+                "2": [{"gene": "P2RY12"}]}}}), encoding="utf-8")
+        with open(self.run / "tables" / "cells.tsv", "w", newline="", encoding="utf-8") as handle:
+            handle.write("# SpatialMind result table\n# run_id\tr1\n")
+            handle.write("cell_id\tx\ty\tcluster\n")
+            for cluster, count in (("0", 60), ("1", 30), ("2", 10)):
+                for i in range(count):
+                    handle.write("c%s_%d\t0\t0\t%s\n" % (cluster, i, cluster))
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_the_worksheet_is_one_row_per_cluster_with_its_markers(self):
+        """The run's own template has one row per cell -- 24,362 of them -- which
+        invites either labelling nobody will do or a fill-down that hides how few
+        decisions were made."""
+        path = self.root / "ws.csv"
+        result = self.sizing.write_cluster_worksheet(str(self.run), str(path))
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["clusters"], 3)
+        self.assertEqual(result["with_markers"], 3)
+        with open(path, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual([r["cluster"] for r in rows], ["0", "1", "2"])   # largest first
+        self.assertEqual(rows[0]["top_markers"], "GJA1, AQP4")
+        self.assertTrue(all(r["expert_label"] == "" for r in rows))
+
+    def test_a_loader_guess_is_kept_out_of_the_evidence_column(self):
+        path = self.root / "ws.csv"
+        self.sizing.write_cluster_worksheet(str(self.run), str(path),
+                                            loader_guesses={"0": "Neural/Glial cell"})
+        with open(path, newline="", encoding="utf-8") as handle:
+            rows = {r["cluster"]: r for r in csv.DictReader(handle)}
+        self.assertEqual(rows["0"]["loader_guess"], "Neural/Glial cell")
+        self.assertNotIn("Neural", rows["0"]["top_markers"])
+
+    def test_named_clusters_expand_to_cells_recording_one_decision_each(self):
+        """`review_decisions` has to count the calls, not the cells they cover.
+        Writing per-cell rows without the scope would turn two judgements into a
+        hundred apparent ones."""
+        sheet = self.root / "ws.csv"
+        self.sizing.write_cluster_worksheet(str(self.run), str(sheet))
+        with open(sheet, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        rows[0]["expert_label"] = "astrocyte"
+        rows[1]["expert_label"] = "oligodendrocyte"
+        with open(sheet, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.sizing.WORKSHEET_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        out = self.root / "labels.csv"
+        result = self.sizing.apply_cluster_labels(
+            str(self.run), str(sheet), "Dr Chen, marker review", str(out))
+        self.assertEqual(result["cells_written"], 90)
+        self.assertEqual(result["clusters_named"], 2)
+        self.assertEqual(result["distinct_classes"], 2)
+        self.assertTrue(result["meets_two_class_minimum"])
+        self.assertEqual(result["clusters_left_blank"], ["2"])
+
+        with open(out, newline="", encoding="utf-8") as handle:
+            written = list(csv.DictReader(handle))
+        self.assertEqual(len({r["assignment_scope"] for r in written}), 2)
+        self.assertEqual({r["assignment_scope"] for r in written}, {"cluster:0", "cluster:1"})
+        self.assertTrue(all(r["reviewer_id"] == "Dr Chen, marker review" for r in written))
+
+    def test_an_unnamed_worksheet_writes_nothing(self):
+        sheet = self.root / "ws.csv"
+        self.sizing.write_cluster_worksheet(str(self.run), str(sheet))
+        out = self.root / "labels.csv"
+        result = self.sizing.apply_cluster_labels(
+            str(self.run), str(sheet), "Dr Chen", str(out))
+        self.assertEqual(result["status"], "empty")
+        self.assertFalse(out.exists())
+
+    def test_a_run_without_clustering_says_so_rather_than_writing_an_empty_sheet(self):
+        empty = self.root / "empty_run"
+        empty.mkdir()
+        result = self.sizing.write_cluster_worksheet(str(empty), str(self.root / "x.csv"))
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("descriptive lane", result["reason"])

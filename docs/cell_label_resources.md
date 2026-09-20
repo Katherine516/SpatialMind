@@ -228,13 +228,31 @@ is most of the review effort in this section.
 
 ### 2. Expert reviewer time — the irreducible one
 
-Roughly **1,600 labelled cells** at a 2,000-cell run. This is measured, not
-estimated: a 500-cell run clears the 70% coverage gate and then fails with
-`blocked_analysis_backend` because a class has too few cells for marker
-statistics.
+Irreducible, and far smaller than "1,600 cells" suggested. That figure sized the
+review in **cells**, which is correct arithmetic in the wrong unit: nobody
+labels cells one at a time, and the Review Studio's gesture is a cluster click.
+Sized in **decisions**, on the healthy brain section:
 
-No reference, model or heuristic replaces this. Transferred labels carry
-`review_status=needs_expert_review`, and the gate accepts only
+```text
+LABELS    4 decisions reach 73.5% coverage   (9 Leiden clusters, all with markers)
+REGIONS   6 decisions reach 75.4% coverage   (12 proposed domains)
+TOTAL    10 decisions -> gate: validated_ready
+```
+
+That last line is measured, not projected: the gate was run against those ten
+decisions and returned `validated_ready`, 4 reviewed classes and 6 reviewed
+regions. `scripts/size_expert_review.py --all` sizes every section the same way.
+
+The catch is in the same number. Ten decisions is the arithmetic **floor**, not
+an estimate of careful work: naming a cluster asserts that all 4,763 of its
+cells are that class, which is wrong at the margins of every cluster. The run
+records `review_decisions: 4` against 17,909 covered cells and every claim
+carries "coverage is not review depth", so the shortcut is visible rather than
+hidden. A reviewer who splits the mixed clusters and refuses the ambiguous ones
+does more than ten things, and should.
+
+No reference, model or heuristic replaces the judgement itself. Transferred
+labels carry `review_status=needs_expert_review`, and the gate accepts only
 `expert_cell_labels.csv`, which a human writes. That refusal is the feature.
 
 **Unblocks:** everything gated — annotation, region summaries, cell-type
