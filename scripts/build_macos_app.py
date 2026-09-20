@@ -254,15 +254,35 @@ def main() -> int:
         return 1
     print("  verified   : ok")
 
-    # An unsigned app is quarantined on other machines; ad-hoc signing at least
-    # keeps it launchable locally and makes the Gatekeeper story explicit.
+    # Signing decides what a recipient sees. A Developer ID identity in
+    # SPATIALMIND_CODESIGN_IDENTITY is used when present; otherwise the app is
+    # ad-hoc signed, which keeps it launchable on this machine and nowhere else
+    # without a manual override.
+    identity = os.environ.get("SPATIALMIND_CODESIGN_IDENTITY", "").strip()
+    signed_properly = False
     if shutil.which("codesign"):
         try:
-            run(["codesign", "--force", "--deep", "--sign", "-", str(app_path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print("  signed     : ad-hoc (not notarised)")
+            command = ["codesign", "--force", "--deep", "--sign", identity or "-"]
+            if identity:
+                # Hardened runtime and a timestamp are preconditions for
+                # notarisation; without them `notarytool` rejects the upload.
+                command += ["--options", "runtime", "--timestamp"]
+            run(command + [str(app_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            signed_properly = bool(identity)
+            print("  signed     : %s" % (("Developer ID (%s)" % identity) if identity else "ad-hoc"))
         except subprocess.CalledProcessError:
-            print("  signed     : ad-hoc signing failed; the app still runs locally")
+            print("  signed     : signing failed; the app still runs on this machine")
+
+    if not signed_properly:
+        print()
+        print("  NOT NOTARISED. On any Mac but this one, macOS will refuse to open it:")
+        print("    \"SpatialMind Studio is damaged and can't be opened\" -- which is Gatekeeper,")
+        print("    not a corrupt download. Until the app is signed and notarised, a recipient has to run")
+        print("      xattr -dr com.apple.quarantine '/Applications/%s.app'" % APP_NAME)
+        print("    To do this properly: set SPATIALMIND_CODESIGN_IDENTITY to a Developer ID Application")
+        print("    identity (`security find-identity -v -p codesigning`), rebuild, then notarise:")
+        print("      xcrun notarytool submit <dmg> --apple-id <id> --team-id <team> --password <app-password> --wait")
+        print("      xcrun stapler staple <dmg>")
 
     if args.dmg:
         dmg = make_dmg(app_path, arch)

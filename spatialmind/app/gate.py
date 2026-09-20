@@ -16,6 +16,7 @@ from ..ingestion import (
 )
 from ..pilot import pilot_gate
 from ..schemas import SpatialDataset, SpotRecord
+from . import review
 from .catalog import CellIndex
 
 
@@ -53,8 +54,12 @@ def evaluate(
 ) -> Dict[str, Any]:
     dataset = light_dataset(index, sample_id)
     path = index.dataset_path
-    label_report = apply_best_available_labels(dataset, path, fallback=None)
-    region_report = apply_best_available_regions(dataset, path)
+    # A review the bundle would not accept lives in the sidecar, and the gate has
+    # to count it. Reading only the bundle would leave a reviewer clicking labels
+    # into a gate that never moves.
+    extra = review.sidecar_paths(path)
+    label_report = apply_best_available_labels(dataset, path, extra_label_paths=extra, fallback=None)
+    region_report = apply_best_available_regions(dataset, path, extra_region_paths=extra)
     assets = summarize_xenium_expert_readiness(path)
     gate = pilot_gate(
         dataset=dataset,

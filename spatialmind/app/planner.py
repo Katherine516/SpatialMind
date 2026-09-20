@@ -6,6 +6,7 @@ and all three land here, producing the same `ToolCallSpec` list that the real
 plan is.
 """
 
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..agent.runtime import (
@@ -249,7 +250,10 @@ RECIPES: List[Dict[str, Any]] = [
 
 INTENTS: List[Dict[str, Any]] = [
     {
-        "keywords": ("next to", "adjacent", "neighbour", "neighbor", "co-locali", "colocali", "surround", "near"),
+        # Not bare "near": "near the top of the section" is not an adjacency
+        # question, and it used to route to a permutation test on the graph.
+        "keywords": ("next to", "adjacent", "neighbour", "neighbor", "co-locali", "colocali",
+                     "surround", "nearby", "near each other", "near one another"),
         "tools": ["qc_and_cluster", "annotation", "cell_neighborhood_enrichment"],
         "rationale": "Adjacency between named cell types is a permutation test on the spatial graph, so this routes to cell_neighborhood_enrichment after annotation.",
     },
@@ -274,7 +278,11 @@ INTENTS: List[Dict[str, Any]] = [
         "rationale": "Leiden clustering on expression. These are data-derived groups and are never named as cell types.",
     },
     {
-        "keywords": ("cell type", "which cells", "annotate", "composition", "abundance"),
+        # "population" is a prefix on purpose: it carries "populations" too.
+        # "Which cell populations are present?" is the most natural form of this
+        # question and used to fall through to "no confident route".
+        "keywords": ("cell type", "which cells", "what cells", "annotate", "composition",
+                     "abundance", "cell population", "population"),
         "tools": ["qc_and_cluster", "annotation"],
         "rationale": "Cell-type statements need the reviewed label table; annotation summarises what was applied.",
     },
@@ -283,21 +291,101 @@ INTENTS: List[Dict[str, Any]] = [
         "tools": ["feature_overlay"],
         "rationale": "Single-feature overlay, guarded against features absent from the targeted panel.",
     },
+    {
+        # An open "what am I looking at" question. Clustering plus the spatial
+        # map is the honest answer to it, and it is the descriptive lane, so it
+        # runs without the gate.
+        "keywords": ("look like", "looks like", "overview", "describe this", "describe the",
+                     "summarise this", "summarize this", "what is in this", "tell me about",
+                     "get a sense", "first look"),
+        "tools": ["qc_and_cluster"],
+        "rationale": "An open question about the section: unsupervised clustering and the spatial map describe it without naming anything.",
+    },
 ]
 
 # Questions whose honest answer is "the tool for that is a scaffold". Naming the
 # tool is the point: a user who is told which tool is missing can judge the gap.
+#
+# `keywords` are decisive: a term that means this analysis and little else, and
+# is enough on its own to name the tool. `suggestive` are words that often
+# accompany the analysis but are ordinary English besides -- "healthy" is a
+# tissue descriptor, "segment" is cell segmentation far more often than tissue
+# segmentation, "differentiation" collides with differential expression. They
+# are reported as a possibility and never as a diagnosis.
+#
+# The split exists because "What does this healthy brain section look like?" was
+# answered "the tool for it (multi_sample_comparison) is a scaffold" -- a
+# confident, specific and wrong account of why the app would not help, which is
+# the worst failure available to an app whose whole claim is that it refuses
+# rather than guesses.
 UNAVAILABLE_INTENTS: List[Dict[str, Any]] = [
     {"keywords": ("copy number", "cnv", "aneuploid", "malignant cells by"), "tool": "cnv_inference"},
-    {"keywords": ("ligand", "receptor", "communication", "crosstalk", "signalling", "signaling"), "tool": "ligand_receptor_analysis"},
+    {"keywords": ("ligand", "receptor", "crosstalk", "signalling", "signaling", "cell-cell communication"),
+     "suggestive": ("communication",), "tool": "ligand_receptor_analysis"},
     {"keywords": ("deconvolut", "cell type proportion", "proportions per spot"), "tool": "spatial_deconvolution"},
     {"keywords": ("pathway", "mapk", "pi3k", "tgfb"), "tool": "pathway_activity"},
-    {"keywords": ("trajectory", "pseudotime", "differentiation"), "tool": "trajectory_inference"},
-    {"keywords": ("compare", "versus", "vs ", "across samples", "between samples", "healthy"), "tool": "multi_sample_comparison"},
-    {"keywords": ("transcription factor", "tf activity", "motif"), "tool": "transcription_factor_activity"},
-    {"keywords": ("segment", "h&e", "immunofluorescence", "histology"), "tool": "tissue_segmentation"},
-    {"keywords": ("niche", "microenvironment", "exclusion"), "tool": "tumor_niche_analysis"},
+    {"keywords": ("trajectory", "pseudotime"), "suggestive": ("differentiation",), "tool": "trajectory_inference"},
+    {"keywords": ("across samples", "between samples", "across sections", "between sections",
+                  "across donors", "between donors", "multi-sample", "multi sample"),
+     "suggestive": ("compare", "versus", "vs ", "healthy"), "tool": "multi_sample_comparison"},
+    {"keywords": ("transcription factor", "tf activity"), "suggestive": ("motif",),
+     "tool": "transcription_factor_activity"},
+    {"keywords": ("tissue segmentation", "h&e", "immunofluorescence", "histology"),
+     "suggestive": ("segment",), "tool": "tissue_segmentation"},
+    {"keywords": ("niche", "microenvironment"), "suggestive": ("exclusion",), "tool": "tumor_niche_analysis"},
 ]
+
+
+_PATTERNS: Dict[str, Any] = {}
+
+
+def _pattern(keyword: str):
+    """A keyword matches at a word boundary and may run on as a prefix.
+
+    Prefixes are deliberate -- `deconvolut` has to carry "deconvolution" and
+    "deconvolute" -- so only the start is anchored. Plain substring matching is
+    what let "near" fire inside "linear" and "nearly", routing a question about
+    the top of a section to neighbourhood enrichment.
+    """
+    compiled = _PATTERNS.get(keyword)
+    if compiled is None:
+        compiled = re.compile(r"\b" + re.escape(keyword), re.IGNORECASE)
+        _PATTERNS[keyword] = compiled
+    return compiled
+
+
+def _mentions(text: str, keywords: Iterable[str]) -> bool:
+    return any(_pattern(keyword).search(text) for keyword in keywords)
+
+
+def match_intents(text: str) -> List[Dict[str, Any]]:
+    """Implemented routes whose keywords appear in the question."""
+    return [intent for intent in INTENTS if _mentions(text, intent["keywords"])]
+
+
+def match_unavailable(text: str, plannable: Iterable[str]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Scaffold routes the question points at: (named, possible).
+
+    `named` earned a decisive keyword and may be reported as the reason. `possible`
+    matched only a suggestive word, so it may be offered as a guess and must not
+    be stated as a finding. A scaffold that the registry has since implemented is
+    neither: the refusal would be on behalf of a tool that works.
+    """
+    plannable = set(plannable)
+    named, possible = [], []
+    for intent in UNAVAILABLE_INTENTS:
+        if intent["tool"] in plannable:
+            continue
+        if _mentions(text, intent["keywords"]):
+            named.append(intent)
+        elif _mentions(text, intent.get("suggestive", ())):
+            possible.append(intent)
+    return named, possible
+
+
+def _analysis_phrase(tools: List[str]) -> str:
+    """`multi_sample_comparison` -> "multi sample comparison", for a sentence."""
+    return " or ".join(name.replace("_", " ") for name in tools)
 
 
 def propose(question: str, gate_open: bool) -> Dict[str, Any]:
@@ -314,14 +402,11 @@ def propose(question: str, gate_open: bool) -> Dict[str, Any]:
             "refusal": None,
         }
 
-    matched = [intent for intent in INTENTS if any(key in text for key in intent["keywords"])]
-    missing = [intent for intent in UNAVAILABLE_INTENTS if any(key in text for key in intent["keywords"])]
-    # A scaffold match only matters when it is genuinely unavailable; if the
-    # registry ever implements one, this stops refusing on its behalf.
-    missing = [intent for intent in missing if intent["tool"] not in plannable]
+    matched = match_intents(text)
+    named, possible = match_unavailable(text, plannable)
 
-    if missing and not matched:
-        names = ", ".join(sorted({intent["tool"] for intent in missing}))
+    if named and not matched:
+        names = ", ".join(sorted({intent["tool"] for intent in named}))
         return {
             "answer": (
                 "I can't answer that. The tool for it (%s) is registered but is a scaffold: it returns a "
@@ -335,14 +420,27 @@ def propose(question: str, gate_open: bool) -> Dict[str, Any]:
         }
 
     if not matched:
+        # A suggestive word is a guess about what was meant, so it is offered as
+        # one. Stating it as the reason is how "healthy brain section" came back
+        # as "multi_sample_comparison is a scaffold": a specific, confident and
+        # wrong account of why the app would not help.
+        answer = (
+            "I don't have a confident route for that. The Tool Bench lists every implemented tool with its "
+            "preconditions if you want to drive it directly."
+        )
+        guesses = sorted({intent["tool"] for intent in possible})
+        if guesses:
+            answer += (
+                " If you meant %s, that tool (%s) is registered but is a scaffold and does no work -- though I "
+                "am guessing at your question, not reporting what it needs."
+                % (_analysis_phrase(guesses), ", ".join(guesses))
+            )
         return {
-            "answer": (
-                "I don't have a confident route for that. The Tool Bench lists every implemented tool with its "
-                "preconditions if you want to drive it directly."
-            ),
+            "answer": answer,
             "tools": [],
             "rationale": "No intent matched, and guessing a tool would be worse than saying so.",
             "refusal": None,
+            "possible_scaffolds": guesses,
         }
 
     tools: List[str] = []
@@ -364,14 +462,19 @@ def propose(question: str, gate_open: bool) -> Dict[str, Any]:
     else:
         answer = "%d step%s, all runnable now." % (len(described["steps"]), "" if len(described["steps"]) == 1 else "s")
 
-    if missing:
-        names = ", ".join(sorted({intent["tool"] for intent in missing}))
+    # Only decisive matches earn this note: it is an assertion about the
+    # question, and `possible` is a guess at one.
+    if named:
+        names = ", ".join(sorted({intent["tool"] for intent in named}))
         answer += " Note that %s is a scaffold, so any part of the question needing it is not answered here." % names
 
     return {
         "answer": answer,
         "tools": [step["tool"] for step in described["steps"]],
         "rationale": " ".join(rationales),
-        "refusal": ", ".join(sorted({i["tool"] for i in missing})) if missing else None,
+        "refusal": ", ".join(sorted({i["tool"] for i in named})) if named else None,
+        # Empty by construction once a route exists: a guess about what the
+        # question might have meant is only worth anything when nothing matched.
+        "possible_scaffolds": [],
         "plan": described,
     }

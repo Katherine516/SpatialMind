@@ -21,6 +21,8 @@ from ..ingestion import (
 from ..pilot import run_pilot
 from ..storage import StorageLayer
 from ..tools import build_default_registry
+from ..tools.exceptions import MissingPreconditionError
+from ..tools.implementations import check_section_fits
 from ..schemas import expression_feature_names
 from ..viz.tables import write_result_tables
 from .. import dataset_context, gatekeeper
@@ -234,9 +236,20 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
         dataset = load_xenium(entry.path, max_records=max_records)
         dataset.metadata["analysis_dataset_path"] = entry.path
 
+        # Refuse a section that cannot fit before any tool allocates anything.
+        # Left to itself this surfaced as a MemoryError from inside NumPy after
+        # several minutes, which tells a user nothing they can act on.
+        too_large = check_section_fits(dataset)
+        if too_large:
+            raise MissingPreconditionError(too_large)
+
         step(job, "Applying reviewed labels and regions.", 1)
-        label_report = apply_best_available_labels(dataset, entry.path, fallback=None)
-        region_report = apply_best_available_regions(dataset, entry.path)
+        # A review that had to go to the sidecar is still the review. Without
+        # these paths the gate would read `validated_ready` from tables the run
+        # itself never loaded.
+        extra = review.sidecar_paths(entry.path)
+        label_report = apply_best_available_labels(dataset, entry.path, extra_label_paths=extra, fallback=None)
+        region_report = apply_best_available_regions(dataset, entry.path, extra_region_paths=extra)
 
         registry = build_default_registry()
         results = []
@@ -269,10 +282,20 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
             input_files=[entry.path],
             run_id=job.job_id,
         )
+        # The gate belongs in the payload, not only in the prose the report
+        # renders from it. `plan_results.json` and the result tables are what a
+        # collaborator or a script actually reads, and they carried named cell
+        # types with no statement anywhere in the file that nothing was reviewed.
+        try:
+            gate = studio.gate(dataset_id) if entry.reviewable else None
+        except Exception:
+            gate = None
+
         payload = {
             "dataset": entry.to_dict(),
             "tools": tool_names,
             "results": results,
+            "gate": jsonable(gate) if gate else {"status": "not_reviewable"},
             "label_report": jsonable(label_report.to_dict()),
             "region_report": jsonable(region_report.to_dict()),
             "records_loaded": len(dataset.records),
@@ -305,10 +328,6 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
             job.log.append("Figures failed: %s" % exc)
 
         step(job, "Writing the report.", len(plan) + 2)
-        try:
-            gate = studio.gate(dataset_id) if entry.reviewable else None
-        except Exception:
-            gate = None
         try:
             payload["report_paths"] = plan_report.write(payload, output_dir, gate=gate)
         except Exception as exc:
@@ -540,6 +559,10 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        except review.ReviewWriteError as exc:
+            # 507: the request was fine, the storage would not take it. Anything
+            # else here used to be a bare 500 and a lost review.
+            raise HTTPException(status_code=507, detail=str(exc))
         return jsonable(
             {
                 "assignment": result.to_dict(),
@@ -556,7 +579,10 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         index = studio.index(dataset_id)
         if request.kind not in review.KINDS:
             raise HTTPException(status_code=400, detail="kind must be 'labels' or 'regions'")
-        outcome = review.unassign(entry.path, request.kind, cell_ids=None)
+        try:
+            outcome = review.unassign(entry.path, request.kind, cell_ids=None)
+        except review.ReviewWriteError as exc:
+            raise HTTPException(status_code=507, detail=str(exc))
         return jsonable(
             {
                 "cleared": outcome,

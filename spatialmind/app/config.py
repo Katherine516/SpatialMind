@@ -20,6 +20,14 @@ def is_frozen() -> bool:
 
 
 def support_dir() -> Path:
+    # The override exists so a test can be given its own directory: without it
+    # anything exercising the review sidecar writes into the real
+    # ~/Library/Application Support and leaves it there.
+    override = os.environ.get("SPATIALMIND_SUPPORT_DIR")
+    if override:
+        base = Path(override).expanduser()
+        base.mkdir(parents=True, exist_ok=True)
+        return base
     if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support" / APP_NAME
     elif os.name == "nt":  # pragma: no cover - packaged target is macOS

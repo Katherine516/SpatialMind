@@ -101,7 +101,23 @@ class LabelApplicationReport:
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        # `label_counts` reads as biology -- "Neural/Glial cell", "T/NK cell" --
+        # whatever its provenance, because the loader's marker rule names the
+        # cells it can and the counter does not distinguish. The report text is
+        # careful about this; the serialized form was not, and a consumer of
+        # `plan_results.json` got named cell types with nothing beside them
+        # saying no one had reviewed any of it. The discipline has to be in the
+        # data, not only in the prose.
+        payload["labels_are_reviewed"] = bool(self.reviewed_labels)
+        payload["label_counts_meaning"] = (
+            "Counts of reviewed expert labels, over the %d cells the table matched."
+            % self.matched_cells
+            if self.reviewed_labels else
+            "Not reviewed. These names are the loader's marker-rule guess and data-derived groups; "
+            "they are not expert calls and support no biological claim."
+        )
+        return payload
 
 
 @dataclass
@@ -123,7 +139,16 @@ class RegionApplicationReport:
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["regions_are_reviewed"] = bool(self.reviewed_regions)
+        payload["region_counts_meaning"] = (
+            "Counts of reviewer-defined regions, over the %d cells the table matched."
+            % self.matched_cells
+            if self.reviewed_regions else
+            "Not reviewed. This includes the loader's section-wide placeholder region and supports "
+            "no claim about anatomy."
+        )
+        return payload
 
 
 @dataclass

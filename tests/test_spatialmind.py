@@ -88,6 +88,14 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 DEMO = os.path.join(ROOT, "data", "demo_spatial.csv")
 MANIFEST = os.path.join(ROOT, "data", "demo_manifest.json")
 XENIUM_LYMPH = os.path.join(ROOT, "data", "Xenium lymph", "Xenium_V1_hLymphNode_nondiseased_section_outs")
+# `data/**` is gitignored, so this section exists on the machines that downloaded
+# it and nowhere else. Most tests that need it already skip; four asserted
+# against it unconditionally and so failed, rather than skipped, in a fresh clone
+# and in CI. `test_biological_plausibility.py` solves the same problem the better
+# way, with a committed subsample -- these four assert lymph-specific counts, so
+# a guard is the honest fix rather than a different section.
+requires_xenium_lymph = unittest.skipUnless(
+    os.path.isdir(XENIUM_LYMPH), "local Xenium lymph dataset not available")
 
 try:
     import scanpy  # noqa: F401
@@ -210,6 +218,7 @@ class IngestionTests(unittest.TestCase):
                 DataIngestionLayer().load("sample.h5ad")
         self.assertIn("requires anndata", str(error.exception))
 
+    @requires_xenium_lymph
     def test_loads_xenium_directory_metadata(self):
         dataset = DataIngestionLayer().load_xenium_directory(XENIUM_LYMPH, max_records=10)
         self.assertEqual(dataset.modality, "spatial_transcriptomics")
@@ -225,6 +234,7 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(dataset.qc_metrics["qc_expression_layer"], "raw_counts")
         self.assertEqual(dataset.metadata["analysis_scope"], "sampled")
 
+    @requires_xenium_lymph
     def test_loads_xenium_experiment_file_entrypoint(self):
         experiment_path = os.path.join(XENIUM_LYMPH, "experiment.xenium")
         self.assertEqual(infer_data_type(experiment_path), "xenium_experiment_file")
@@ -244,6 +254,7 @@ class IngestionTests(unittest.TestCase):
         self.assertTrue(dataset.metadata["xenium_files"]["experiment_xenium"])
         self.assertTrue(dataset.metadata["xenium_explorer_assets"]["analysis_summary_filepath"]["exists"])
 
+    @requires_xenium_lymph
     def test_gene_attachment_is_counted_against_the_cells_that_survived_qc(self):
         """The caveat quoted a fraction above 1.
 
@@ -252,8 +263,6 @@ class IngestionTests(unittest.TestCase):
         populations, and the healthy brain section printed "attached ... to
         24404/24362 loaded cells" -- which reads as a load that gained cells.
         """
-        if not os.path.isdir(XENIUM_LYMPH):
-            self.skipTest("local Xenium dataset not available")
         dataset = DataIngestionLayer().load_xenium_directory(XENIUM_LYMPH, max_records=2000)
         attachment = [note for note in dataset.notes if "attached top expressed genes" in note]
         self.assertEqual(len(attachment), 1, dataset.notes)
@@ -264,6 +273,7 @@ class IngestionTests(unittest.TestCase):
         # and a stale one would have been caught.
         self.assertTrue(dataset.metadata["cell_qc"]["dropped_cell_count"] > 0)
 
+    @requires_xenium_lymph
     def test_discovers_and_inspects_xenium_datasets(self):
         candidates = discover_dataset_candidates(os.path.join(ROOT, "data"))
         self.assertIn(XENIUM_LYMPH, candidates)
@@ -355,6 +365,7 @@ class IngestionTests(unittest.TestCase):
             self.assertEqual(sorted({record.region for record in dataset.records}), ["stroma", "tumor_core"])
             self.assertEqual(dataset.metadata["region_label_source"], "user_provided")
 
+    @requires_xenium_lymph
     def test_xenium_expert_readiness_reports_missing_labels_but_existing_clusters(self):
         readiness = summarize_xenium_expert_readiness(XENIUM_LYMPH)
         self.assertTrue(readiness.has_cell_table)
@@ -4903,6 +4914,134 @@ class AnnDataCacheTests(unittest.TestCase):
             second_values,
             "a recycled address served the previous dataset's expression matrix",
         )
+
+
+class SectionSizeTests(unittest.TestCase):
+    """A full section is the default, and some sections do not fit.
+
+    Loading every cell is deliberate -- sampling one silently narrows the
+    analysis and can turn a full section into something the gate treats as a
+    sample. The cost is that a large section allocates a large dense matrix, and
+    the 378,000-cell lymph node in this project's own data folder needs several
+    gigabytes before scanpy has done anything. That used to end as a MemoryError
+    raised from inside NumPy after minutes of work.
+    """
+
+    def _dataset(self, n_cells=40, n_genes=10):
+        genes = ["G%d" % i for i in range(n_genes)]
+        records = [
+            SpotRecord("S", float(i), 0.0, "a", {g: float(i) for g in genes}, cell_id="c%d" % i)
+            for i in range(n_cells)
+        ]
+        return SpatialDataset(sample_id="S", source_path="x", records=records)
+
+    def test_the_estimate_counts_both_dense_layers(self):
+        from spatialmind.tools.implementations import estimate_matrix_bytes
+
+        dataset = self._dataset(n_cells=100, n_genes=20)
+        # X and source_values, float64.
+        self.assertEqual(estimate_matrix_bytes(dataset), 100 * 20 * 8 * 2)
+
+    def test_a_section_that_cannot_fit_is_refused_in_a_sentence(self):
+        from spatialmind.tools.implementations import check_section_fits
+
+        dataset = self._dataset()
+        self.assertIsNone(check_section_fits(dataset), "a 40-cell section must not be refused")
+
+        with patch("spatialmind.tools.implementations.total_memory_bytes", return_value=1024):
+            message = check_section_fits(dataset)
+        self.assertIsNotNone(message)
+        self.assertIn("GB", message)
+        self.assertIn("cell limit", message, "the refusal has to say what to do instead")
+
+    def test_an_unknown_memory_size_does_not_refuse_the_run(self):
+        """Refusing because the platform would not answer would be worse than
+        attempting the work."""
+        from spatialmind.tools.implementations import check_section_fits
+
+        with patch("spatialmind.tools.implementations.total_memory_bytes", return_value=0):
+            self.assertIsNone(check_section_fits(self._dataset()))
+
+    def test_a_large_matrix_is_handed_over_rather_than_cached(self):
+        """Retaining a multi-gigabyte section costs its size for the length of
+        the run and doubles at the moment the copy is taken."""
+        from spatialmind.tools import implementations
+        from spatialmind.tools.implementations import _dataset_to_anndata, clear_anndata_cache
+
+        dataset = self._dataset(n_cells=50, n_genes=8)
+        clear_anndata_cache()
+        with patch.object(implementations, "_CACHE_MAX_BYTES", 8):  # smaller than anything real
+            first = _dataset_to_anndata(dataset)
+            self.assertIsNone(implementations._ANNDATA_CACHE["adata"], "an oversized matrix was retained")
+        self.assertEqual(first.n_obs, 50)
+
+        clear_anndata_cache()
+        second = _dataset_to_anndata(dataset)
+        self.assertIsNotNone(implementations._ANNDATA_CACHE["adata"], "an ordinary section must still cache")
+
+    def test_the_counts_layer_is_not_duplicated_but_the_label_survives(self):
+        """`counts` was a byte-identical copy of `source_values`, read by one
+        function that used it only to choose a label."""
+        from spatialmind.tools.implementations import _dataset_to_anndata, _expression_qc_metrics, clear_anndata_cache
+
+        dataset = self._dataset()
+        dataset.metadata["raw_counts_available"] = True
+        clear_anndata_cache()
+        adata = _dataset_to_anndata(dataset)
+        self.assertNotIn("counts", adata.layers)
+        self.assertIn("source_values", adata.layers)
+        self.assertEqual(_expression_qc_metrics(adata)["source"], "raw_counts")
+
+        plain = self._dataset()
+        clear_anndata_cache()
+        self.assertEqual(_expression_qc_metrics(_dataset_to_anndata(plain))["source"], "source_values")
+
+
+class MachineReadableHonestyTests(unittest.TestCase):
+    """The gate has to reach the file, not only the sentence.
+
+    `report.md` is careful: it says the run is descriptive, that the groups are
+    Leiden clusters, and that nothing names a cell type. `plan_results.json` said
+    none of it -- and it is the file a collaborator's script opens. It carried
+    `label_counts` full of "Neural/Glial cell" and "T/NK cell" beside a status
+    field whose meaning is not obvious, and no gate at all.
+    """
+
+    def test_an_unreviewed_label_report_says_so_in_its_own_payload(self):
+        report = LabelApplicationReport(
+            status="missing_expert_labels",
+            method="none",
+            total_records=24362,
+            label_counts={"Neural/Glial cell": 13560, "T/NK cell": 65},
+        )
+        payload = report.to_dict()
+        self.assertFalse(payload["labels_are_reviewed"])
+        meaning = payload["label_counts_meaning"]
+        self.assertIn("Not reviewed", meaning)
+        self.assertIn("not expert calls", meaning)
+        self.assertIn("no biological claim", meaning)
+
+    def test_a_reviewed_label_report_says_what_the_counts_cover(self):
+        report = LabelApplicationReport(
+            status="expert_labels_applied",
+            method="expert_label_table",
+            total_records=100,
+            matched_cells=80,
+            label_counts={"Astrocyte": 40, "T cell": 40},
+            reviewed_labels=["Astrocyte", "T cell"],
+        )
+        payload = report.to_dict()
+        self.assertTrue(payload["labels_are_reviewed"])
+        self.assertIn("80", payload["label_counts_meaning"])
+
+    def test_an_unreviewed_region_report_says_so_too(self):
+        report = RegionApplicationReport(
+            status="missing_user_regions", method="none", total_records=10,
+            region_counts={"hBrain_healthy_section": 10},
+        )
+        payload = report.to_dict()
+        self.assertFalse(payload["regions_are_reviewed"])
+        self.assertIn("placeholder", payload["region_counts_meaning"])
 
 
 class ProvenanceFileCoverageTests(unittest.TestCase):

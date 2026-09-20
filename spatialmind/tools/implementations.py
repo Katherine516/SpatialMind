@@ -1,4 +1,5 @@
 import math
+import os
 import random
 import warnings
 import weakref
@@ -2047,11 +2048,13 @@ def _clustering_diagnostics(
 def _expression_qc_metrics(adata: Any) -> Dict[str, object]:
     import numpy as np  # type: ignore
 
+    raw_counts = bool((adata.uns.get("spatialmind") or {}).get("raw_counts_available"))
     if "counts" in adata.layers:
+        # An externally built AnnData may still carry one.
         source = "raw_counts"
         matrix = adata.layers["counts"]
     elif "source_values" in adata.layers:
-        source = "source_values"
+        source = "raw_counts" if raw_counts else "source_values"
         matrix = adata.layers["source_values"]
     else:
         source = "analysis_values_fallback"
@@ -2461,6 +2464,26 @@ expression_feature_names = _expression_feature_names
 # many tools in a row over one dataset, which a single slot covers exactly.
 _ANNDATA_CACHE: Dict[str, Any] = {"fingerprint": None, "adata": None, "dataset": None}
 
+# Above this, the matrix is handed over and forgotten rather than cached. The
+# cache saves a rebuild across the several tools of one plan, which is worth a
+# few hundred megabytes and is not worth several gigabytes: retaining a large
+# section costs its size for the length of the run *and* doubles at the moment
+# the copy is taken. A 24,000-cell section is ~125 MB and still caches; the
+# 378,000-cell lymph node is ~2.3 GB and no longer does.
+_CACHE_MAX_BYTES = 1024 * 1024 * 1024
+
+
+def estimate_matrix_bytes(dataset: SpatialDataset, genes: Optional[List[str]] = None) -> int:
+    """Bytes the dense expression matrix and its source layer will occupy.
+
+    Counted before anything is allocated, so a section too large for the machine
+    can be refused in a sentence instead of dying inside NumPy with a MemoryError
+    and a half-written run.
+    """
+    if genes is None:
+        genes = expression_feature_names(dataset)
+    return len(dataset.records) * len(genes) * 8 * 2  # X and source_values, float64
+
 
 def _anndata_fingerprint(dataset: SpatialDataset, genes: List[str]) -> tuple:
     """Everything the builder reads that can change between calls in a run.
@@ -2492,6 +2515,43 @@ def _anndata_fingerprint(dataset: SpatialDataset, genes: List[str]) -> tuple:
     labels = hash(tuple((record.cell_type, record.region) for record in dataset.records))
     return (id(dataset), len(dataset.records), tuple(genes), labels,
             bool(dataset.normalized), dataset.sample_id)
+
+
+def total_memory_bytes() -> int:
+    """Physical RAM, or 0 where the platform will not say."""
+    try:
+        return int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
+    except (AttributeError, ValueError, OSError):  # pragma: no cover - platform dependent
+        return 0
+
+
+# A dense matrix is not the whole cost: scanpy's PCA, the neighbour graph and
+# each tool's own working copy all come out of the same memory. Half of RAM for
+# the matrices is the point past which the rest stops fitting.
+_MEMORY_HEADROOM = 0.5
+
+
+def check_section_fits(dataset: SpatialDataset) -> Optional[str]:
+    """Why this section will not fit in memory, or None if it should.
+
+    A full section is the deliberate default -- sampling one would silently
+    narrow the analysis -- so the answer to a section too large is not to quietly
+    shrink it, it is to say so before any work starts. The alternative, which is
+    what happened before, is a MemoryError from inside NumPy after several
+    minutes, a failed job, and nothing a user can act on.
+    """
+    total = total_memory_bytes()
+    if not total:
+        return None
+    needed = estimate_matrix_bytes(dataset)
+    if needed <= total * _MEMORY_HEADROOM:
+        return None
+    return (
+        "This section needs about %.1f GB just to hold its expression matrix, and this machine has "
+        "%.1f GB of memory. Load fewer cells (the run dialog's cell limit), or run it on a larger "
+        "machine: %d cells x %d measured genes is past what fits here."
+        % (needed / 1e9, total / 1e9, len(dataset.records), len(expression_feature_names(dataset)))
+    )
 
 
 def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
@@ -2557,8 +2617,11 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     adata = ad.AnnData(X=matrix, obs=obs)
     adata.var_names = genes
     adata.layers["source_values"] = source_matrix
-    if dataset.metadata.get("raw_counts_available"):
-        adata.layers["counts"] = source_matrix.copy()
+    # No `counts` layer. It used to be `source_matrix.copy()` -- byte-identical
+    # to `source_values`, never written to, and read by one function whose only
+    # use of it was to decide whether to call the numbers "raw_counts". At a
+    # 378,000-cell section that label cost 1.15 GB held for the length of the
+    # run. The semantics now travel in `uns`, where the rest of them already are.
     adata.obsm["spatial"] = np.array([[record.x, record.y] for record in dataset.records], dtype=float)
     adata.uns["spatialmind"] = {
         "sample_id": dataset.sample_id,
@@ -2566,11 +2629,13 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
         "source_value_semantics": dataset.metadata.get("source_value_semantics", "unspecified"),
         "raw_counts_available": bool(dataset.metadata.get("raw_counts_available")),
     }
-    if fingerprint is not None:
+    if fingerprint is not None and estimate_matrix_bytes(dataset, genes) <= _CACHE_MAX_BYTES:
         _ANNDATA_CACHE["fingerprint"] = fingerprint
         _ANNDATA_CACHE["adata"] = adata
         _ANNDATA_CACHE["dataset"] = weakref.ref(dataset)
         return adata.copy()
+    # Nothing else holds this one, so the caller may have it outright: not
+    # caching a large matrix also spares the copy that caching would require.
     return adata
 
 

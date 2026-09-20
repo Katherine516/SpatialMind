@@ -157,11 +157,11 @@ def analyze_text(text: str, facts: Optional[Dict[str, Any]] = None,
     lowered = raw.lower()
     plannable = {tool.name for tool in planner._registry().list_plannable()}
 
-    matched = [intent for intent in planner.INTENTS
-               if any(key in lowered for key in intent["keywords"])]
-    missing = [intent for intent in planner.UNAVAILABLE_INTENTS
-               if any(key in lowered for key in intent["keywords"])
-               and intent["tool"] not in plannable]
+    # Both of the app's routing surfaces match through the planner, so a keyword
+    # fix lands in both. This one had its own copy of the substring match and so
+    # had its own copy of the bug.
+    matched = planner.match_intents(lowered)
+    missing, possible = planner.match_unavailable(lowered, plannable)
 
     resolved: List[str] = []
     understood: List[str] = []
@@ -187,6 +187,14 @@ def analyze_text(text: str, facts: Optional[Dict[str, Any]] = None,
         "%s: the tool for this (`%s`) is registered but is a scaffold -- it returns a "
         "placeholder and does no work, so it is not offered." % (_intent_phrase(intent), intent["tool"])
         for intent in missing
+    ]
+    # Suggestive matches are a guess at the question, so they are phrased as one
+    # and they do not decide `status`: a question the app could not place is
+    # "unclear", not "unsupported".
+    not_supported += [
+        "If you meant %s: the tool for it (`%s`) is registered but is a scaffold -- this is a guess at your "
+        "question, not a reading of what it needs." % (_intent_phrase(intent), intent["tool"])
+        for intent in possible
     ]
 
     status = "understood" if tools else ("unsupported" if missing else "unclear")

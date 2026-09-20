@@ -1,18 +1,30 @@
 """Reading and writing the two files that clear the gate.
 
-`expert_cell_labels.csv` and `cell_regions.csv` live inside the Xenium bundle
-because that is where the loader looks for them. Writes here are merges, never
+`expert_cell_labels.csv` and `cell_regions.csv` belong inside the Xenium bundle,
+because that is where the loader looks for them and because a review that
+travels with the data can be reopened anywhere. Writes here are merges, never
 overwrites: a reviewer adding a second label must not erase the first, and a
 table a human hand-authored outside the app has to survive contact with it.
+
+A bundle is not always writable. Instrument output arrives from a core facility
+on read-only media, on a share mounted read-only, or in an archived directory,
+and the app used to meet that with an unhandled `PermissionError` naming a
+temporary file -- losing the review and explaining nothing. So when the bundle
+cannot be written, the table goes to a sidecar under the app's support directory
+and `sidecar_paths` hands it back to the loader, which takes extra paths for
+exactly this reason. The bundle stays preferred: the sidecar is a fallback that
+announces itself, not a new default.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import csv
+import hashlib
 import os
 import tempfile
 
+from . import config
 from .catalog import resolve_xenium_root
 
 LABEL_FILENAME = "expert_cell_labels.csv"
@@ -40,6 +52,9 @@ class AssignmentResult:
     rows_total: int
     path: str
     distinct_values: List[str]
+    # "bundle" or "app_support". A reviewer whose work went somewhere other than
+    # their data folder has to be told, or they will look for it and not find it.
+    location: str = "bundle"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -49,12 +64,68 @@ class AssignmentResult:
             "rows_total": self.rows_total,
             "path": self.path,
             "distinct_values": self.distinct_values,
+            "location": self.location,
         }
 
 
+def bundle_table_path(dataset_path: str, kind: str) -> Path:
+    """Where the table belongs, whether or not it can be written there."""
+    return resolve_xenium_root(Path(dataset_path)) / KINDS[kind][0]
+
+
+def sidecar_dir(dataset_path: str) -> Path:
+    """One folder per bundle under the app's support directory.
+
+    Keyed by the resolved bundle path so two sections with the same folder name
+    -- `Section_outs` is what the instrument writes for all of them -- cannot
+    read each other's review. The folder name keeps the readable part so a
+    person browsing the directory can tell what they are looking at.
+    """
+    root = resolve_xenium_root(Path(dataset_path))
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
+    return config.support_dir() / "review" / ("%s-%s" % (root.name[:48], digest))
+
+
+def sidecar_table_path(dataset_path: str, kind: str) -> Path:
+    return sidecar_dir(dataset_path) / KINDS[kind][0]
+
+
+def _is_writable(directory: Path) -> bool:
+    return os.access(str(directory), os.W_OK | os.X_OK)
+
+
 def table_path(dataset_path: str, kind: str) -> Path:
-    filename = KINDS[kind][0]
-    return resolve_xenium_root(Path(dataset_path)) / filename
+    """The table this bundle is actually using, for reads and for writes.
+
+    A table already in the bundle wins even when the bundle has since become
+    read-only: it is the reviewed truth, and a sidecar must not silently shadow
+    it. Otherwise the bundle if it can be written, and the sidecar if it cannot.
+    """
+    in_bundle = bundle_table_path(dataset_path, kind)
+    if in_bundle.exists():
+        return in_bundle
+    sidecar = sidecar_table_path(dataset_path, kind)
+    if sidecar.exists():
+        return sidecar
+    return in_bundle if _is_writable(in_bundle.parent) else sidecar
+
+
+def writes_to_sidecar(dataset_path: str, kind: str) -> bool:
+    return table_path(dataset_path, kind) == sidecar_table_path(dataset_path, kind)
+
+
+def sidecar_paths(dataset_path: str) -> List[str]:
+    """Sidecar tables that exist, for the loader's `extra_paths`.
+
+    Without this the app would show a satisfied gate while the run that the gate
+    unlocked loaded no labels at all.
+    """
+    found = []
+    for kind in KINDS:
+        path = sidecar_table_path(dataset_path, kind)
+        if path.exists():
+            found.append(str(path))
+    return found
 
 
 def read_table(dataset_path: str, kind: str) -> Dict[str, Dict[str, str]]:
@@ -114,6 +185,7 @@ def assign(
         rows_total=len(rows),
         path=str(path),
         distinct_values=sorted({row.get(value_field, "") for row in rows.values() if row.get(value_field)}),
+        location="app_support" if path == sidecar_table_path(dataset_path, kind) else "bundle",
     )
 
 
@@ -169,8 +241,25 @@ def _umask() -> int:
     return current
 
 
+class ReviewWriteError(RuntimeError):
+    """A review could not be saved, phrased for the person who made it."""
+
+
 def _write_atomic(path: Path, fields: List[str], rows: Dict[str, Dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic_unguarded(path, fields, rows)
+    except OSError as exc:
+        # The raw error names a temporary file that no longer exists, which tells
+        # a reviewer nothing about the folder that actually refused the write.
+        raise ReviewWriteError(
+            "Could not save the review to %s: %s. The folder may be read-only, full, or on a "
+            "disconnected volume. Copy the bundle somewhere writable and reopen it from there, or "
+            "grant this app access to that folder." % (path.parent, exc.strerror or exc)
+        ) from exc
+
+
+def _write_atomic_unguarded(path: Path, fields: List[str], rows: Dict[str, Dict[str, str]]) -> None:
     handle = tempfile.NamedTemporaryFile(
         "w", newline="", encoding="utf-8", dir=str(path.parent), prefix=".%s." % path.name, delete=False
     )

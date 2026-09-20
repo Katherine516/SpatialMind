@@ -9,8 +9,10 @@ name: Checks
 # on one execution path of four) were each caught by a human reading output when
 # a check that would have caught them already existed.
 #
-# Python 3.9 because that is what the project develops and runs on; the macOS
-# build job uses 3.11 for PyInstaller, so the two are now both covered.
+# Both Pythons, because the project develops on 3.9 and ships on 3.11: the macOS
+# build job freezes with 3.11, so that is the interpreter inside the app people
+# actually run. Until this was a matrix the full suite only ever ran on 3.9 and
+# the shipped runtime was covered by one test file.
 
 on:
   push:
@@ -23,16 +25,20 @@ concurrency:
 
 jobs:
   checks:
-    name: Tests, evals, import contracts
+    name: Tests, evals, import contracts (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install
@@ -72,6 +78,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eval-reports
+          name: eval-reports-py${{ matrix.python-version }}
           path: ${{ runner.temp }}/eval_*.json
           if-no-files-found: ignore

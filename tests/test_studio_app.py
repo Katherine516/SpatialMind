@@ -13,13 +13,16 @@ import gzip
 import json
 import os
 import shutil
+import stat
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from spatialmind.app import review
 from spatialmind.app.server import create_studio_app
 
 N_CELLS = 600
@@ -42,6 +45,115 @@ def write_bundle(root, name="Synthetic_Section_outs"):
         with open(os.path.join(bundle, asset), "wb") as handle:
             handle.write(b"\0")
     return bundle
+
+
+class ReadOnlyBundleTests(unittest.TestCase):
+    """Instrument output is not always writable, and the review has to survive it.
+
+    A core facility hands over `outs/` on read-only media, on a share mounted
+    read-only, or in an archived directory. Writing the review straight into the
+    bundle met that with an unhandled `PermissionError` naming a temporary file
+    that no longer existed: HTTP 500, no explanation, and the reviewer's work
+    gone. The review now falls back to a sidecar under the app's support folder,
+    and -- the part that actually matters -- the gate and the run read it, so the
+    app cannot show a satisfied gate backed by tables nothing loads.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="spatialmind-readonly-test-")
+        cls.support = os.path.join(cls.root, "support")
+        # Without this the sidecar lands in the real ~/Library/Application Support.
+        cls._previous_support = os.environ.get("SPATIALMIND_SUPPORT_DIR")
+        os.environ["SPATIALMIND_SUPPORT_DIR"] = cls.support
+        cls.data_root = os.path.join(cls.root, "data")
+        os.makedirs(cls.data_root)
+        cls.bundle = write_bundle(cls.data_root, name="ReadOnly_Section_outs")
+        cls.app = create_studio_app(
+            data_root=cls.data_root, output_root=os.path.join(cls.root, "outputs"))
+        cls.client = TestClient(cls.app)
+        cls.dataset_id = cls.client.get("/api/datasets").json()["datasets"][0]["dataset_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        os.chmod(cls.bundle, 0o755)
+        if cls._previous_support is None:
+            os.environ.pop("SPATIALMIND_SUPPORT_DIR", None)
+        else:
+            os.environ["SPATIALMIND_SUPPORT_DIR"] = cls._previous_support
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def setUp(self):
+        os.chmod(self.bundle, 0o755)
+        for kind in ("labels", "regions"):
+            self.client.post("/api/datasets/%s/clear" % self.dataset_id, json={"kind": kind})
+        for name in ("expert_cell_labels.csv", "cell_regions.csv"):
+            for directory in (self.bundle, review.sidecar_dir(self.bundle)):
+                candidate = Path(directory) / name
+                if candidate.exists():
+                    candidate.unlink()
+
+    def _freeze(self):
+        os.chmod(self.bundle, stat.S_IRUSR | stat.S_IXUSR)
+
+    def test_a_review_on_a_read_only_bundle_is_saved_and_says_where(self):
+        self._freeze()
+        body = self.client.post(
+            "/api/datasets/%s/assign" % self.dataset_id,
+            json={"kind": "labels", "value": "Astrocyte",
+                  "cell_ids": ["cell-%d" % i for i in range(20)]})
+        self.assertEqual(body.status_code, 200, body.text)
+        assignment = body.json()["assignment"]
+        self.assertEqual(assignment["location"], "app_support")
+        self.assertTrue(assignment["path"].startswith(self.support), assignment["path"])
+        self.assertFalse(os.path.exists(os.path.join(self.bundle, "expert_cell_labels.csv")))
+
+    def test_the_gate_counts_a_review_that_had_to_go_to_the_sidecar(self):
+        """The failure worth preventing: a gate that opens on tables no run reads."""
+        self._freeze()
+        ids = ["cell-%d" % i for i in range(N_CELLS)]
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2]})
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "labels", "value": "T cell", "cell_ids": ids[N_CELLS // 2:]})
+        bounds = self.client.get("/api/datasets/%s/cells" % self.dataset_id).json()["bounds"]
+        mid = (bounds["y_min"] + bounds["y_max"]) / 2.0
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "regions", "value": "core",
+                               "bounds": {"x0": bounds["x_min"], "y0": bounds["y_min"],
+                                          "x1": bounds["x_max"], "y1": mid}})
+        body = self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                                json={"kind": "regions", "value": "edge",
+                                      "bounds": {"x0": bounds["x_min"], "y0": mid,
+                                                 "x1": bounds["x_max"], "y1": bounds["y_max"]}}).json()
+        self.assertEqual(body["gate"]["status"], "validated_ready", body["gate"]["blocking_reasons"])
+        self.assertGreater(body["label_coverage"]["coverage"], 0.9)
+
+    def test_a_table_already_in_the_bundle_is_never_shadowed(self):
+        """A reviewed table in the bundle is the truth even once the folder turns
+        read-only; a sidecar that quietly took precedence would silently discard
+        it."""
+        in_bundle = Path(self.bundle) / "expert_cell_labels.csv"
+        in_bundle.write_text(
+            "cell_id,expert_label,confidence,notes,assignment_scope\n"
+            "cell-0,Hand written,0.99,,cells\n",
+            encoding="utf-8")
+        self._freeze()
+        self.assertEqual(str(review.table_path(self.bundle, "labels")), str(in_bundle))
+        self.assertEqual(review.read_table(self.bundle, "labels")["cell-0"]["expert_label"], "Hand written")
+
+    def test_a_write_that_cannot_land_anywhere_explains_itself(self):
+        """The sidecar can fail too. What must not happen is a bare 500."""
+        self._freeze()
+        with patch("spatialmind.app.review._write_atomic_unguarded",
+                   side_effect=OSError(28, "No space left on device")):
+            response = self.client.post(
+                "/api/datasets/%s/assign" % self.dataset_id,
+                json={"kind": "labels", "value": "Astrocyte", "cell_ids": ["cell-1"]})
+        self.assertEqual(response.status_code, 507, response.text)
+        detail = response.json()["detail"]
+        self.assertIn("Could not save the review", detail)
+        self.assertIn("read-only, full, or on a disconnected volume", detail)
 
 
 class StudioAppTests(unittest.TestCase):
@@ -479,6 +591,82 @@ class StudioAppTests(unittest.TestCase):
         body = self.client.post("/api/ask", json={
             "dataset_id": self.dataset_id, "question": "What is the weather in Oslo?"}).json()
         self.assertEqual(body["tools"], [])
+
+    def test_a_refusal_never_names_a_tool_on_one_ordinary_word(self):
+        """The refusal has to be a reading of the question, not a substring hit.
+
+        "healthy" was a keyword for `multi_sample_comparison`, so asking what a
+        section named "Healthy Brain" looks like was answered "the tool for it
+        (multi_sample_comparison) is a scaffold" -- specific, confident and
+        wrong. For an app whose entire claim is that it refuses rather than
+        guesses, a refusal that misidentifies its own reason is the worst
+        available failure.
+        """
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id,
+            "question": "What does this healthy brain section look like?"}).json()
+        self.assertIsNone(body["refusal"], body["answer"])
+        self.assertIn("qc_and_cluster", body["tools"])
+
+    def test_a_decisive_phrase_still_names_the_scaffold(self):
+        """Softening the ambiguous words must not cost the diagnosis that works."""
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id,
+            "question": "Show the difference across samples and between donors."}).json()
+        self.assertEqual(body["tools"], [])
+        self.assertIn("multi_sample_comparison", body["refusal"] or "")
+
+    def test_a_mixed_question_answers_its_answerable_half_and_names_the_rest(self):
+        """"Cell type abundance across samples" is one question the app can
+        partly do: the within-section half routes, and the cross-sample half is
+        named as a scaffold rather than quietly folded into the answer."""
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id,
+            "question": "Compare cell type abundance across samples."}).json()
+        self.assertIn("annotation", body["tools"])
+        self.assertIn("multi_sample_comparison", body["refusal"] or "")
+        self.assertIn("scaffold", body["answer"])
+
+    def test_a_suggestive_word_is_offered_as_a_guess_not_a_finding(self):
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id,
+            "question": "How good is the cell segmentation here?"}).json()
+        self.assertIsNone(body["refusal"], body["answer"])
+        self.assertEqual(body["possible_scaffolds"], ["tissue_segmentation"])
+        self.assertIn("if you meant", body["answer"].lower())
+        self.assertIn("guessing", body["answer"].lower())
+
+    def test_the_most_natural_cell_question_has_a_route(self):
+        """`Which cell populations are present?` fell through to "no route"."""
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id,
+            "question": "Which cell populations are present?"}).json()
+        self.assertIn("annotation", body["tools"])
+
+    def test_a_keyword_does_not_match_inside_a_longer_word(self):
+        """"near" matched inside "linear" and "nearly", and bare "near" matched
+        "near the top of the section" -- a question about position, routed to a
+        permutation test on the spatial graph."""
+        body = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id,
+            "question": "Are any genes near the top of the section?"}).json()
+        self.assertNotIn("cell_neighborhood_enrichment", body["tools"])
+
+        adjacency = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id,
+            "question": "Which cells sit near each other?"}).json()
+        self.assertIn("cell_neighborhood_enrichment", adjacency["tools"])
+
+    def test_both_routing_surfaces_agree(self):
+        """Ask and the guided workflow had their own copies of the match, so a
+        keyword fixed in one stayed broken in the other."""
+        question = "What does this healthy brain section look like?"
+        ask = self.client.post("/api/ask", json={
+            "dataset_id": self.dataset_id, "question": question}).json()
+        analyze = self.client.post("/api/workflow/analyze", json={
+            "dataset_id": self.dataset_id, "prompt": question}).json()
+        self.assertIsNone(ask["refusal"])
+        self.assertNotEqual(analyze["status"], "unsupported", analyze["not_supported"])
 
     # ------------------------------------------------------------------ runs
 

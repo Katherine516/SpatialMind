@@ -31,6 +31,44 @@ WINDOW_BACKGROUND = "#080D0F"   # --paper from the UI's palette
 DEFAULT_SIZE = (1440, 920)
 MIN_SIZE = (1080, 700)
 
+# Shown while the server comes up. First launch of a freshly installed bundle is
+# the slow one -- macOS verifies the signature of every file in a gigabyte of
+# scientific libraries before any of this runs -- and it used to happen with no
+# window at all: a Dock icon, then twenty-odd seconds of nothing, which is
+# indistinguishable from a hang and is where a first-time user gives up.
+SPLASH_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>SpatialMind Studio</title><style>
+  html,body{height:100%%;margin:0;background:%(bg)s;color:#E6EDF0;
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
+    display:flex;align-items:center;justify-content:center;-webkit-user-select:none}
+  .box{text-align:center;max-width:26rem;padding:0 1.5rem}
+  .mark{font-size:1.1rem;letter-spacing:.14em;text-transform:uppercase;color:#7FD1C1}
+  .note{margin-top:.9rem;color:#8FA3AB}
+  .bar{margin:1.6rem auto 0;width:12rem;height:2px;background:#1B262B;overflow:hidden;border-radius:2px}
+  .bar i{display:block;width:40%%;height:100%%;background:#7FD1C1;animation:slide 1.4s ease-in-out infinite}
+  @keyframes slide{0%%{transform:translateX(-100%%)}100%%{transform:translateX(300%%)}}
+</style></head><body><div class="box">
+  <div class="mark">SpatialMind Studio</div>
+  <div class="note">Starting the local analysis server. The first launch after
+    installing is the slow one &mdash; macOS checks the whole bundle.</div>
+  <div class="bar"><i></i></div>
+</div></body></html>""" % {"bg": WINDOW_BACKGROUND}
+
+
+def _failure_html(log_path) -> str:
+    return """<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  html,body{height:100%%;margin:0;background:%(bg)s;color:#E6EDF0;
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;
+    display:flex;align-items:center;justify-content:center}
+  .box{max-width:32rem;padding:0 1.5rem}
+  code{color:#7FD1C1;word-break:break-all}
+</style></head><body><div class="box">
+  <h2>SpatialMind Studio could not start.</h2>
+  <p>The analysis server did not come up. The log is at:</p>
+  <p><code>%(log)s</code></p>
+</div></body></html>""" % {"bg": WINDOW_BACKGROUND, "log": log_path}
+
 
 def setup_logging() -> Path:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -148,32 +186,26 @@ class WindowBridge:
         return True
 
 
-def run_windowed(app, port: int, url: str) -> int:
-    """Serve on a worker thread and own the main thread with the window.
+def run_windowed(build_app, port: int, url: str, log_path=None) -> int:
+    """Put the window up first, then build the app behind it.
 
     Cocoa requires its run loop on the main thread, so the server is the thing
     that moves, not the UI. `log_config=None` keeps uvicorn from installing its
     own handlers: a windowed app has no stdout, and without this its request log
     goes to /dev/null instead of the file a user can actually send you.
+
+    `build_app` is a factory rather than a built app on purpose. Constructing it
+    imports the whole scientific stack, and doing that before the window existed
+    is what made a cold launch look like a hang: the work is the same, but now it
+    happens behind a window that says so.
     """
     import uvicorn
     import webview
 
-    try:
-        app.state.studio.window_mode = True
-    except AttributeError:
-        pass
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info", log_config=None))
-    thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
-    thread.start()
-
-    if not wait_until_ready(url):
-        logging.error("Server did not become ready; opening the window anyway.")
-
     state = _load_window_state()
     window = webview.create_window(
         WINDOW_TITLE,
-        url,
+        html=SPLASH_HTML,
         width=state["width"],
         height=state["height"],
         min_size=MIN_SIZE,
@@ -194,12 +226,42 @@ def run_windowed(app, port: int, url: str) -> int:
             pass  # a window that will not report its size is not worth failing over
 
     window.events.closing += remember_size
-    logging.info("window open on %s", url)
-    webview.start()  # blocks until the window closes
+
+    running = {"server": None, "thread": None}
+
+    def boot() -> None:
+        """Build, serve, then point the window at it. Runs off the GUI thread."""
+        try:
+            app = build_app()
+            try:
+                app.state.studio.window_mode = True
+            except AttributeError:
+                pass
+            server = uvicorn.Server(
+                uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info", log_config=None))
+            thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
+            thread.start()
+            running["server"], running["thread"] = server, thread
+            if wait_until_ready(url):
+                logging.info("server ready; loading %s", url)
+                window.load_url(url)
+            else:
+                logging.error("server did not become ready within the timeout")
+                window.load_html(_failure_html(log_path))
+        except Exception:
+            # The boot now happens on a worker thread, so an exception here would
+            # otherwise vanish and leave the splash spinning forever.
+            logging.exception("SpatialMind Studio failed to start")
+            window.load_html(_failure_html(log_path))
+
+    logging.info("window open; starting the server for %s", url)
+    webview.start(boot)  # blocks until the window closes
 
     logging.info("window closed; shutting the server down")
-    server.should_exit = True
-    thread.join(timeout=10)
+    if running["server"] is not None:
+        running["server"].should_exit = True
+    if running["thread"] is not None:
+        running["thread"].join(timeout=10)
     return 0
 
 
@@ -237,19 +299,21 @@ def main() -> int:
     logging.info("SpatialMind Studio starting (frozen=%s, python=%s)", config.is_frozen(), sys.version.split()[0])
 
     try:
-        app = create_app_for()
+        # The port is picked before the app is built: choosing it needs nothing
+        # from the app, and the windowed path wants the URL in hand so it can put
+        # a window on screen before the scientific stack is imported.
         port = choose_port()
         url = "http://localhost:%d/" % port
         logging.info("serving on %s (log: %s)", url, log_path)
 
         if headless():
-            return run_headless(app, port, url)
+            return run_headless(create_app_for(), port, url)
         try:
             import webview  # noqa: F401
         except ImportError:
             logging.warning("pywebview is unavailable; falling back to the default browser")
-            return run_browser(app, port, url)
-        return run_windowed(app, port, url)
+            return run_browser(create_app_for(), port, url)
+        return run_windowed(create_app_for, port, url, log_path=log_path)
     except Exception:
         logging.exception("SpatialMind Studio failed to start")
         _report_failure(log_path)
