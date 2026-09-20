@@ -4,26 +4,40 @@
 loads, so 17,324 cells on the healthy brain section. That number is correct and
 it is the wrong unit. Nobody labels 17,324 cells one at a time, and the Review
 Studio's own gesture is a cluster click -- so the cost is **decisions**, and the
-decisions are few:
+decisions are few. Measured across this workspace's four blocked sections:
 
-    healthy brain    24,406 cells, 16 clusters  ->  7 decisions reach 70%
-    glioblastoma     40,887 cells, 24 clusters  -> 10 decisions
-    breast S1       209,467 cells, 19 clusters  ->  8 decisions
-    lymph node      377,985 cells, 31 clusters  -> 10 decisions
+                  cells run   clusters  labels  regions  total
+    healthy brain      24,362        9        4       6     10
+    glioblastoma       40,786       11        5       6     11
+    lymph node        372,099        8        2       9     11
+    breast S1         201,426        9        5      11     16
 
-Which is the honest sizing and also the dangerous one, so this module reports
-both sides of it.
+**Which clustering you count against changes the answer**, so a plan says which
+it used. A bundle ships 10x's graphclust and a descriptive run makes its own
+Leiden solution, and they are not the same size -- 16 against 9 on the healthy
+brain section, so 7 decisions against 4. The run's is preferred because it is
+the one carrying differential markers, which is what makes a cluster call
+reviewable rather than a guess.
 
-**What a cluster decision asserts.** Labelling cluster 3 "oligodendrocyte"
-claims that all 2,528 of its cells are oligodendrocytes. That is a real
-biological judgement and it is wrong at the margins of every cluster. Seven
+This is the honest sizing and also the dangerous one, so the module reports both
+sides of it.
+
+**What a cluster decision asserts.** Labelling cluster 5 "oligodendrocyte"
+claims that all 4,763 of its cells are oligodendrocytes. That is a real
+biological judgement and it is wrong at the margins of every cluster. Ten
 decisions is therefore the *floor* -- what the gate arithmetic requires -- and
 not an estimate of careful work. A reviewer who checks marker evidence per
-cluster, splits the mixed ones and refuses the ambiguous ones does more than
-seven things, and should.
+cluster, splits the mixed ones and refuses the ambiguous ones does more than ten
+things, and should.
+
+**What the minimum buys.** Two named classes clear the gate's two-class
+condition and leave exactly one cell-type pair to test. The lymph node reaches
+70% on T cells and B cells alone, so its cheapest review is also its thinnest
+result; `pair_count` exists so the plan says that rather than reporting the
+cheapness alone.
 
 **What it costs downstream.** The gate counts coverage; it does not count depth.
-Seven cluster-level decisions produce `review_decisions: 7` against ~17,000
+Four cluster-level decisions produce `review_decisions: 4` against 17,909
 covered cells, and the reliability caveat says so on every claim -- "coverage is
 not review depth". That is the trade being made visible, not a warning against
 making it.
