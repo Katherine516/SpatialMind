@@ -174,13 +174,18 @@ region count and decision count — everything except whether the labels are
 consistent with the measurements. A reviewer who mislabels confidently gets the
 same `validated_ready` as one who is right.
 
-**Secondary finding: the gate opens with no recorded author.** The label table
-the Studio writes has columns `cell_id, expert_label, confidence, notes,
-assignment_scope`. There is no reviewer column, and `POST /assign` has no field
-for one, so `label_report.reviewers` came back `{}`. The *reader* supports four
-spellings — `reviewer_id`, `reviewer`, `annotator`, `curator` — for tables
-authored outside the app. The app cannot populate any of them for its own. A
-section can reach `validated_ready` without recording who validated it.
+**Secondary finding: a review made *in the app* records no author.** The label
+table the Studio writes has columns `cell_id, expert_label, confidence, notes,
+assignment_scope`. There is no reviewer column and `POST /assign` has no field
+for one, so `label_report.reviewers` came back `{}`.
+
+This is a gap in the writer, not the design. Tables imported from outside carry
+provenance properly: the Janesick section's table has `reviewer_id` and `source`
+columns reading `Janesick et al. 2023, Nat Commun 14:8353` and
+`https://zenodo.org/records/10076046 (CC BY 4.0)` on all 159,226 rows, and the
+reader accepts four spellings of reviewer id. So the one section that has ever
+passed the gate on real labels is fully attributed — and a section labelled
+through the app's own review screen would not be.
 
 ## 7. Packaged app
 
@@ -207,9 +212,19 @@ matrices above a gigabyte.
 
 ## 8. What this evaluation did not establish
 
-- **No biological validation.** As on 7 Sep, no validated run has used expert
-  labels. These were worse than synthetic — they were wrong on purpose, to test
-  whether the agent would notice. It did not.
+- **This run used no real labels.** Mine were worse than synthetic — wrong on
+  purpose, to test whether the agent would notice. It did not.
+
+  **Correction.** An earlier draft of this section repeated the 7 Sep statement
+  that no validated run has ever used expert labels. That stopped being true on
+  19 Sep, and I carried it forward without checking. `outputs/janesick_full/`
+  holds a completed validated pilot on the Janesick Rep1 section using the
+  published Janesick et al. 2023 annotation (Zenodo, CC BY 4.0): gate
+  `validated_ready`, three claims, all `supported`, reliability **0.757** each,
+  `A_annotation` 0.971, `S_statistical` 1.000, `R_spatial_robustness` 1.000,
+  limited by `P_panel` 0.757 — 28 of 37 canonical markers on the
+  `hBreast_320g` panel. That is the project's first genuine validated result and
+  it should not have been reported as absent.
 - **One section, one donor.** Nothing here speaks to replication.
 - **The windowed boot path is untested.** Splash, background app construction and
   the warmup kickoff are exercised only by opening the `.app` by hand; the smoke

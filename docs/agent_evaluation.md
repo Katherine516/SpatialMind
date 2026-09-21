@@ -3,7 +3,10 @@
 > Superseded in part by [`agent_evaluation_20260920.md`](agent_evaluation_20260920.md),
 > which re-ran the same workflow on 20 Sep. The numbers below stand as the
 > 7 Sep baseline; the later run found that the agent accepts labels its own
-> marker table contradicts, which this evaluation did not test for.
+> marker table contradicts, which this evaluation did not test for. The claim
+> below that no validated run has used expert labels was true on 7 Sep and is
+> not now: see `outputs/janesick_full/` (19 Sep, published Janesick 2023 labels,
+> three supported claims at reliability 0.757).
 
 An end-to-end run of the whole workflow through the packaged app, on real
 sections, with what each stage cost and what it produced. Reproduce with:
