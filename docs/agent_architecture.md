@@ -4,7 +4,7 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-09-20. Unit tests 495/495; legacy eval 16/16; MVP eval 13/13; real Scanpy/Squidpy backend checks passed; import-linter 6/6. (Counts derived by `scripts/check_doc_numbers.py`.)
+Last verified: 2026-09-21. Unit tests 499/499; legacy eval 16/16; MVP eval 13/13; real Scanpy/Squidpy backend checks passed; import-linter 6/6. (Counts derived by `scripts/check_doc_numbers.py`.)
 
 ## The one-sentence version
 

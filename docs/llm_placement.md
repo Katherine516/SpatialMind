@@ -154,24 +154,33 @@ finished run, generated from numbers handed to it, never from numbers it
 recalls, sitting above the templated report rather than replacing any part of
 it.
 
-## What needs fixing before any of this is wired up
+## What the legacy path used to do, and what it does now
 
-`spatialmind/planner.py` — the legacy path, reachable from the CLI and the API —
-does three things this document says not to:
+`spatialmind/planner.py` — reachable from the CLI and the API — did three things
+this document says not to. All three were removed by making its output a goal
+set, which is the demonstration that the argument above is not merely tidy.
 
-1. **It drops unknown tools silently.** `_steps_from_llm_payload` does
+1. **It dropped unknown tools silently.** `_steps_from_llm_payload` did
    `if tool not in ALLOWED_TOOLS: continue`. That is the same bug class the app
-   planner already fixed: dropped names produced an empty plan, `plan_status:
-   valid`, and a job reporting `succeeded` with no results. `unknown_tools()`
-   exists because *a silent success on nothing is the one outcome this project
-   is built to refuse*. The LLM path still has the old behaviour.
-2. **It takes parameters from the model.** `parameters = dict(parameters)`
-   straight off the payload. See the `n_perms` argument above.
-3. **It takes `depends_on` from the model.** The DAG can derive every edge. A
-   model supplying them can only introduce disagreement between the declared
-   graph and the executed one.
+   planner already fixed: dropped names produced an empty plan and a run
+   reporting success having done nothing. `unknown_tools()` exists because *a
+   silent success on nothing is the one outcome this project is built to
+   refuse*. Now `goals_from_payload` returns the rejected names and the plan
+   carries them as a clarification; a payload naming nothing runnable falls back
+   to the rules and says so, rather than returning an empty plan.
+2. **It took parameters from the model.** `parameters = dict(parameters)`
+   straight off the payload. A payload asking for `bin_size: 999.0` now gets
+   `20.0`, because `build_steps` reads parameters from the parsed request and
+   the payload's are never consulted.
+3. **It took `depends_on` from the model.** `order_goals` derives every edge
+   from `GOAL_REQUIRES`. This also fixed a latent bug: asking for
+   co-localization alone produced one step whose `depends_on` named a step that
+   was not in the plan. The producer is inserted now.
 
-All three disappear if the model's output is a goal set.
+One function builds a step, and both the rule path and the model path call it,
+so a plan the model asked for and a plan the rules derived cannot differ in
+anything but which goals are in them. An old-shaped payload carrying whole steps
+is still accepted and read for its tool names only.
 
 ## The economy argument, which points the same way
 

@@ -140,7 +140,9 @@ class PlannerTests(unittest.TestCase):
         plan = LLMReasoningLayer().plan("Compare tumor and CD8+ T cells and assess spatial neighborhoods.")
         self.assertIn("cell_type_colocalization", [step.tool for step in plan.steps])
 
-    def test_accepts_valid_llm_plan(self):
+    def test_accepts_a_goal_set_and_derives_the_rest(self):
+        """The model names what was asked for. The planner orders it, inserts
+        the producer it needs, and supplies the parameters."""
         provider = StaticLLMProvider(
             {
                 "sample_id": "BRCA_04",
@@ -148,18 +150,77 @@ class PlannerTests(unittest.TestCase):
                 "genes": [],
                 "wants_visualization": True,
                 "wants_colocalization": True,
+                "goals": ["cell_type_colocalization"],
+            }
+        )
+        plan = LLMReasoningLayer(llm_provider=provider).plan("Check sample BRCA_04")
+        self.assertEqual([step.tool for step in plan.steps],
+                         ["cell_type_distribution", "cell_type_colocalization"])
+        self.assertEqual(plan.steps[1].depends_on, ["Map cell-type distribution"])
+        self.assertEqual(plan.steps[1].parameters["bin_size"], 20.0)
+
+    def test_an_invented_tool_is_named_not_skipped(self):
+        """`_steps_from_llm_payload` dropped unknown names with a bare
+        `continue`, so a payload naming only tools this build does not have
+        produced an empty plan and a run that reported success having done
+        nothing. That is the outcome `unknown_tools()` was written to refuse in
+        the v2 planner, and this path still had the old behaviour."""
+        provider = StaticLLMProvider(
+            {"cell_types": ["Tumor cell"],
+             "goals": ["cell_type_distribution", "cnv_inference", "teleport"]})
+        plan = LLMReasoningLayer(llm_provider=provider).plan("Map tumor cells")
+        self.assertEqual([step.tool for step in plan.steps], ["cell_type_distribution"])
+        note = " ".join(plan.clarifications)
+        self.assertIn("cnv_inference", note)
+        self.assertIn("teleport", note)
+
+    def test_a_payload_naming_nothing_runnable_falls_back_and_says_so(self):
+        provider = StaticLLMProvider({"cell_types": ["Tumor cell"], "goals": ["teleport"]})
+        plan = LLMReasoningLayer(llm_provider=provider).plan("Map tumor cells")
+        self.assertTrue(plan.steps, "an empty plan must never be returned as a success")
+        note = " ".join(plan.clarifications)
+        self.assertIn("teleport", note)
+        self.assertIn("rule-based planner", note)
+
+    def test_the_model_cannot_set_parameters_or_dependencies(self):
+        """A model that picks `bin_size` is a model changing the statistics with
+        nothing downstream able to tell. Parameters come from the parsed
+        request and dependencies from the goal graph, so an old-shaped payload
+        is read for its tool names and nothing else."""
+        provider = StaticLLMProvider(
+            {
+                "cell_types": ["CD8+ T cell", "Tumor cell"],
                 "steps": [
                     {
                         "name": "LLM co-localization",
                         "tool": "cell_type_colocalization",
-                        "parameters": {"cell_types": ["CD8+ T cell", "Tumor cell"]},
+                        "parameters": {"bin_size": 999.0, "cell_types": ["Invented cell"]},
+                        "depends_on": ["a step that does not exist"],
                     }
                 ],
             }
         )
         plan = LLMReasoningLayer(llm_provider=provider).plan("Check sample BRCA_04")
-        self.assertEqual(plan.steps[0].name, "LLM co-localization")
-        self.assertEqual(plan.steps[0].tool, "cell_type_colocalization")
+        coloc = [step for step in plan.steps if step.tool == "cell_type_colocalization"][0]
+        self.assertEqual(coloc.parameters["bin_size"], 20.0, "the model set the bin size")
+        self.assertNotIn("Invented cell", coloc.parameters["cell_types"])
+        self.assertEqual(coloc.depends_on, ["Map cell-type distribution"])
+        self.assertEqual(coloc.name, "Test cell-type co-localization")
+
+    def test_a_dependency_is_inserted_rather_than_dangling(self):
+        """Asking for co-localization alone used to produce one step whose
+        `depends_on` named a step that was not in the plan."""
+        from spatialmind.planner import order_goals
+
+        self.assertEqual(order_goals(["cell_type_colocalization"]),
+                         ["cell_type_distribution", "cell_type_colocalization"])
+
+        plan = LLMReasoningLayer().plan("Test co-localization of CD8+ T cells and tumor cells.")
+        present = [step.name for step in plan.steps]
+        for step in plan.steps:
+            for required in step.depends_on:
+                self.assertIn(required, present,
+                              "depends_on names a step that is not in the plan")
 
 
 class IngestionTests(unittest.TestCase):
