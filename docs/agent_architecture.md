@@ -133,11 +133,15 @@ Two details that matter:
   library-size and area proxies on a different scale, so
   `expression_feature_names()` excludes them from every expression matrix. Left in,
   they dominate PCA and rank as top "markers".
-- **Source and analysis layers are separate.** Count-aware QC and AnnData
-  `layers["counts"]` use preserved Xenium counts. Library-size normalization and
-  `log1p` change only biological values in `genes`; count summaries and morphology
-  features remain unchanged. H5AD ingestion prefers `layers["counts"]` when it
-  exists and records source-value semantics when it does not.
+- **Source and analysis layers are separate.** Count-aware QC uses the preserved
+  Xenium counts, carried into AnnData as `layers["source_values"]`. Library-size
+  normalization and `log1p` change only biological values in `genes`; count
+  summaries and morphology features remain unchanged. The built matrix has no
+  separate `counts` layer -- it was a byte-identical copy of `source_values`,
+  1.15 GB of it at full lymph-node scale, whose only reader used it to choose a
+  label; `uns["spatialmind"]["raw_counts_available"]` carries that instead. H5AD
+  ingestion still prefers an incoming `layers["counts"]` when one exists, and
+  records source-value semantics when it does not.
 - **Scope is explicit.** Every Xenium load records total cells, loaded cells,
   sampling method, fraction loaded, and `sampled` versus `full_section` scope.
 
