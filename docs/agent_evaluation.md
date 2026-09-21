@@ -1,5 +1,10 @@
 # Agent evaluation — 7 Sep 2026
 
+> Superseded in part by [`agent_evaluation_20260920.md`](agent_evaluation_20260920.md),
+> which re-ran the same workflow on 20 Sep. The numbers below stand as the
+> 7 Sep baseline; the later run found that the agent accepts labels its own
+> marker table contradicts, which this evaluation did not test for.
+
 An end-to-end run of the whole workflow through the packaged app, on real
 sections, with what each stage cost and what it produced. Reproduce with:
 
