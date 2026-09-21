@@ -1,6 +1,7 @@
 import os
 from typing import List, Optional
 
+from .. import gatekeeper
 from ..algorithms import AlgorithmEngine
 from ..ingestion import DataIngestionLayer, available_samples
 from ..llm import LLMProvider
@@ -12,7 +13,24 @@ from ..viz import VisualizationLayer
 
 
 class SpatialMindAgent:
-    """Coordinates the six layers into one agent run."""
+    """LEGACY (v1) run path: LLM plan -> AlgorithmEngine -> report.
+
+    The docstring here used to read "coordinates the six layers into one agent
+    run", naming ingestion, algorithms, reasoning, visualization, storage and
+    memory. That was accurate for v1 and has not been true for some time: it
+    omits `tools`, `pilot`, `gatekeeper` and `app`, and two of the six it names
+    are themselves legacy. See `docs/agent_architecture.md` for the six tiers the
+    import graph actually has.
+
+    What this class still is: the only LLM-planned path, running the three
+    `AlgorithmEngine` tools rather than the 30-tool registry. Reached from
+    `POST /runs`, the CLI's `--replay-run-id` branch, and the CLI when the data
+    is not a Xenium bundle -- a Xenium bundle goes to `run_pilot` instead.
+
+    It had no gate at all until `require_gate_open` was added to `run`, which
+    mattered because `DataIngestionLayer.load` accepts a Xenium directory and a
+    replayed run carries whatever `source_path` its provenance recorded.
+    """
 
     def __init__(
         self,
@@ -31,6 +49,13 @@ class SpatialMindAgent:
         plan = self.reasoning.plan(prompt)
         sample_id = plan.request.sample_id or available_samples(data_path)[0]
         dataset = self.ingestion.load(data_path, sample_id=sample_id)
+        # `DataIngestionLayer.load` accepts a Xenium bundle, so this path could
+        # run cell-type tools over a real section with no reviewed label in
+        # sight. It now asks the same question every other path asks.
+        gate_decision = gatekeeper.require_gate_open(
+            data_path, [step.tool for step in plan.steps], dataset=dataset,
+        )
+
         similar_runs = self.memory.recall(prompt, sample_id)
         run_info = self.storage.start_run(dataset.sample_id)
         run_id = run_info["run_id"]
@@ -68,6 +93,7 @@ class SpatialMindAgent:
                 "normalized": dataset.normalized,
                 "prompt": prompt,
                 "tools": [step.tool for step in plan.steps],
+                "gate_decision": gate_decision,
                 "artifacts": {
                     "report": report_path,
                     "reports": report_paths.to_dict(),

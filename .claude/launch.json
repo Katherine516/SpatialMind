@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "spatialmind-studio",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "spatialmind.app", "--headless", "--port", "8765", "--data-root", "data"],
+      "port": 8765
+    }
+  ]
+}

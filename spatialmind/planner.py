@@ -1,5 +1,21 @@
+"""LEGACY (v1). The reasoning layer for `SpatialMindAgent` only.
+
+`LLMReasoningLayer` plans against `AlgorithmEngine`'s three tools. It is the only
+place an LLM plans anything: every other path -- the agent loop, the Studio's
+Ask surface, the pilot -- uses deterministic keyword routing or a fixed typed
+plan, and validates the result with `validate_tool_plan` before execution.
+
+That validator is what would make LLM planning safe to switch on for the v2
+stack. Until then this module is reachable only through the legacy orchestrator,
+and the LLM path stays off by default.
+
+Do not extend this. Planning for the current stack lives in
+`spatialmind.agent.runtime` (typed plans and validation) and
+`spatialmind.app.planner` (routing and lanes).
+"""
+
 import re
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from .llm import LLMProvider
 from .schemas import AnalysisRequest, ExecutionPlan, ExecutionStep
@@ -38,6 +54,11 @@ ALLOWED_TOOLS = {
     "cell_type_colocalization",
 }
 
+# The model names goals and reads entities out of the question. It does not
+# order the steps, choose parameters or declare dependencies: those are derived
+# here, identically for a model-supplied goal set and a rule-derived one. Asking
+# for less is the point -- a smaller answer is a smaller thing to get wrong, and
+# what is left is checkable in one line against ALLOWED_TOOLS.
 PLANNER_SYSTEM_PROMPT = """You are the planning layer for SpatialMind, a spatial omics agent.
 Return only a JSON object. Do not include markdown.
 
@@ -49,23 +70,109 @@ The JSON shape is:
   "wants_visualization": true,
   "wants_colocalization": false,
   "clarifications": ["short issue if needed"],
-  "steps": [
-    {
-      "name": "short step name",
-      "tool": "cell_type_distribution | spatial_gene_expression | cell_type_colocalization",
-      "parameters": {"cell_types": ["..."], "genes": ["..."], "bin_size": 20.0},
-      "depends_on": ["optional prior step name"]
-    }
-  ]
+  "goals": ["cell_type_distribution", "cell_type_colocalization"]
 }
 
-Use only these tools:
+`goals` is the set of analyses the question asks for. Name only what was asked.
+Do not order them, do not supply parameters, and do not declare dependencies --
+the planner derives all three. Use only these names:
 - cell_type_distribution: map/count requested cell types.
 - spatial_gene_expression: summarize requested genes.
 - cell_type_colocalization: test whether two cell types share spatial bins.
 
 Prefer canonical cell types such as CD8+ T cell, Tumor cell, Macrophage, Endothelial cell, and Stromal cell.
 """
+
+# Goals that cannot run without another goal's output. The planner inserts the
+# producer rather than trusting a caller -- model or rule -- to remember it.
+GOAL_REQUIRES = {
+    "cell_type_colocalization": ["cell_type_distribution"],
+}
+
+STEP_NAMES = {
+    "cell_type_distribution": "Map cell-type distribution",
+    "spatial_gene_expression": "Summarize spatial gene expression",
+    "cell_type_colocalization": "Test cell-type co-localization",
+}
+
+
+def order_goals(goals: Iterable[str]) -> List[str]:
+    """Insert missing producers and sort so they precede their consumers.
+
+    The same job `spatialmind.app.planner.order_plan` does for the v2 registry,
+    over a graph small enough to state in one dict. Asking for co-localization
+    without the distribution it reads used to produce a step whose `depends_on`
+    named a step that was not in the plan.
+    """
+    resolved: List[str] = []
+
+    def add(name: str, seen: Tuple[str, ...] = ()) -> None:
+        if name in resolved or name in seen or name not in ALLOWED_TOOLS:
+            return
+        for required in GOAL_REQUIRES.get(name, []):
+            add(required, seen + (name,))
+        resolved.append(name)
+
+    for goal in dict.fromkeys(goals):
+        add(goal)
+    return resolved
+
+
+def build_steps(request: AnalysisRequest, goals: Iterable[str]) -> List[ExecutionStep]:
+    """The only place a step is constructed.
+
+    Parameters come from the parsed request and dependencies from
+    `GOAL_REQUIRES`, so a plan the model asked for and a plan the rules derived
+    cannot differ in anything but which goals are in it. A model that supplied
+    its own `bin_size` or `n_perms` would be changing the statistics with
+    nothing downstream able to tell.
+    """
+    ordered = order_goals(goals)
+    parameters = {
+        "cell_type_distribution": lambda: {"cell_types": request.cell_types},
+        "spatial_gene_expression": lambda: {"genes": request.genes},
+        "cell_type_colocalization": lambda: {"cell_types": request.cell_types, "bin_size": 20.0},
+    }
+    steps: List[ExecutionStep] = []
+    for goal in ordered:
+        steps.append(
+            ExecutionStep(
+                name=STEP_NAMES[goal],
+                tool=goal,
+                parameters=parameters[goal](),
+                depends_on=[STEP_NAMES[req] for req in GOAL_REQUIRES.get(goal, []) if req in ordered],
+            )
+        )
+    return steps
+
+
+def goals_from_payload(payload: Dict[str, object]) -> Tuple[List[str], List[str]]:
+    """The goal names a model asked for, and the ones this build does not have.
+
+    Rejections are returned rather than skipped. `_steps_from_llm_payload` used
+    a bare `continue`, so a payload naming only tools that do not exist produced
+    an empty plan and a run that reported success having done nothing -- the one
+    outcome this project is built to refuse, and already fixed once in the v2
+    planner as `unknown_tools()`.
+
+    A payload carrying whole steps is read for its tool names only. Its
+    parameters and `depends_on` are dropped on purpose; see `build_steps`.
+    """
+    raw = payload.get("goals")
+    if not isinstance(raw, list) or not raw:
+        raw = [item.get("tool") for item in (payload.get("steps") or []) if isinstance(item, dict)]
+    goals: List[str] = []
+    rejected: List[str] = []
+    for name in raw or []:
+        name = str(name or "").strip()
+        if not name:
+            continue
+        if name in ALLOWED_TOOLS:
+            if name not in goals:
+                goals.append(name)
+        elif name not in rejected:
+            rejected.append(name)
+    return goals, rejected
 
 
 class LLMReasoningLayer:
@@ -91,32 +198,14 @@ class LLMReasoningLayer:
 
     def _plan_with_rules(self, prompt: str) -> ExecutionPlan:
         request = self._parse_request(prompt)
-        steps: List[ExecutionStep] = []
+        goals: List[str] = []
         if request.wants_visualization or request.cell_types:
-            steps.append(
-                ExecutionStep(
-                    name="Map cell-type distribution",
-                    tool="cell_type_distribution",
-                    parameters={"cell_types": request.cell_types},
-                )
-            )
+            goals.append("cell_type_distribution")
         if request.genes:
-            steps.append(
-                ExecutionStep(
-                    name="Summarize spatial gene expression",
-                    tool="spatial_gene_expression",
-                    parameters={"genes": request.genes},
-                )
-            )
+            goals.append("spatial_gene_expression")
         if request.wants_colocalization:
-            steps.append(
-                ExecutionStep(
-                    name="Test cell-type co-localization",
-                    tool="cell_type_colocalization",
-                    parameters={"cell_types": request.cell_types, "bin_size": 20.0},
-                    depends_on=["Map cell-type distribution"],
-                )
-            )
+            goals.append("cell_type_colocalization")
+        steps = build_steps(request, goals)
         if not steps:
             steps.append(
                 ExecutionStep(
@@ -145,35 +234,23 @@ class LLMReasoningLayer:
             wants_colocalization=bool(payload.get("wants_colocalization", rule_request.wants_colocalization)),
             wants_report=True,
         )
-        steps = self._steps_from_llm_payload(payload, request)
-        if not steps:
-            return self._plan_with_rules(prompt)
+        goals, rejected = goals_from_payload(payload)
         clarifications = _string_list(payload.get("clarifications"))
+        if rejected:
+            # Named, never skipped: a caller has to be able to tell the
+            # difference between "the model asked for nothing" and "the model
+            # asked for something this build does not have".
+            clarifications.append(
+                "No tool named %s in this build; those goals were dropped."
+                % ", ".join("`%s`" % name for name in rejected))
+        steps = build_steps(request, goals)
+        if not steps:
+            fallback = self._plan_with_rules(prompt)
+            fallback.clarifications.extend(clarifications)
+            fallback.clarifications.append(
+                "The model named no goal this build can run; used the local rule-based planner.")
+            return fallback
         return ExecutionPlan(request=request, steps=steps, clarifications=clarifications)
-
-    def _steps_from_llm_payload(self, payload: Dict[str, object], request: AnalysisRequest) -> List[ExecutionStep]:
-        steps = []
-        for item in payload.get("steps", []):
-            if not isinstance(item, dict):
-                continue
-            tool = str(item.get("tool", ""))
-            if tool not in ALLOWED_TOOLS:
-                continue
-            parameters = item.get("parameters") if isinstance(item.get("parameters"), dict) else {}
-            parameters = dict(parameters)
-            if tool in ("cell_type_distribution", "cell_type_colocalization"):
-                parameters["cell_types"] = _string_list(parameters.get("cell_types")) or request.cell_types
-            if tool == "spatial_gene_expression":
-                parameters["genes"] = [gene.upper() for gene in _string_list(parameters.get("genes"))] or request.genes
-            steps.append(
-                ExecutionStep(
-                    name=str(item.get("name") or tool.replace("_", " ").title()),
-                    tool=tool,
-                    parameters=parameters,
-                    depends_on=_string_list(item.get("depends_on")),
-                )
-            )
-        return steps
 
     def _parse_request(self, prompt: str) -> AnalysisRequest:
         lowered = prompt.lower()

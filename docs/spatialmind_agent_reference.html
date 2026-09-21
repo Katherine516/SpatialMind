@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>SpatialMind Agent Reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;1,8..60,400&display=swap">
+<style>
+:root{
+  color-scheme:dark;
+  --paper:#080D0F; --surface:#101819; --surface-2:#162023; --surface-3:#1E2A2E;
+  --ink:#E8F0EF; --ink-2:#A6B7B7; --ink-3:#758788;
+  --line:#222F33; --line-2:#314247;
+  --accent:#4FC3CA; --accent-2:#8AE2E7; --accent-soft:#0E3439;
+  --magenta:#E184C9; --ok:#5FBE90; --warn:#E0A84E; --stop:#EA7A70;
+  --sans:"Archivo",system-ui,-apple-system,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  --serif:"Source Serif 4",Georgia,serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1060px;margin:0 auto;padding:0 26px}
+h1,h2,h3,h4{margin:0;letter-spacing:-.015em;text-wrap:balance}
+p{margin:0}
+a{color:var(--accent)}
+.mono,code{font-family:var(--mono);font-variant-numeric:tabular-nums}
+code{font-size:13px;background:var(--surface-2);padding:1px 5px;border-radius:3px;color:var(--ink)}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+
+header{padding:52px 0 28px}
+header h1{font-size:clamp(30px,4.4vw,47px);font-weight:700;line-height:1.03;margin:12px 0 15px}
+.lede{font-family:var(--serif);font-size:19.5px;line-height:1.5;color:var(--ink-2);max-width:64ch}
+.lede em{color:var(--ink);font-style:italic}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(136px,1fr));
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-top:28px}
+.tile{padding:14px 20px 14px 0;border-right:1px solid var(--line)}
+.tile:last-child{border-right:none}
+.tile b{display:block;font-family:var(--mono);font-size:22px;font-weight:500;letter-spacing:-.02em}
+.tile span{font-size:10.5px;color:var(--ink-3);letter-spacing:.05em;text-transform:uppercase;font-family:var(--mono)}
+
+nav.toc{border:1px solid var(--line);border-radius:9px;padding:14px 18px;margin:28px 0 8px;
+  background:var(--surface);display:flex;flex-wrap:wrap;gap:6px 22px}
+nav.toc a{font-size:13px;color:var(--ink-2);text-decoration:none}
+nav.toc a:hover{color:var(--accent)}
+
+section{padding:36px 0;border-bottom:1px solid var(--line)}
+section:last-of-type{border-bottom:none}
+h2{font-size:22px;font-weight:600;margin-bottom:7px}
+h3{font-size:16px;font-weight:600;margin:24px 0 8px}
+.sub{font-size:13.5px;color:var(--ink-3);margin-bottom:20px;max-width:72ch}
+.prose{font-family:var(--serif);font-size:16.5px;line-height:1.62;color:var(--ink-2);max-width:67ch}
+.prose p+p{margin-top:13px}
+.prose strong{color:var(--ink);font-weight:600}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:500;padding:0 12px 8px 0;border-bottom:1px solid var(--line-2);white-space:nowrap}
+td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td.num{font-family:var(--mono);white-space:nowrap}
+.scroll{overflow-x:auto}
+
+.pill{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10.5px;
+  padding:2px 7px;border-radius:4px;font-weight:500;white-space:nowrap}
+.pill.ok{background:rgba(95,190,144,.14);color:var(--ok)}
+.pill.warn{background:rgba(224,168,78,.14);color:var(--warn)}
+.pill.stop{background:rgba(234,122,112,.14);color:var(--stop)}
+.pill.mute{background:var(--surface-3);color:var(--ink-3)}
+.pill.acc{background:var(--accent-soft);color:var(--accent-2)}
+
+.card{border:1px solid var(--line);border-radius:9px;background:var(--surface);padding:17px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:17px;align-items:start}
+.three{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.card h4{font-size:14px;font-weight:600;margin-bottom:5px}
+.card p{font-size:13px;color:var(--ink-2);line-height:1.5}
+.kv{font-family:var(--mono);font-size:12px;display:flex;justify-content:space-between;gap:12px;
+  padding:5px 0;border-bottom:1px dotted var(--line)}
+.kv:last-child{border-bottom:none}
+.kv span{color:var(--ink-3)}
+
+figure{margin:22px 0;border:1px solid var(--line);border-radius:9px;background:var(--surface);padding:20px 18px 14px}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto;color:var(--ink-2)}
+figcaption{font-size:12.5px;color:var(--ink-3);margin-top:14px;text-align:center;
+  max-width:74ch;margin-left:auto;margin-right:auto;line-height:1.5}
+
+.note{border-left:2px solid var(--warn);padding:11px 0 11px 15px;margin-top:20px;
+  font-size:13.5px;color:var(--ink-2);max-width:72ch}
+.note b{color:var(--warn)}
+.note.stop{border-left-color:var(--stop)} .note.stop b{color:var(--stop)}
+.note.ok{border-left-color:var(--ok)} .note.ok b{color:var(--ok)}
+
+footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--ink-3);
+  display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;border-top:1px solid var(--line)}
+@media (max-width:820px){.two,.three{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Reference · 16 Sep 2026 · branch spatialmind-studio @ 7dc73e1</div>
+  <h1>SpatialMind Agent Reference</h1>
+  <p class="lede">A spatial-omics agent whose defining behaviour is what it <em>won't</em> do. It ingests a
+    Xenium section, runs real Scanpy and Squidpy analysis, and refuses to name a single cell type until a
+    human has reviewed the labels. This is how that refusal is built, what it currently can and cannot do,
+    and where the evidence for each claim comes from.</p>
+  <div class="tiles">
+    <div class="tile"><b>227</b><span>tests passing</span></div>
+    <div class="tile"><b>30</b><span>registered tools</span></div>
+    <div class="tile"><b>12</b><span>plannable</span></div>
+    <div class="tile"><b>7</b><span>app surfaces</span></div>
+    <div class="tile"><b>0.67</b><span>panel ceiling</span></div>
+    <div class="tile"><b>4 / 4</b><span>sections blocked</span></div>
+  </div>
+  <nav class="toc">
+    <a href="#thesis">What it is</a>
+    <a href="#workflow">Workflow</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#layers">The six tiers</a>
+    <a href="#lanes">The two lanes</a>
+    <a href="#functions">Functions</a>
+    <a href="#reliability">Reliability</a>
+    <a href="#state">Current state</a>
+    <a href="#gaps">Known gaps</a>
+  </nav>
+</header>
+
+<section id="thesis">
+  <h2>What it is</h2>
+  <div class="prose">
+    <p>Most spatial-omics tooling will happily tell you that a cluster is astrocytes. It has no way to know
+    that. Cluster identity is an expert judgement about tissue, and a pipeline that guesses it produces a
+    figure that looks exactly like one that knows.</p>
+    <p>SpatialMind's design decision is to make that impossible. A <strong>validation gate</strong> sits
+    between data preparation and biological inference. Until a human supplies
+    <code>expert_cell_labels.csv</code> and <code>cell_regions.csv</code> at 70% coverage, the agent will
+    run real analysis and describe <strong>data-derived groups</strong> — never cell types. Every claim it
+    does make carries a reliability score, and every tool it could have used but cannot carries a reason.</p>
+    <p>Around that core sits <strong>SpatialMind Studio</strong>, a packaged macOS app, because the gate was
+    unreachable in practice: clearing it meant hand-authoring a CSV of 40,887 cell IDs, which no
+    pathologist will ever do.</p>
+  </div>
+</section>
+
+<section id="workflow">
+  <h2>The workflow</h2>
+  <p class="sub">One bundle in, one of two lanes out. Which lane is not a setting — it is decided by whether
+    reviewed evidence exists.</p>
+
+  <figure>
+    <svg viewBox="0 0 980 430" role="img" aria-label="A Xenium bundle is ingested, then the gate decides: without reviewed labels the run takes the descriptive lane and names only clusters; with them it takes the validated lane and may name cell types.">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0,0 10,5 0,10" fill="currentColor"/>
+        </marker>
+        <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0,0 10,5 0,10" fill="#4FC3CA"/>
+        </marker>
+      </defs>
+
+      <rect x="12" y="176" width="128" height="62" rx="7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <text x="76" y="200" text-anchor="middle" font-size="12.5" fill="currentColor">.xenium bundle</text>
+      <text x="76" y="218" text-anchor="middle" font-size="11" fill="currentColor" opacity=".65">~2.5 GB</text>
+
+      <line x1="140" y1="207" x2="188" y2="207" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+      <text x="164" y="228" text-anchor="middle" font-size="10" fill="currentColor" opacity=".7">6 MB</text>
+
+      <rect x="190" y="176" width="126" height="62" rx="7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <text x="253" y="200" text-anchor="middle" font-size="12.5" fill="currentColor">ingest</text>
+      <text x="253" y="218" text-anchor="middle" font-size="11" fill="currentColor" opacity=".65">SpatialDataset</text>
+
+      <line x1="316" y1="207" x2="364" y2="207" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+
+      <polygon points="440,150 530,207 440,264 350,207" fill="none" stroke="#4FC3CA" stroke-width="1.8"/>
+      <text x="440" y="203" text-anchor="middle" font-size="12.5" fill="#4FC3CA">gate</text>
+      <text x="440" y="220" text-anchor="middle" font-size="10" fill="#4FC3CA" opacity=".8">6 conditions</text>
+
+      <line x1="440" y1="150" x2="440" y2="96" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+      <text x="452" y="126" font-size="10.5" fill="currentColor" opacity=".75">no reviewed labels</text>
+      <rect x="560" y="62" width="300" height="70" rx="7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <text x="710" y="86" text-anchor="middle" font-size="12.5" fill="currentColor">descriptive lane</text>
+      <text x="710" y="104" text-anchor="middle" font-size="11" fill="currentColor" opacity=".7">QC · Leiden · Moran's I · cluster adjacency</text>
+      <text x="710" y="121" text-anchor="middle" font-size="11" fill="#E0A84E">names clusters, never cell types</text>
+      <line x1="440" y1="96" x2="556" y2="96" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+
+      <line x1="440" y1="264" x2="440" y2="318" stroke="#4FC3CA" stroke-width="1.6" marker-end="url(#arA)"/>
+      <text x="452" y="294" font-size="10.5" fill="#4FC3CA">labels + regions ≥ 70%</text>
+      <rect x="560" y="284" width="300" height="70" rx="7" fill="none" stroke="#4FC3CA" stroke-width="1.6"/>
+      <text x="710" y="308" text-anchor="middle" font-size="12.5" fill="#4FC3CA">validated lane</text>
+      <text x="710" y="326" text-anchor="middle" font-size="11" fill="currentColor" opacity=".7">annotation · markers · regions · neighbourhoods</text>
+      <text x="710" y="343" text-anchor="middle" font-size="11" fill="#5FBE90">may name cell types</text>
+      <line x1="440" y1="318" x2="556" y2="318" stroke="#4FC3CA" stroke-width="1.6" marker-end="url(#arA)"/>
+
+      <rect x="180" y="326" width="200" height="58" rx="7" fill="none" stroke="#E184C9" stroke-width="1.4" stroke-dasharray="4 3"/>
+      <text x="280" y="349" text-anchor="middle" font-size="12" fill="#E184C9">human review</text>
+      <text x="280" y="366" text-anchor="middle" font-size="10.5" fill="#E184C9" opacity=".8">Review Studio → two CSVs</text>
+      <line x1="380" y1="340" x2="418" y2="290" stroke="#E184C9" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+      <text x="300" y="398" text-anchor="middle" font-size="10.5" fill="#E184C9" opacity=".8">the only way across</text>
+
+      <line x1="860" y1="96" x2="908" y2="96" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+      <line x1="860" y1="318" x2="908" y2="318" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+      <text x="938" y="92" text-anchor="middle" font-size="11" fill="currentColor">report</text>
+      <text x="938" y="109" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">no claims</text>
+      <text x="938" y="314" text-anchor="middle" font-size="11" fill="currentColor">report</text>
+      <text x="938" y="331" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">scored claims</text>
+    </svg>
+    <figcaption>The gate is the only fork. Both lanes run real Scanpy and Squidpy backends on the same data —
+      what differs is whether a result may be called a cell type. Nothing the agent can do moves a run from
+      the upper lane to the lower one; only a human writing the two CSVs does.</figcaption>
+  </figure>
+
+  <h3>The six conditions</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>Condition</th><th>Why it is there</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>Core assets present</td><td>Cell table, feature matrix, morphology, boundaries</td></tr>
+      <tr><td class="num">2</td><td>Expert labels ≥ 70%</td><td>Cell identity is a judgement, not a computation</td></tr>
+      <tr><td class="num">3</td><td>User regions ≥ 70%</td><td>Tumour core vs edge is a judgement about <em>this</em> section</td></tr>
+      <tr><td class="num">4</td><td>≥ 2 biological classes</td><td>Marker statistics need a contrast</td></tr>
+      <tr><td class="num">5</td><td>≥ 2 regions</td><td>A region summary needs something to compare against</td></tr>
+      <tr><td class="num">6</td><td>Complete-section scope</td><td>A sampled subset cannot support a section-level claim</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="architecture">
+  <h2>Architecture</h2>
+  <p class="sub">Four entry points, one registry, one gate. The convergence is recent and is the most
+    important structural property in the system.</p>
+
+  <figure>
+    <svg viewBox="0 0 980 400" role="img" aria-label="Four entry points — the CLI orchestrator, the agent loop, the pilot script and the Studio API — all call one gatekeeper function before reaching the tool registry and the analysis backends.">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0,0 10,5 0,10" fill="currentColor"/>
+        </marker>
+        <marker id="ar2A" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0,0 10,5 0,10" fill="#4FC3CA"/>
+        </marker>
+      </defs>
+
+      <text x="112" y="26" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".6">ENTRY POINTS</text>
+      <rect x="20" y="42" width="184" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="112" y="62" text-anchor="middle" font-size="11.5" fill="currentColor">SpatialMindAgent</text>
+      <text x="112" y="78" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">non-Xenium data only</text>
+
+      <rect x="20" y="100" width="184" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="112" y="120" text-anchor="middle" font-size="11.5" fill="currentColor">SpatialAgent</text>
+      <text x="112" y="136" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">batch · session query</text>
+
+      <rect x="20" y="158" width="184" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="112" y="178" text-anchor="middle" font-size="11.5" fill="currentColor">run_pilot</text>
+      <text x="112" y="194" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">scripts · Studio pilot job</text>
+
+      <rect x="20" y="216" width="184" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="112" y="236" text-anchor="middle" font-size="11.5" fill="currentColor">Studio API</text>
+      <text x="112" y="252" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">POST /api/runs</text>
+
+      <line x1="204" y1="65" x2="286" y2="140" stroke="#4FC3CA" stroke-width="1.5" marker-end="url(#ar2A)"/>
+      <line x1="204" y1="123" x2="286" y2="146" stroke="#4FC3CA" stroke-width="1.5" marker-end="url(#ar2A)"/>
+      <line x1="204" y1="181" x2="286" y2="158" stroke="#4FC3CA" stroke-width="1.5" marker-end="url(#ar2A)"/>
+      <line x1="204" y1="239" x2="286" y2="164" stroke="#4FC3CA" stroke-width="1.5" marker-end="url(#ar2A)"/>
+      <text x="243" y="196" text-anchor="middle" font-size="10" fill="#4FC3CA">must call</text>
+
+      <rect x="290" y="118" width="186" height="72" rx="8" fill="none" stroke="#4FC3CA" stroke-width="2"/>
+      <text x="383" y="142" text-anchor="middle" font-size="12.5" fill="#4FC3CA">gatekeeper</text>
+      <text x="383" y="159" text-anchor="middle" font-size="10.5" fill="#4FC3CA" opacity=".85">require_gate_open()</text>
+      <text x="383" y="176" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">one decision, four outcomes</text>
+
+      <line x1="383" y1="190" x2="383" y2="250" stroke="#EA7A70" stroke-width="1.5" marker-end="url(#ar2)"/>
+      <text x="395" y="216" font-size="10.5" fill="#EA7A70">gated + shut</text>
+      <rect x="286" y="256" width="194" height="42" rx="6" fill="none" stroke="#EA7A70" stroke-width="1.4"/>
+      <text x="383" y="282" text-anchor="middle" font-size="11.5" fill="#EA7A70">GateBlockedError</text>
+
+      <line x1="476" y1="154" x2="536" y2="154" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar2)"/>
+      <text x="506" y="145" text-anchor="middle" font-size="10" fill="currentColor" opacity=".7">permitted</text>
+
+      <rect x="540" y="118" width="176" height="72" rx="7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <text x="628" y="142" text-anchor="middle" font-size="12" fill="currentColor">ToolRegistry</text>
+      <text x="628" y="160" text-anchor="middle" font-size="10.5" fill="#5FBE90">12 plannable</text>
+      <text x="628" y="177" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".55">18 scaffolds hidden</text>
+
+      <line x1="716" y1="154" x2="776" y2="154" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar2)"/>
+      <rect x="780" y="106" width="176" height="96" rx="7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <text x="868" y="130" text-anchor="middle" font-size="12" fill="currentColor">backends</text>
+      <text x="868" y="150" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">Scanpy</text>
+      <text x="868" y="167" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">Squidpy</text>
+      <text x="868" y="184" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">AnnData</text>
+
+      <text x="490" y="342" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".6">IMPORT LAYERING</text>
+      <rect x="290" y="352" width="400" height="34" rx="6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-dasharray="3 3"/>
+      <text x="490" y="373" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">gatekeeper imports only ingestion · tools · schemas · contracts</text>
+    </svg>
+    <figcaption>Every executor calls <code>require_gate_open</code> before it runs anything. It previously did
+      not: the Studio API enforced the gate in its UI only, the agent loop checked readiness rather than the
+      gate, and <code>SpatialMindAgent</code> never checked at all. The gatekeeper sits at the bottom of the import
+      graph so all four layers can reach it without a cycle; an import-linter contract keeps it there.</figcaption>
+  </figure>
+
+  <h3>The four outcomes</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Outcome</th><th>When</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill ok">not_required</span></td><td>No gated tool in the plan</td><td>Runs. The descriptive lane must stay open on an unreviewed section.</td></tr>
+      <tr><td><span class="pill ok">validated_ready</span></td><td>Gated tools, gate open</td><td>Runs. Claims permitted.</td></tr>
+      <tr><td><span class="pill warn">gate_not_evaluated</span></td><td>Gated tools on non-Xenium data</td><td>Runs, carrying a caveat the caller must record. The gate's conditions are Xenium assets; off a bundle it cannot be assessed, which is not a pass.</td></tr>
+      <tr><td><span class="pill stop">GateBlockedError</span></td><td>Gated tools, gate evaluable and shut</td><td>Refused, with blockers and required next inputs.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Layers</h3>
+  <div class="three">
+    <div class="card"><h4>Ingestion</h4><p>Reads ~6 MB of a 2.5 GB bundle into one <code>SpatialDataset</code>
+      contract. Keeps source counts and analysis values separate, and excludes QC pseudo-features from every
+      expression matrix — left in, they dominate PCA and rank as top markers.</p></div>
+    <div class="card"><h4>Tools</h4><p>30 registered, each with a capability state. Scaffolds are detected
+      from bytecode, so freezing the app cannot hide them. <code>list_plannable()</code> excludes them, so a
+      planner cannot select a tool that does no work.</p></div>
+    <div class="card"><h4>Claims</h4><p>Every biological statement enters a ledger as supported, dropped or
+      refused, and carries four evidence components combined by weakest link.</p></div>
+  </div>
+</section>
+
+
+<section id="layers">
+  <h2>The six tiers</h2>
+  <p class="sub">Read from the import graph, not from any docstring. Each tier depends only on tiers below
+    it; nothing reaches upward.</p>
+
+  <figure>
+    <svg viewBox="0 0 940 476" role="img" aria-label="Six dependency tiers from contracts at the bottom through capability, the gate, derived products, execution and surfaces at the top, with arrows showing that each tier depends only on those below it.">
+      <defs>
+        <marker id="arL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <polygon points="0,0 10,5 0,10" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <rect x="150" y="16" width="600" height="56" rx="7" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="172" y="40" font-size="12.5" fill="currentColor">6 · Surfaces</text>
+      <text x="172" y="58" font-size="10.5" fill="currentColor" opacity=".65">app · api · cli · batch · review · promotion</text>
+      <text x="726" y="47" text-anchor="end" font-size="11" fill="currentColor" opacity=".5">~5,330</text>
+
+      <rect x="150" y="90" width="600" height="56" rx="7" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="172" y="114" font-size="12.5" fill="currentColor">5 · Execution</text>
+      <text x="172" y="132" font-size="10.5" fill="currentColor" opacity=".65">agent · pilot · workflows</text>
+      <text x="726" y="121" text-anchor="end" font-size="11" fill="currentColor" opacity=".5">~3,880</text>
+
+      <rect x="150" y="164" width="600" height="56" rx="7" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="172" y="188" font-size="12.5" fill="currentColor">4 · Derived products</text>
+      <text x="172" y="206" font-size="10.5" fill="currentColor" opacity=".65">viz · methods · datasets · governance</text>
+      <text x="726" y="195" text-anchor="end" font-size="11" fill="currentColor" opacity=".5">~2,570</text>
+
+      <rect x="150" y="238" width="600" height="56" rx="7" fill="none" stroke="#4FC3CA" stroke-width="2"/>
+      <text x="172" y="262" font-size="12.5" fill="#4FC3CA">3 · The gate</text>
+      <text x="172" y="280" font-size="10.5" fill="#4FC3CA" opacity=".8">gatekeeper — the one tier whose job is to say no</text>
+      <text x="726" y="269" text-anchor="end" font-size="11" fill="#4FC3CA" opacity=".7">278</text>
+
+      <rect x="150" y="312" width="600" height="56" rx="7" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="172" y="336" font-size="12.5" fill="currentColor">2 · Capability</text>
+      <text x="172" y="354" font-size="10.5" fill="currentColor" opacity=".65">ingestion · tools · storage · memory · llm</text>
+      <text x="726" y="343" text-anchor="end" font-size="11" fill="currentColor" opacity=".5">~7,100</text>
+
+      <rect x="150" y="386" width="600" height="56" rx="7" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="172" y="410" font-size="12.5" fill="currentColor">1 · Contracts</text>
+      <text x="172" y="428" font-size="10.5" fill="currentColor" opacity=".65">contracts · schemas — imports nothing else</text>
+      <text x="726" y="417" text-anchor="end" font-size="11" fill="currentColor" opacity=".5">~860</text>
+
+      <line x1="120" y1="404" x2="120" y2="52" stroke="currentColor" stroke-width="1.3" marker-end="url(#arL)"/>
+      <text x="104" y="240" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".65" transform="rotate(-90 104 240)">depends on what is below</text>
+
+      <line x1="770" y1="266" x2="822" y2="266" stroke="#4FC3CA" stroke-width="1.4" marker-end="url(#arL)"/>
+      <text x="830" y="256" font-size="10.5" fill="#4FC3CA">reachable from</text>
+      <text x="830" y="272" font-size="10.5" fill="#4FC3CA">every tier above</text>
+      <text x="830" y="288" font-size="10" fill="currentColor" opacity=".55">without a cycle</text>
+
+      <rect x="150" y="312" width="600" height="56" rx="7" fill="none" stroke="none"/>
+      <text x="600" y="354" text-anchor="end" font-size="10" fill="#E0A84E">legacy here: algorithms · planner</text>
+    </svg>
+    <figcaption>The gate is thin and sits alone because of who has to reach it: it imports only
+      <code>ingestion</code>, <code>tools</code> and <code>schemas</code>, so every executing tier above can
+      call it without closing a loop. Five import-linter contracts hold this shape; the rest is convention.</figcaption>
+  </figure>
+
+  <h3>What each tier is for</h3>
+  <div class="two">
+    <div class="card">
+      <h4>1 · Contracts <span class="pill mute">~860</span></h4>
+      <p><code>SpatialDataset</code>, <code>SpotRecord</code>, <code>ToolResult</code>,
+      <code>ToolCallSpec</code>, <code>BiologicalClaim</code>. The vocabulary every tier speaks, which is
+      why a Xenium bundle, an H5AD and a CSV all become the same object. Imports nothing else in the
+      project — the moment the vocabulary imports a layer, every layer is coupled through it.</p>
+    </div>
+    <div class="card">
+      <h4>2 · Capability <span class="pill mute">~7,100</span></h4>
+      <p>Things that can do work while knowing no workflow exists. <code>ingestion</code> reads ~6 MB of a
+      2.5 GB bundle into one contract and keeps source counts separate from analysis values;
+      <code>tools</code> is the 30-tool registry with capability states; <code>storage</code> hashes run
+      records for replay. None of them knows a gate exists.</p>
+    </div>
+    <div class="card">
+      <h4>3 · The gate <span class="pill acc">278</span></h4>
+      <p>One file, one job: decide whether a tool may run. Deliberately thin and deliberately low, because
+      every executing tier has to reach it. <code>pilot_gate</code> was moved here from
+      <code>pilot.xenium</code> — that module imports <code>agent.runtime</code>, so an agent-layer caller
+      would have closed a cycle. A contract pins it: reach upward from this file and the build fails.</p>
+    </div>
+    <div class="card">
+      <h4>4 · Derived products <span class="pill mute">~2,570</span></h4>
+      <p>Results into artifacts: reports, figures, the explorer, the S/A/P/R reliability model, dataset
+      governance manifests. Contracted as pure consumers — <code>viz</code> and <code>storage</code> may not
+      import the agent or app, so rendering can never reach back and trigger analysis.</p>
+    </div>
+    <div class="card">
+      <h4>5 · Execution <span class="pill mute">~3,880</span></h4>
+      <p>Where a plan becomes a run. <code>agent</code> holds the loop, the typed-plan validator and the
+      claim-grounding checker; <code>pilot</code> is the validated Xenium path — gate, lanes, claim ledger,
+      report generation — and at 3,065 lines the largest single unit in the codebase.</p>
+    </div>
+    <div class="card">
+      <h4>6 · Surfaces <span class="pill mute">~5,330</span></h4>
+      <p>How a human or another program gets in: Studio, the FastAPI service, the CLI, the Celery worker,
+      the expert-review packet builders. <code>app</code> is contracted as a top layer nothing else may
+      import, so no lower tier can depend on the UI existing.</p>
+    </div>
+  </div>
+
+  <h3>Legacy components</h3>
+  <p class="sub">Two tier-2 modules are v1 survivors, now marked as such in their own docstrings.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Module</th><th>Superseded by</th><th>Still reachable from</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">algorithms.py<br><span style="color:var(--ink-3)">AlgorithmEngine, 3 tools</span></td>
+          <td class="mono">tools<br><span style="color:var(--ink-3)">ToolRegistry, 30 tools</span></td>
+          <td class="mono">SpatialMindAgent</td></tr>
+      <tr><td class="mono">planner.py<br><span style="color:var(--ink-3)">LLMReasoningLayer</span></td>
+          <td class="mono">agent.runtime + app.planner</td>
+          <td class="mono">SpatialMindAgent</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose" style="margin-top:15px">
+    <p>Both are reachable only through <code>SpatialMindAgent</code>, and only with <strong>non-Xenium</strong>
+    data: the CLI and <code>POST /runs</code> each check the data type first and route a Xenium bundle to
+    <code>run_pilot</code>. <code>--replay-run-id</code> adds no route of its own, since only the orchestrator
+    writes the <code>source_path</code> that branch reads. The legacy stack is confined to the demo and
+    non-Xenium formats — though <code>DataIngestionLayer.load</code> still accepts a Xenium directory, which
+    is why a direct library call had to be gated too.</p>
+    <p>The tool sets are <strong>disjoint</strong>: nothing in <code>AlgorithmEngine</code> appears in
+    <code>ToolRegistry</code>. That is why the gatekeeper classifies two of them as label-gated <em>by
+    name</em> — preconditions cannot do it, because these tools are not in the registry that carries
+    preconditions.</p>
+    <p>Neither is deleted, because removing them means deciding what <code>SpatialMindAgent</code> should run
+    instead. That is the parallel-stacks question: four execution paths and three tool registries, alive
+    because nothing ever forced a choice.</p>
+  </div>
+
+  <div class="note"><b>Three self-descriptions that disagreed.</b> <code>orchestrator.py</code> said "six
+    layers" and named the v1 set — ingestion, algorithms, reasoning, visualization, storage, memory —
+    omitting <code>tools</code>, <code>pilot</code>, <code>gatekeeper</code> and <code>app</code>, two of the
+    six it named being themselves legacy. <code>__init__.py</code>'s <code>__all__</code> listed fifteen
+    names, flat. The import graph said the six tiers above. The most authoritative-sounding one was the most
+    out of date; it has been corrected.</div>
+</section>
+
+<section id="lanes">
+  <h2>The two lanes</h2>
+  <p class="sub">The same backends, the same data, different licence to speak.</p>
+  <div class="two">
+    <div class="card">
+      <h4><span class="pill warn">descriptive</span> runs on any section</h4>
+      <p style="margin-top:9px">Per-cell QC, normalisation, PCA, Leiden clustering on expression;
+      per-cluster markers; Moran's I over a spatial kNN graph; cluster-level adjacency.</p>
+      <div style="margin-top:11px">
+        <div class="kv"><span>names</span><b>cluster 4, cluster 7</b></div>
+        <div class="kv"><span>cannot say</span><b>astrocyte</b></div>
+        <div class="kv"><span>measured runtime</span><b>67.8 s / 24k cells</b></div>
+      </div>
+    </div>
+    <div class="card">
+      <h4><span class="pill ok">validated</span> needs the gate open</h4>
+      <p style="margin-top:9px">Annotation of reviewed labels; one-vs-rest markers per cell type; region
+      composition and feature means; cell-type neighbourhood enrichment with permutation z-scores.</p>
+      <div style="margin-top:11px">
+        <div class="kv"><span>names</span><b>astrocyte, tumor_core</b></div>
+        <div class="kv"><span>claims</span><b>scored, weakest-link</b></div>
+        <div class="kv"><span>measured runtime</span><b>29.1 s / 5 tools</b></div>
+      </div>
+    </div>
+  </div>
+  <div class="note"><b>Grouping decides the lane, not the tool.</b> <code>marker_detection</code> with
+    <code>group_key=leiden</code> is descriptive and runs today; the same tool with
+    <code>group_key=cell_type</code> is gated. The lane is a property of the call.</div>
+</section>
+
+<section id="functions">
+  <h2>Functions</h2>
+
+  <h3>Tools — 12 of 30 are real</h3>
+  <p class="sub">The other 18 are registered scaffolds that return a placeholder. They stay visible and stay
+    disabled: a user who discovers on their own that a tool does nothing stops trusting the ones that work.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Tool</th><th>Backend</th><th>Lane</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">qc_and_cluster</td><td>Scanpy</td><td><span class="pill warn">descriptive</span></td><td>QC → normalize → log1p → PCA → neighbours → Leiden</td></tr>
+      <tr><td class="mono">spatial_variable_genes</td><td>Squidpy</td><td><span class="pill warn">descriptive</span></td><td>Moran's I; genes screened before permutation, FDR over the tested set</td></tr>
+      <tr><td class="mono">spatial_clustering</td><td>Scanpy</td><td><span class="pill warn">descriptive</span></td><td>Unsupervised tissue domains</td></tr>
+      <tr><td class="mono">marker_detection</td><td>Scanpy</td><td><span class="pill warn">descriptive</span></td><td>One-vs-rest markers per group</td></tr>
+      <tr><td class="mono">cell_neighborhood_enrichment</td><td>Squidpy</td><td><span class="pill warn">descriptive</span></td><td>Permutation z-scores for adjacency</td></tr>
+      <tr><td class="mono">feature_overlay</td><td>—</td><td><span class="pill warn">descriptive</span></td><td>Single feature in space, guarded against absence from the panel</td></tr>
+      <tr><td class="mono">annotation</td><td>—</td><td><span class="pill ok">gated</span></td><td>Summarises applied expert labels</td></tr>
+      <tr><td class="mono">cell_type_annotation</td><td>CellTypist</td><td><span class="pill ok">gated</span></td><td>Assign or validate a label per cell</td></tr>
+      <tr><td class="mono">reference_label_transfer</td><td>Scanpy ingest</td><td><span class="pill ok">gated</span></td><td>Transfer from a reference over shared features</td></tr>
+      <tr><td class="mono">region_summary</td><td>—</td><td><span class="pill ok">gated</span></td><td>Composition and feature means per reviewed region</td></tr>
+      <tr><td class="mono">neighborhood_enrichment</td><td>Squidpy</td><td><span class="pill ok">gated</span></td><td>Which cell-type pairs co-localise</td></tr>
+      <tr><td class="mono">differential_expression</td><td>Scanpy</td><td><span class="pill ok">gated</span></td><td>Genes up between two named groups</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><b>Hidden, not deleted:</b> <code>cnv_inference</code>, <code>ligand_receptor_analysis</code>,
+    <code>spatial_deconvolution</code>, <code>pathway_activity</code>, <code>trajectory_inference</code>,
+    <code>tissue_segmentation</code>, <code>multi_sample_comparison</code> and 11 others. Ask the agent for
+    copy-number inference and it refuses and <em>names</em> <code>cnv_inference</code> rather than
+    substituting a near-miss.</div>
+
+  <h3>Studio — seven surfaces</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Surface</th><th>Job to be done</th><th>Backed by</th></tr></thead>
+    <tbody>
+      <tr><td><b>Datasets</b></td><td>What do I have, and how far is each from an answer?</td><td class="mono">folder scan</td></tr>
+      <tr><td><b>Readiness</b></td><td>Why can't this run, and what clears it?</td><td class="mono">pilot_gate()</td></tr>
+      <tr><td><b>Review Studio</b></td><td>Label cells and draw regions without writing a CSV</td><td class="mono">cell index + writers</td></tr>
+      <tr><td><b>Ask</b></td><td>Answer my question, or tell me you can't</td><td class="mono">planner.propose</td></tr>
+      <tr><td><b>Tool Bench</b></td><td>I know the method I want</td><td class="mono">ToolRegistry</td></tr>
+      <tr><td><b>Runs</b></td><td>What happened, and can I reproduce it?</td><td class="mono">run records</td></tr>
+      <tr><td><b>Resources</b></td><td>What does labelling still need, and what will it buy?</td><td class="mono">/api/resources</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Review Studio, and why it opens in a second</h3>
+  <div class="prose">
+    <p>Clicking a cell selects its whole 10x cluster; applying a Cell Ontology term writes every cell in that
+    cluster. Dragging a rectangle names a region. Both <strong>merge</strong> into the bundle's tables rather
+    than overwriting, so a second session cannot erase the first.</p>
+    <p>The map needs an id, a coordinate and a group — not expression. Reading <code>cells.parquet</code> plus
+    the cluster table builds that index in <strong>1.55 s using 97 MB</strong>, against <strong>6.32 s and
+    507 MB</strong> for a full load: 4.1× faster, 5.2× lighter. The browser gets a display sample; selections
+    resolve <em>server-side over every cell</em>, so coverage and the gate are computed on the whole section,
+    not on what was drawn.</p>
+  </div>
+
+  <h3>Choosing a tool — three routes, one object</h3>
+  <div class="three">
+    <div class="card"><h4>Ask</h4><p>A question routes to a typed plan with reasoning shown. Refuses and names
+      the missing tool when only a scaffold could answer.</p></div>
+    <div class="card"><h4>Recipes</h4><p>Four saved plans: descriptive lane, validated pilot, spatial structure
+      only, region contrast.</p></div>
+    <div class="card"><h4>Tool Bench</h4><p>The full catalog with preconditions and runtimes. Dependencies are
+      inserted automatically; scaffolds cannot be selected.</p></div>
+  </div>
+  <p class="prose" style="margin-top:14px">All three produce the same <code>ToolCallSpec</code> list that the
+  real validator checks before execution. Plan validation checks <em>structure</em>; whether the inputs exist
+  is the gate's job — which is why a gate-blocked plan still validates as sound rather than inventing fake
+  plan errors.</p>
+</section>
+
+<section id="reliability">
+  <h2>Reliability</h2>
+  <p class="sub">Four evidence components, combined by weakest link — not averaged, because a missing
+    evidence class should not average away.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Component</th><th>Asks</th><th>Typical</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">S_statistical</td><td>Is there a spatial statistic behind this?</td><td class="num">1.000</td></tr>
+      <tr><td class="mono">A_annotation</td><td>How complete and confident are the labels?</td><td class="num">0.862</td></tr>
+      <tr><td class="mono">P_panel</td><td>Does the panel measure the markers this claim needs?</td><td class="num">0.500–0.667</td></tr>
+      <tr><td class="mono">R_spatial_robustness</td><td>Does it survive a graph-size sweep?</td><td class="num">0.964–1.000</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note stop"><b>The panel is the binding constraint on every claim.</b> In three claims out of
+    three, the limiting component was <code>P_panel</code>. A reviewer who labels every cell perfectly moves
+    <code>A</code> to 1.0 and the reliability of those claims <em>does not move at all</em>. The brain panel
+    measures 34 of 51 canonical markers — ceiling <b>0.67</b> — and GFAP, the canonical astrocyte marker, is
+    not on it. Endothelial and stromal identification start at 0.33. Labelling buys <em>which claims are
+    possible</em>, not <em>how reliable they are</em>.</div>
+
+  <div class="note ok"><b>Calibrated against controls that are actually run.</b> Positive controls interleave
+    two real cell-type names in stripes; negatives permute those same labels among the same cells. Matched on
+    vocabulary, composition, coverage and pair count — everything but spatial arrangement. AUROC
+    <b>0.975</b>. Getting the match wrong first found a real bug: statistical strength took an unadjusted
+    maximum over cell-type pairs, so more cell types bought more strength for free, and the null out-ranked
+    implanted truth at AUROC 0.35. The fitted model is deliberately <em>not</em> deployed — only S varies in
+    that design, 18 records over 4 features, no held-out split.</div>
+</section>
+
+<section id="state">
+  <h2>Current state</h2>
+
+  <div class="two">
+    <div class="card">
+      <h4>Verification</h4>
+      <div style="margin-top:10px">
+        <div class="kv"><span>unit + integration</span><b>227 / 227</b></div>
+        <div class="kv"><span>legacy eval cases</span><b>16 / 16</b></div>
+        <div class="kv"><span>MVP eval cases</span><b>13 / 13</b></div>
+        <div class="kv"><span>eval suite invariants</span><b>4 / 4</b></div>
+        <div class="kv"><span>import contracts</span><b>5 / 5</b></div>
+        <div class="kv"><span>packaged-app smoke</span><b>11 / 11</b></div>
+      </div>
+    </div>
+    <div class="card">
+      <h4>Datasets</h4>
+      <div style="margin-top:10px">
+        <div class="kv"><span>Human Breast Biomarkers S1</span><b style="color:var(--stop)">blocked</b></div>
+        <div class="kv"><span>Brain Glioblastoma</span><b style="color:var(--stop)">blocked</b></div>
+        <div class="kv"><span>Brain Healthy</span><b style="color:var(--stop)">blocked</b></div>
+        <div class="kv"><span>Lymph node</span><b style="color:var(--stop)">blocked</b></div>
+      </div>
+      <p style="margin-top:10px;font-size:12px;color:var(--ink-3)">All four at 0% labels and 0% regions. That
+      is the gate working, not failing.</p>
+    </div>
+  </div>
+
+  <h3>Reference atlases and candidate labels</h3>
+  <p class="sub">Nine <code>.h5ad</code> references on disk. Together they cover every lineage either brain
+    section carries, and — since 14 Sep — a tumour class.</p>
+  <div class="two">
+    <div class="card">
+      <h4>Core GBmap <span class="pill ok">obtained</span></h4>
+      <div style="margin-top:9px">
+        <div class="kv"><span>cells</span><b>338,564 human</b></div>
+        <div class="kv"><span>classes</span><b>17, incl. malignant cell</b></div>
+        <div class="kv"><span>panel overlap</span><b>316 of 339 genes</b></div>
+        <div class="kv"><span>on disk</span><b>7.6 GB</b></div>
+      </div>
+      <p style="margin-top:10px;font-size:12.5px;color:var(--ink-3)">One reference does what seven Human
+      Brain Atlas superclusters could not: none of them can name a tumour cell.</p>
+    </div>
+    <div class="card">
+      <h4>Candidate labels, glioblastoma section</h4>
+      <div style="margin-top:9px">
+        <div class="kv"><span>cells labelled</span><b>2,497</b></div>
+        <div class="kv"><span>classes assigned</span><b>14</b></div>
+        <div class="kv"><span>low confidence</span><b>631</b></div>
+        <div class="kv"><span>flagged for review</span><b>844</b></div>
+        <div class="kv"><span>status</span><b>awaiting_expert_review</b></div>
+      </div>
+      <p style="margin-top:10px;font-size:12.5px;color:var(--ink-3)">Predictions, not labels. The gate does
+      not accept this file.</p>
+    </div>
+  </div>
+
+  <div class="note stop"><b>The malignant count is not a measurement.</b> The same reference and the same
+    algorithm call <b>955</b> or <b>71</b> of those 2,497 cells malignant, depending only on how the
+    reference is sampled — a 13.5× swing with no change to the target data. A proportional draw keeps the
+    atlas's own prior and lets the majority class dominate a neighbour vote; a stratified draw gives every
+    class equal weight and discards that prior. Stratification is used because a class absent from the sample
+    can never be assigned at all, which is the worse failure — but it is a trade, not a correction.</div>
+
+  <div class="note"><b>Loading it needed a streaming reader, for two silent reasons.</b> anndata's backed
+    mode covers <code>X</code> only, and this file's <code>layers</code> total 37 GB uncompressed, so a backed
+    open was killed before sampling one cell — and the fallback was a full in-memory read, which is worse.
+    And CELLxGENE keys <code>var</code> by Ensembl ID with symbols in <code>feature_name</code>, while a
+    Xenium panel is symbols: reading the index gives an overlap of <em>zero</em>, which is not an error that
+    announces itself but a confident answer computed from nothing. Reading the wanted rows through h5py:
+    2,000 cells in 7.8 s at 0.57 GB peak.</div>
+
+  <h3>Packaging</h3>
+  <div class="prose">
+    <p>Ships as a macOS <code>.app</code> — a <code>WKWebView</code> in a native window over a server bound to
+    <code>127.0.0.1</code>, dark chrome end to end, icon on Apple's template. <strong>Intel only.</strong>
+    PyInstaller freezes installed wheels and 400 of 414 native extensions here are <code>x86_64</code>-only,
+    so a universal binary cannot be produced from one machine. A CI matrix on <code>macos-13</code> and
+    <code>macos-14</code> builds both; the arm64 half has not been run.</p>
+  </div>
+</section>
+
+<section id="gaps">
+  <h2>Known gaps</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Gap</th><th>Consequence</th><th>What would close it</th></tr></thead>
+    <tbody>
+      <tr><td><b>No expert labels anywhere</b></td><td>No validated run has ever used real expert labels; every one used <code>SYNTHETIC_GATE_DEMO_NOT_AN_EXPERT</code></td><td>~1,600 reviewed cells at a 2,000-cell run</td></tr>
+      <tr><td><b>Panel ceiling 0.67</b></td><td>Every claim on this assay is capped regardless of review effort</td><td>A larger panel or a second modality — a data decision, not software</td></tr>
+      <tr><td><b>No human malignant reference</b> <span class="pill ok">obtained</span></td>
+          <td>Candidate labels could name astrocyte but never a tumour cell; the only tumour reference present was mouse, which the preflight refuses.</td>
+          <td>Done: Core GBmap from CELLxGENE — 338,564 human cells, 17 classes including <code>malignant cell</code>, 316-gene panel overlap. Loading it needed a streaming reader; see below.</td></tr>
+      <tr><td><b>Candidate labels swing on reference sampling</b> <span class="pill warn">open</span></td>
+          <td>The same file and algorithm call <b>955</b> or <b>71</b> of 2,497 cells malignant depending only on how the reference is sampled — a 13.5× swing.</td>
+          <td>Unresolved by design. Proportional sampling keeps the atlas prior and lets the majority class dominate the vote; stratified sampling gives equal weight and discards it. Treat the count as a review starting point, not a measurement.</td></tr>
+      <tr><td><b>Eval suites only reached the router</b> <span class="pill ok">addressed</span></td>
+          <td>Every case scored which tools the router chose, so neither the scaffold bug nor the gate hole was reachable. Three cases actively asserted that scaffolds <em>run</em>.</td>
+          <td>Done: suite invariants that assert on the registry and gatekeeper directly and provably fail under each regression; <code>forbidden_tools</code> per case; the three wrong cases corrected. Remaining: cases on real sections rather than the synthetic manifest.</td></tr>
+      <tr><td><b>Scaffolds could execute</b> <span class="pill ok">fixed</span></td>
+          <td><code>list_plannable()</code> hid them from planners, but <code>get(name).run(...)</code> ran one for anyone asking by name — and the v1 router asks. The trace recorded a successful call whose result was a placeholder.</td>
+          <td>Done: <code>SpatialTool.run</code> refuses when capability is <code>unavailable</code>. Found by the new eval cases on their first run.</td></tr>
+      <tr><td><b>Parallel stacks</b></td><td>Four execution paths and three tool registries; <code>AlgorithmEngine</code> holds 3 tools disjoint from the 30</td><td>Collapse to one, delete the rest</td></tr>
+      <tr><td><b>Reliability uncalibrated for biology</b></td><td>Scores are conservative floors, not probabilities a claim is true</td><td>A reviewed claim-truth table</td></tr>
+      <tr><td><b>Intel-only build</b></td><td>Apple Silicon users have no binary</td><td>Run the <code>macos-14</code> CI job</td></tr>
+      <tr><td><b>Not notarised</b></td><td>First launch needs right-click → Open</td><td>An Apple Developer ID</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>
+  <span>Reproduce: <code>make test</code> · <code>make eval</code> · <code>make eval-studio</code> · <code>make calibrate</code></span>
+  <span>docs/agent_architecture.md · docs/spatialmind_studio.md · docs/agent_evaluation.md</span>
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import asdict
-from math import exp
+from math import erfc, exp, log10, sqrt
 from typing import Any, Dict, List, Optional
 
 from spatialmind.contracts import ClaimReliability, MetricProvenance, ReliabilityComponent
@@ -100,6 +100,26 @@ def calibrated_score(scores: Dict[str, float], calibration_model: Optional[Dict[
     return round(1.0 / (1.0 + exp(-linear)), 4), "computed", dict(calibration_model)
 
 
+def _evidence_strength(p_value: float) -> float:
+    """Map an adjusted p-value to [0, 1], graded rather than cliffed.
+
+    The previous mapping was `1 - min(1, p * 20)`: zero at p >= 0.05 and linear
+    below it. That is a cliff, not a scale. Against matched controls it drove
+    most runs to exactly 0.000 on both arms -- including implanted structure at
+    p = 0.066 -- so genuinely different evidence became indistinguishable.
+
+    Orders of magnitude are how p-values are read, so scale by -log10 and treat
+    three orders below one as full strength: p = 0.05 -> 0.43, p = 0.01 -> 0.67,
+    p = 0.001 -> 1.00. Monotone in p, no discontinuity. Chosen for those
+    properties, not by maximising separation on the controls.
+    """
+    if p_value <= 0.0:
+        return 1.0
+    if p_value >= 1.0:
+        return 0.0
+    return round(min(1.0, max(0.0, -log10(p_value) / 3.0)), 6)
+
+
 def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> ReliabilityComponent:
     claim_type = str(claim.get("claim_type") or "")
     if claim_type in {"visual_pattern", "cell_type_annotation"}:
@@ -112,18 +132,39 @@ def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> 
         )
     best = 0.0
     evidence: List[str] = []
+    # The number of pairs the tool *tested*, not the number it *reported*.
+    # `top_pairs` is truncated to ten for display, so a run that tested 45 pairs
+    # was Bonferroni-corrected by 10 -- a 4.5x under-correction that moved with a
+    # display setting, so raising the top-N would have silently made the
+    # statistics stricter. `tested_pair_count` was already in the same metrics
+    # dict, unused.
+    tested = sum(_tested_pair_count(result) for result in results)
     for result in results:
         for pair in _top_pairs(result):
             z = _safe_float(pair.get("zscore") or pair.get("neighbor_count"))
             p = _safe_float(pair.get("pval_adj") or pair.get("p_adj") or pair.get("pvalue") or pair.get("pval"))
             component = 0.0
-            if z is not None:
-                component = max(component, min(1.0, abs(z) / 5.0))
             if p is not None:
-                component = max(component, 1.0 - min(1.0, p * 20.0))
+                # An adjusted p-value already accounts for the pair count.
+                component = _evidence_strength(p)
+            elif z is not None:
+                # Squidpy's neighborhood enrichment reports a z-score and no
+                # p-value, so this is the branch that actually runs. Scoring
+                # `max|z| / 5` over every pair was an unadjusted maximum: an arm
+                # with ten cell types draws its maximum from 55 pairs while a
+                # two-type arm draws from 3, and the larger draw wins on pair
+                # count alone. Measured against matched controls that inverted
+                # the score -- a permutation null out-scored implanted structure,
+                # AUROC 0.35. Converting to a two-sided p and correcting by the
+                # number of pairs tested puts both on the same footing.
+                two_sided = erfc(abs(z) / sqrt(2.0))
+                adjusted = min(1.0, two_sided * max(tested, 1))
+                component = _evidence_strength(adjusted)
             if component > best:
                 best = component
                 evidence = ["%s:%s" % (result.tool_name, pair.get("pair", "top_pair"))]
+    if evidence:
+        evidence.append("pairs_tested:%d" % tested)
     if best <= 0.0:
         return ReliabilityComponent(
             name="S_statistical",
@@ -137,7 +178,9 @@ def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> 
         score=round(best, 4),
         status="computed",
         evidence=evidence,
-        caveat="Statistical strength is heuristic until calibrated against ground-truth positive/negative controls.",
+        caveat="Strength is the best pair's evidence, Bonferroni-corrected by the number of pairs tested. "
+               "Calibrated against matched permutation-null and stripe-implant controls (AUROC 0.98); "
+               "those controls establish separation from noise, not biological truth.",
     )
 
 
@@ -150,8 +193,31 @@ def _annotation_component(claim: Dict[str, Any], payload: Dict[str, Any]) -> Rel
     coverage = _clip(matched / total)
     confidence = _safe_float((label_report.get("confidence_summary") or {}).get("mean"))
     if status == "expert_labels_applied":
-        score = coverage * (confidence if confidence is not None else 0.85)
-        caveat = "Expert labels were applied; score reflects coverage and reviewer confidence."
+        # Coverage alone. It used to be `coverage * confidence`, where confidence
+        # is whatever number the reviewer's tool wrote -- and the Studio writes a
+        # hard-coded 0.9 for every row, so the second factor was a constant that
+        # scaled every claim in every report by 0.9 while looking like evidence.
+        # Multiplying a measurement by a default is not a measurement.
+        #
+        # Stated confidence and the number of review decisions behind the
+        # coverage are reported beside the score instead, where a reader can
+        # weigh them: 90% coverage from eleven cluster clicks and 90% from
+        # 22,000 per-cell calls are the same percentage and not the same evidence.
+        score = coverage
+        decisions = int(label_report.get("review_decisions") or 0)
+        caveat = (
+            "Expert labels were applied; the score is coverage of the loaded cells. "
+            "%s%s Coverage is not review depth: a label table can cover a whole "
+            "section from a handful of cluster-level decisions."
+            % (
+                "Mean stated reviewer confidence %.2f (not folded into the score). " % confidence
+                if confidence is not None
+                else "The table stated no reviewer confidence. ",
+                "It records %d review decision%s. " % (decisions, "" if decisions == 1 else "s")
+                if decisions
+                else "It records no assignment scope, so the number of review decisions is unknown. ",
+            )
+        )
         component_status = "computed"
     elif claim_type == "visual_pattern" and "asset_readiness" in (claim.get("evidence_refs") or []):
         score = 0.75
@@ -165,7 +231,12 @@ def _annotation_component(claim: Dict[str, Any], payload: Dict[str, Any]) -> Rel
         name="A_annotation",
         score=round(_clip(score), 4),
         status=component_status,
-        evidence=["label_status:%s" % (status or "missing"), "label_coverage:%.4f" % coverage],
+        evidence=[
+            "label_status:%s" % (status or "missing"),
+            "label_coverage:%.4f" % coverage,
+            "review_decisions:%s" % (label_report.get("review_decisions") or "unknown"),
+            "stated_confidence:%s" % ("%.2f" % confidence if confidence is not None else "none"),
+        ],
         caveat=caveat,
     )
 
@@ -180,16 +251,39 @@ def _panel_component(claim: Dict[str, Any], payload: Dict[str, Any]) -> Reliabil
         status = "computed" if n_features else "blocked"
         caveat = "Panel exists, but this refused claim cannot rely on panel adequacy alone."
     else:
+        # Panel adequacy asks whether this panel measures the markers a claim
+        # depends on. Reading that out of the claim's English sentence only works
+        # when the sentence happens to name a cell type -- and the pilot's claims
+        # are capability statements ("Expert-reviewed cell labels are available
+        # ..."), which never do. Every claim therefore scored the 0.8 fallback,
+        # and since reliability is a weakest link, 0.8 silently became the ceiling
+        # for every claim in every Xenium report regardless of evidence.
+        #
+        # The labels actually applied to the dataset answer the same question
+        # without parsing prose, so fall back to them before falling back to a
+        # constant.
         relevant = _markers_for_claim(claim_text)
+        basis = "cell types named in the claim"
         if not relevant:
-            score = 0.8 if n_features else 0.0
-            caveat = "No specific marker family was parsed from the claim; score reflects general panel availability."
+            relevant = _markers_for_applied_labels(payload)
+            basis = "cell types present in the dataset"
+        if relevant:
+            # Only real panel features count as measured. Seeding this from
+            # `cell_types` compared label text against gene symbols, so a cell
+            # type sharing a name with a gene scored as if the gene were measured.
+            measured = _features_from_payload(payload)
+            overlap = len(relevant & measured)
+            score = overlap / float(len(relevant))
+            caveat = (
+                "Panel adequacy is the share of canonical markers for the %s that this panel measures "
+                "(%d of %d)." % (basis, overlap, len(relevant))
+            )
         else:
-            measured = {gene.upper() for gene in (payload.get("cell_types") or [])}
-            measured.update(_features_from_payload(payload))
-            overlap = len({gene.upper() for gene in relevant} & measured)
-            score = overlap / float(max(len(relevant), 1))
-            caveat = "Panel adequacy reflects marker coverage for parsed claim terms."
+            score = 0.8 if n_features else 0.0
+            caveat = (
+                "No cell type was named in the claim and none is applied to the dataset; score reflects "
+                "general panel availability only."
+            )
         status = "computed" if n_features else "blocked"
     return ReliabilityComponent(
         name="P_panel",
@@ -266,7 +360,26 @@ def _interpret_reliability(
     claim: Dict[str, Any],
     components: Dict[str, ReliabilityComponent],
 ) -> str:
-    lowest = min(components.values(), key=lambda component: component.score)
+    # Rank only the components that actually constrain this claim. A component
+    # that short-circuits to 1.0 for "not applicable" can never be the minimum,
+    # but a *blocked* one at 0.0 can be and should be named.
+    applicable = {
+        name: component
+        for name, component in components.items()
+        if component.status != "not_applicable"
+    } or dict(components)
+    lowest = min(applicable.values(), key=lambda component: component.score)
+
+    # A refused or dropped claim still gets a row, and grading it "moderate"
+    # described the strength of something the ledger had already declined to
+    # state. Say what happened instead of scoring it.
+    if str(claim.get("status") or "") in {"refused", "dropped"}:
+        return (
+            "This claim was not made (%s), so the score below describes the evidence that was available, "
+            "not a conclusion. Weakest available component: %s=%.2f. %s"
+            % (claim.get("status"), lowest.name, lowest.score, lowest.caveat)
+        )
+
     if reliability >= 0.8:
         level = "high"
     elif reliability >= 0.5:
@@ -279,6 +392,20 @@ def _interpret_reliability(
         "Claim reliability is %s (%.2f). Limiting component: %s=%.2f. %s"
         % (level, reliability, lowest.name, lowest.score, lowest.caveat)
     )
+
+
+def _tested_pair_count(result: ToolResult) -> int:
+    """How many pairs this result's test actually covered.
+
+    Falls back to the reported pair count for a result that predates the metric,
+    which under-corrects rather than over-corrects -- but a missing count cannot
+    be invented, and the fallback is the old behaviour rather than a new guess.
+    """
+    metrics = result.metrics or {}
+    count = _safe_float(metrics.get("tested_pair_count"))
+    if count is not None and count > 0:
+        return int(count)
+    return len(_top_pairs(result))
 
 
 def _top_pairs(result: ToolResult) -> List[Dict[str, Any]]:
@@ -294,7 +421,25 @@ def _markers_for_claim(claim_text: str) -> set[str]:
     for label, genes in DEFAULT_CELL_MARKERS.items():
         if label in claim_text:
             markers.update(genes)
-    return markers
+    return {gene.upper() for gene in markers}
+
+
+def _markers_for_applied_labels(payload: Dict[str, Any]) -> set[str]:
+    """Canonical markers for the cell types actually applied to this dataset.
+
+    Resolves each label to a broad lineage and unions that lineage's markers.
+    Reuses the lineage table in `spatialmind.tools.implementations` rather than
+    keeping a second copy here: the reference-coverage check already depends on
+    it, and two marker tables would drift apart silently.
+    """
+    from spatialmind.tools.implementations import LINEAGE_MARKERS, lineage_for_label
+
+    markers: set[str] = set()
+    for label in payload.get("cell_types") or []:
+        lineage = lineage_for_label(str(label))
+        if lineage:
+            markers.update(LINEAGE_MARKERS.get(lineage, ()))
+    return {gene.upper() for gene in markers}
 
 
 def _features_from_payload(payload: Dict[str, Any]) -> set[str]:

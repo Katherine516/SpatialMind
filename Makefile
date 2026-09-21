@@ -1,4 +1,4 @@
-.PHONY: dev install install-dev install-deep test eval inspect-data lint check-versions import-lint
+.PHONY: dev install install-dev install-deep test test-studio eval eval-studio inspect-data lint check-versions import-lint studio build-macos smoke-macos calibrate
 
 dev:
 	docker compose up -d redis postgres minio
@@ -14,6 +14,24 @@ install-deep:
 
 test:
 	python3 -m unittest discover -s tests -p 'test_*.py'
+
+test-studio:
+	python3 -m unittest discover -s tests -p 'test_studio_app.py' -v
+
+studio:
+	python3 -m spatialmind.app --data-root data
+
+build-macos:
+	python3 scripts/build_macos_app.py --clean --dmg
+
+smoke-macos:
+	python3 scripts/smoke_test_macos_app.py
+
+calibrate:
+	python3 scripts/calibrate_claim_reliability.py --out outputs/claim_calibration
+
+eval-studio:
+	python3 scripts/evaluate_studio_workflow.py --out outputs/studio_evaluation
 
 eval:
 	python3 -m eval.runner --cases eval/test_cases --data data/demo_manifest.json --out outputs/eval_report.json

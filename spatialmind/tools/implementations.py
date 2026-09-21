@@ -1,9 +1,11 @@
 import math
+import os
 import random
 import warnings
+import weakref
 from collections import Counter, defaultdict
 from dataclasses import asdict, is_dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from spatialmind.contracts.metrics import (
     AnnotationMetrics,
@@ -14,9 +16,32 @@ from spatialmind.contracts.metrics import (
     SpatialMetrics,
     metric,
 )
-from spatialmind.schemas import SpatialDataset, ToolResult
+from spatialmind.schemas import (
+    CONTROL_FEATURE_PREFIXES,
+    NON_EXPRESSION_FEATURE_NAMES,
+    SpatialDataset,
+    ToolResult,
+    control_feature_names,
+    expression_feature_names as _expression_feature_names,
+    is_control_feature,
+)
 
 from .exceptions import DataModalityError, InsufficientDataError, InvalidParameterError, MissingPreconditionError
+
+
+def _add_caveats(result: ToolResult, extra: List[str]) -> None:
+    """Append caveats the result is not already carrying.
+
+    The loader writes the targeted-panel caveat into ``dataset.notes``, and
+    ``_type_honesty_caveats`` derives the same sentence from the metadata so a
+    tool that never reads notes still states it. A wrapper that composes both --
+    ``qc_and_cluster``, ``annotation``, ``cell_neighborhood_enrichment`` -- then
+    printed the line twice in the report. Appending through here keeps both
+    sources without repeating either.
+    """
+    for caveat in extra:
+        if caveat not in result.caveats:
+            result.caveats.append(caveat)
 
 
 def require_records(dataset: SpatialDataset) -> None:
@@ -50,7 +75,7 @@ def qc_and_cluster(dataset: SpatialDataset, params: Dict[str, object]) -> ToolRe
     result.summary = "Ran per-type QC and clustering. %s" % result.summary
     result.metrics["qc"] = dict(dataset.qc_metrics)
     result.metrics["assay_subtype"] = dataset.metadata.get("assay_subtype", dataset.modality)
-    result.caveats.extend(_type_honesty_caveats(dataset))
+    _add_caveats(result, _type_honesty_caveats(dataset))
     return result
 
 
@@ -59,8 +84,19 @@ def annotation(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult
     result.tool_name = "annotation"
     result.metrics["assay_subtype"] = dataset.metadata.get("assay_subtype", dataset.modality)
     caveats = _type_honesty_caveats(dataset)
-    result.caveats.extend(caveats)
+    _add_caveats(result, caveats)
     result.label_caveat = caveats[0] if caveats else None
+
+    # This is the tool that turns a reviewer's table into named cell types, so
+    # it is where the names get read back against the measurements. Reported,
+    # never enforced: the reviewer is the authority on what the labels say, and
+    # the run's job is to make sure they are told when the data disagrees.
+    audit = audit_labels_against_markers(dataset)
+    result.metrics["label_marker_audit"] = audit
+    disagreement_caveats = label_audit_caveats(audit)
+    if disagreement_caveats:
+        _add_caveats(result, disagreement_caveats)
+        result.label_caveat = disagreement_caveats[0]
     return result
 
 
@@ -94,19 +130,19 @@ def feature_overlay(dataset: SpatialDataset, params: Dict[str, object]) -> ToolR
 
 
 def spatial_deconvolution(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
+    # Previously counted the labels it was handed and reported the shares as
+    # "estimated cell-type proportions". Deconvolution exists to estimate
+    # composition where per-cell labels are absent; counting supplied labels
+    # answers a question that was never asked. Use `region_summary` for the
+    # composition of labelled data -- it makes the same computation under a name
+    # that is true.
     require_cell_types(dataset)
-    by_region: Dict[str, Counter] = defaultdict(Counter)
-    for record in dataset.records:
-        by_region[record.region or "all"][record.cell_type] += 1
-    proportions = {}
-    for region, counts in by_region.items():
-        total = sum(counts.values()) or 1
-        proportions[region] = {key: round(value / total, 4) for key, value in counts.items()}
-    return ToolResult(
-        tool_name="spatial_deconvolution",
-        summary="Estimated cell-type proportions from existing labels for %d regions." % len(proportions),
-        metrics={"proportions": proportions, "method": params.get("method", "label_proportions")},
-        caveats=["Prototype uses observed labels as proportions; production should call Cell2location/RCTD."],
+    return _scaffold_result(
+        "spatial_deconvolution",
+        "Deconvolution scaffold validated cell labels but did not deconvolve anything.",
+        "Requires a reference-based mixture model (Cell2location/RCTD) over spot-level or "
+        "unlabelled data. For the composition of already-labelled cells, use region_summary.",
+        params,
     )
 
 
@@ -174,18 +210,17 @@ def neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, object]) 
 
 
 def ligand_receptor_analysis(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
+    # Previously returned hardcoded sender/receiver pairs with literal `score` and
+    # `pval` values, keyed only on whether a gene name appeared in the panel. The
+    # numbers were identical for every dataset and survived zeroing all expression,
+    # so they asserted a test that was never run.
     require_cell_types(dataset)
-    genes = set(dataset.genes)
-    candidates = []
-    if "VEGFA" in genes:
-        candidates.append({"ligand": "VEGFA", "receptor": "KDR/FLT1", "sender": "Tumor cell", "receiver": "Endothelial cell", "score": 0.72, "pval": 0.08})
-    if "PTPRC" in genes:
-        candidates.append({"ligand": "immune_marker", "receptor": "context_marker", "sender": "CD8+ T cell", "receiver": "Tumor cell", "score": 0.41, "pval": 0.2})
-    return ToolResult(
-        tool_name="ligand_receptor_analysis",
-        summary="Generated %d candidate interaction records." % len(candidates),
-        metrics={"database": params.get("db", "cellchat"), "interactions": candidates},
-        caveats=["Prototype uses marker heuristics; production should call CellChat/NicheNet."],
+    return _scaffold_result(
+        "ligand_receptor_analysis",
+        "Ligand-receptor scaffold validated cell labels but did not test for interactions.",
+        "Requires a permutation test over a curated ligand-receptor database; squidpy.gr.ligrec "
+        "is available in this environment and is the intended backend.",
+        params,
     )
 
 
@@ -194,17 +229,16 @@ def trajectory_inference(dataset: SpatialDataset, params: Dict[str, object]) -> 
     subtype = str(dataset.metadata.get("assay_subtype") or dataset.modality)
     if subtype not in {"scrna", "spatial_transcriptomics", "spatial_table", "tidy_csv"}:
         raise DataModalityError("trajectory_inference", dataset.modality, "scRNA")
-    bounds = dataset.bounds()
-    span = max((bounds["max_x"] - bounds["min_x"]) + (bounds["max_y"] - bounds["min_y"]), 1.0)
-    values = []
-    for index, record in enumerate(dataset.records):
-        pseudotime = ((record.x - bounds["min_x"]) + (record.y - bounds["min_y"])) / span
-        values.append({"index": index, "cell_type": record.cell_type, "pseudotime": round(pseudotime, 4)})
-    return ToolResult(
-        tool_name="trajectory_inference",
-        summary="Computed prototype spatial pseudotime for %d observations." % len(values),
-        metrics={"root_cell_type": params.get("root_cell_type"), "pseudotime": values[:20]},
-        caveats=["Prototype uses coordinate gradient; production should use Palantir/PAGA spatial."],
+    # Previously returned normalised (x + y) -- a diagonal coordinate gradient --
+    # under the key `pseudotime`. That value does vary with the data, so no
+    # data-independence check can catch it; it is wrong because the quantity is
+    # not what the name claims. Developmental ordering is not spatial position.
+    return _scaffold_result(
+        "trajectory_inference",
+        "Trajectory scaffold validated modality but did not infer a trajectory.",
+        "Requires diffusion-map pseudotime over an expression neighbour graph; scanpy.tl.paga and "
+        "scanpy.tl.dpt are available in this environment and are the intended backend.",
+        params,
     )
 
 
@@ -212,17 +246,15 @@ def motif_tf_activity(dataset: SpatialDataset, params: Dict[str, object]) -> Too
     subtype = str(dataset.metadata.get("assay_subtype") or dataset.modality)
     if subtype != "scatac_gene_activity" and dataset.modality not in {"scatac", "spatial_atac", "chromatin_accessibility"}:
         raise DataModalityError("motif_tf_activity", dataset.modality, "scATAC gene-activity or peak matrix")
-    genes = dataset.genes[: max(1, min(10, len(dataset.genes)))]
-    tf_rows = [
-        {"tf": gene, "activity_score": round((index + 1) / float(len(genes) + 1), 4), "evidence": "accessibility_inferred"}
-        for index, gene in enumerate(genes)
-    ]
-    return ToolResult(
-        tool_name="motif_tf_activity",
-        summary="Estimated prototype TF activity for %d accessibility-derived features." % len(tf_rows),
-        metrics={"feature_type": "gene_activity", "tf_activity": tf_rows},
-        caveats=["scATAC gene activity is accessibility-inferred; do not report it as measured expression."],
-        label_caveat="Accessibility-derived gene activity is an estimate of expression, not measured transcription.",
+    # Previously scored each feature as (index + 1) / (n + 1) -- its position in
+    # the feature list -- and reported it as `activity_score`. The value never
+    # depended on a single accessibility measurement.
+    return _scaffold_result(
+        "motif_tf_activity",
+        "Motif/TF activity scaffold validated modality but did not score any motif.",
+        "Requires chromVAR-style deviation scoring against a motif database over a peak matrix. "
+        "scATAC gene activity is accessibility-inferred and is not measured transcription.",
+        params,
     )
 
 
@@ -230,7 +262,7 @@ def cell_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, obje
     result = neighborhood_enrichment(dataset, params)
     result.tool_name = "cell_neighborhood_enrichment"
     result.metrics["resolution"] = dataset.metadata.get("resolution", "subcellular")
-    result.caveats.extend(_type_honesty_caveats(dataset))
+    _add_caveats(result, _type_honesty_caveats(dataset))
     result.label_caveat = _first_or_none(_type_honesty_caveats(dataset))
     return result
 
@@ -280,8 +312,25 @@ def run_neighborhood_robustness(
             },
         )
         pairs = result.metrics.get("all_pairs") or result.metrics.get("top_pairs") or []
-        per_setting.append({"n_neighs": n_neighs, "engine": result.metrics.get("engine"), "pairs": pairs})
-    summary = summarize_neighborhood_robustness(per_setting, top_k=top_k)
+        per_setting.append({
+            "n_neighs": n_neighs, "graph_family": "knn",
+            "engine": result.metrics.get("engine"), "pairs": pairs,
+        })
+
+    # A second graph *family*, not just a third density. Every setting above is
+    # kNN, so the sweep could only ever answer "does the answer survive changing
+    # k" -- and the spatial-statistics literature's actual warning is that
+    # contiguity, distance-band and kNN graphs disagree, with no consensus on
+    # which to use. A distance band at a stated micron radius tests that, and its
+    # disagreement is reported separately because it is a different kind of
+    # instability: kNN adapts to local density, a distance band does not, so a
+    # pair that survives both is robust to something kNN alone cannot probe.
+    band = _distance_band_setting(dataset, params, n_perms, seed)
+    if band is not None:
+        per_setting.append(band)
+
+    knn_only = [item for item in per_setting if item.get("graph_family") != "distance_band"]
+    summary = summarize_neighborhood_robustness(knn_only, top_k=top_k)
     summary.update(
         {
             "requested_settings": grid,
@@ -291,7 +340,82 @@ def run_neighborhood_robustness(
             "engines": sorted({str(item.get("engine")) for item in per_setting if item.get("engine")}),
         }
     )
+    if band is not None:
+        # Scored against the kNN consensus rather than folded into it, so the
+        # headline R stays comparable with every run made before this existed.
+        cross = summarize_neighborhood_robustness([knn_only[0], band], top_k=top_k) if knn_only else {}
+        summary["graph_family_check"] = {
+            "status": cross.get("status", "not_computed"),
+            "family": "distance_band",
+            "radius_um": band.get("radius"),
+            "isolated_cells": band.get("isolated_cells"),
+            "sign_agreement": cross.get("mean_sign_agreement"),
+            "topk_jaccard": cross.get("mean_topk_jaccard"),
+            "score": cross.get("score"),
+            "interpretation": (
+                "Agreement between the kNN reference graph and a distance-band graph at the same "
+                "permutation budget. Low agreement does not invalidate the result; it means the "
+                "finding depends on how neighbourhoods are defined, which the reader should know."
+            ),
+        }
+    elif params.get("robustness_radius_um") is not None:
+        summary["graph_family_check"] = {
+            "status": "not_computed",
+            "reason": "A distance-band graph could not be built for this section.",
+        }
     return summary
+
+
+def _distance_band_setting(
+    dataset: SpatialDataset,
+    params: Dict[str, object],
+    n_perms: int,
+    seed: int,
+) -> Optional[Dict[str, object]]:
+    """One neighbourhood enrichment run on a distance-band graph.
+
+    The radius defaults to three times the median nearest-neighbour distance --
+    small enough to stay within a plausible local-interaction scale, large enough
+    that most cells have neighbours. Returns None rather than raising: a sweep
+    that cannot build a second graph should lose one comparison, not the run.
+    """
+    try:
+        import numpy as np  # type: ignore
+        from scipy.spatial import cKDTree  # type: ignore
+    except ImportError:
+        return None
+    if len(dataset.records) < 3:
+        return None
+    coordinates = np.asarray([[record.x, record.y] for record in dataset.records], dtype=float)
+    nearest, _indices = cKDTree(coordinates).query(coordinates, k=2)
+    median_nearest = float(np.median(nearest[:, 1]))
+    radius = float(params.get("robustness_radius_um") or median_nearest * 3.0)
+    if not np.isfinite(radius) or radius <= 0:
+        return None
+    try:
+        result = cell_neighborhood_enrichment(
+            dataset,
+            {
+                "radius": radius,
+                "n_perms": n_perms,
+                "random_state": seed,
+                "include_all_pairs": True,
+                "strict_engine": True,
+            },
+        )
+    except Exception:  # noqa: BLE001 - an unavailable second graph is not a failed run
+        return None
+    metrics = result.metrics or {}
+    if metrics.get("engine") != "squidpy":
+        return None
+    return {
+        "n_neighs": None,
+        "graph_family": "distance_band",
+        "radius": round(radius, 2),
+        "isolated_cells": metrics.get("isolated_cells"),
+        "engine": metrics.get("engine"),
+        "pairs": metrics.get("all_pairs") or metrics.get("top_pairs") or [],
+    }
 
 
 def summarize_neighborhood_robustness(per_setting: List[Dict[str, object]], top_k: int = 10) -> Dict[str, object]:
@@ -371,20 +495,36 @@ def region_summary(dataset: SpatialDataset, params: Dict[str, object]) -> ToolRe
         raise MissingPreconditionError("region_summary requires user-provided region labels.")
     by_region: Dict[str, Dict[str, Any]] = {}
     top_n = int(params.get("top_n_features", 8) or 8)
+    # The same exclusion the expression matrix applies. Without it a region's
+    # "top features" were CELL_AREA, TOTAL_COUNTS, TRANSCRIPT_COUNTS and
+    # NUCLEUS_AREA -- library size and morphology, on a scale two orders of
+    # magnitude above any gene, so they took the top slots in every region of
+    # every run and pushed the biology out of the table.
+    measured = set(expression_feature_names(dataset))
     for record in dataset.records:
         region = record.region or "unassigned"
         entry = by_region.setdefault(region, {"cell_count": 0, "cell_type_counts": Counter(), "feature_sums": Counter()})
         entry["cell_count"] += 1
         entry["cell_type_counts"][record.cell_type] += 1
         for feature, value in record.genes.items():
+            if feature not in measured:
+                continue
             try:
                 entry["feature_sums"][feature] += float(value)
             except (TypeError, ValueError):
                 continue
+    # A composition is a proportion, and a proportion from one cell is not one.
+    # Every region was summarised regardless of size, so a one-cell region was
+    # reported as "100% T cells" in the same shape and the same table as one
+    # from 500 cells. Small regions are still counted and named -- dropping them
+    # silently would be its own misreport -- but their proportions are marked.
+    floor = int(params.get("min_region_cells", MIN_REGION_CELLS_FOR_COMPOSITION)
+                or MIN_REGION_CELLS_FOR_COMPOSITION)
     summaries = {}
+    under_floor = []
     for region, entry in by_region.items():
         cell_count = int(entry["cell_count"]) or 1
-        summaries[region] = {
+        summary_entry = {
             "cell_count": cell_count,
             "cell_type_counts": dict(entry["cell_type_counts"]),
             "cell_type_fraction": {
@@ -395,11 +535,36 @@ def region_summary(dataset: SpatialDataset, params: Dict[str, object]) -> ToolRe
                 for feature, total in entry["feature_sums"].most_common(top_n)
             ],
         }
+        if cell_count < floor:
+            summary_entry["composition_reliable"] = False
+            summary_entry["note"] = (
+                "%d cells is below the %d-cell floor; these proportions describe too few cells "
+                "to compare with the other regions." % (cell_count, floor))
+            under_floor.append(region)
+        else:
+            summary_entry["composition_reliable"] = True
+        summaries[region] = summary_entry
+
+    reliable = len(summaries) - len(under_floor)
+    summary_text = ("Summarized %d user-provided regions by cell type and feature means."
+                    % len(summaries))
+    caveats = ["Region summaries use user-provided region labels; they were not derived from "
+               "image segmentation."]
+    if under_floor:
+        summary_text += (" %d of them hold fewer than %d cells, so their proportions are marked "
+                         "unreliable: %s." % (len(under_floor), floor,
+                                              ", ".join(sorted(under_floor)[:5])))
+        caveats.append(
+            "%d region(s) are below the %d-cell floor and their compositions are not comparable "
+            "with the rest." % (len(under_floor), floor))
     return ToolResult(
         tool_name="region_summary",
-        summary="Summarized %d user-provided regions by cell type and feature means." % len(summaries),
-        metrics={"region_count": len(summaries), "regions": summaries, "region_source": "user_provided"},
-        caveats=["Region summaries use user-provided region labels; they were not derived from image segmentation."],
+        summary=summary_text,
+        metrics={"region_count": len(summaries), "reliable_region_count": reliable,
+                 "regions_below_floor": sorted(under_floor),
+                 "min_region_cells": floor,
+                 "regions": summaries, "region_source": "user_provided"},
+        caveats=caveats,
     )
 
 
@@ -930,11 +1095,243 @@ def marker_lineage(
     return best_lineage, best_score
 
 
+# Below this share of a label's cells carrying marker evidence for a different
+# lineage, the disagreement is noise: ambiguous cells, doublets, a panel that
+# measures one lineage better than another. At or above it, the label and the
+# measurements are telling different stories and the reader has to be told.
+LABEL_AUDIT_FLOOR = 0.15
+
+
+def audit_labels_against_markers(
+    dataset: SpatialDataset,
+    floor: float = LABEL_AUDIT_FLOOR,
+) -> Dict[str, Any]:
+    """Do the reviewed labels agree with the cells' own markers?
+
+    The gate asks whether a human supplied labels, and checks coverage, class
+    count, region count and decision count. It does not ask whether the labels
+    are consistent with the measurements, so a section labelled confidently and
+    wrongly passes exactly like one labelled correctly. This is the missing
+    question, asked of the same data in the same run.
+
+    The pieces were all here already -- `marker_lineage` reads a cell's dominant
+    lineage from its own expression, `lineage_for_label` reads the lineage a
+    label asserts, `lineages_conflict` knows which pairs are genuinely
+    incompatible -- but they were wired only to labels a *reference* proposes.
+    A reviewer's own labels were never re-read against the evidence.
+
+    Only cells the markers speak confidently about count: `marker_lineage`
+    requires a dominant winner, so ambiguity abstains rather than voting. A
+    label whose lineage this vocabulary does not recognise is reported as
+    unknown, never as agreeing.
+    """
+    per_label: Dict[str, Dict[str, Any]] = {}
+    for record in dataset.records:
+        label = str(record.cell_type or "").strip()
+        if not label:
+            continue
+        entry = per_label.setdefault(label, {"cells": 0, "assessed": 0, "conflicting": 0,
+                                             "observed": Counter()})
+        entry["cells"] += 1
+        observed, _score = marker_lineage(record.genes)
+        if not observed:
+            continue  # the markers do not speak clearly about this cell
+        entry["assessed"] += 1
+        entry["observed"][observed] += 1
+        if lineages_conflict(lineage_for_label(label), observed):
+            entry["conflicting"] += 1
+
+    labels: List[Dict[str, Any]] = []
+    for label, entry in sorted(per_label.items()):
+        assessed = entry["assessed"]
+        share = (entry["conflicting"] / assessed) if assessed else 0.0
+        claimed = lineage_for_label(label)
+        dominant = entry["observed"].most_common(1)
+        labels.append({
+            "label": label,
+            "cells": entry["cells"],
+            "cells_with_marker_evidence": assessed,
+            "conflicting_cells": entry["conflicting"],
+            "disagreement_share": round(share, 4),
+            "claimed_lineage": claimed or "unrecognised",
+            "markers_suggest": dominant[0][0] if dominant else "",
+            "disagrees": bool(assessed) and share >= floor and bool(claimed),
+        })
+
+    flagged = [item for item in labels if item["disagrees"]]
+    assessed_total = sum(item["cells_with_marker_evidence"] for item in labels)
+    return {
+        "status": "computed" if assessed_total else "no_marker_evidence",
+        "floor": floor,
+        "labels_checked": len(labels),
+        "labels_disagreeing": len(flagged),
+        "cells_with_marker_evidence": assessed_total,
+        "labels": labels,
+        "flagged": [item["label"] for item in flagged],
+    }
+
+
+def label_audit_caveats(audit: Dict[str, Any]) -> List[str]:
+    """The sentence a reader needs when the labels and the markers disagree.
+
+    Loud and specific on purpose. A confident wrong label is harder to catch
+    than a blank one, and this is the only place the run says so.
+    """
+    if audit.get("status") != "computed" or not audit.get("labels_disagreeing"):
+        return []
+    worst = sorted((item for item in audit["labels"] if item["disagrees"]),
+                   key=lambda item: -item["disagreement_share"])
+    lines = [
+        "MARKERS DISAGREE with %d of %d reviewed labels. The labels are the reviewer's; "
+        "the markers are the measurement. Where they differ, check the label."
+        % (audit["labels_disagreeing"], audit["labels_checked"])
+    ]
+    for item in worst[:6]:
+        lines.append(
+            "  `%s`: %.0f%% of its %d cells carrying marker evidence look %s, not %s."
+            % (item["label"], 100 * item["disagreement_share"], item["cells_with_marker_evidence"],
+               item["markers_suggest"], item["claimed_lineage"])
+        )
+    return lines
+
+
 def lineages_conflict(predicted: str, observed: str) -> bool:
     if not predicted or not observed or predicted == observed:
         return False
     pair = {predicted, observed}
     return not any(pair <= compatible for compatible in COMPATIBLE_LINEAGES)
+
+
+# A lineage counts as present when the strict rule confidently assigns it this
+# many cells. The bar is deliberately low: those counts are already a floor (see
+# `assess_reference_lineage_coverage`), so requiring a large *share* on top of an
+# undercount penalizes the same sparsity twice. 25+ confidently assigned cells is
+# a population, not noise.
+# Below this a one-vs-rest test has nothing to test. Scanpy's own floor is one
+# cell; this is the floor at which the result means anything, and it matches the
+# figure the review sizing reports.
+MIN_CELLS_FOR_GROUP_STATISTICS = 3
+
+# The floor below which a region's composition is not comparable with another's.
+# Matches the gate's own class/region floor, so the gate cannot pass a section
+# whose regions this then marks unreliable.
+MIN_REGION_CELLS_FOR_COMPOSITION = 50
+
+MIN_LINEAGE_EVIDENCE_CELLS = 25
+MIN_LINEAGE_EVIDENCE_FRACTION = 0.002
+
+
+def assess_reference_lineage_coverage(
+    dataset: SpatialDataset,
+    reference_lineages: Iterable[str],
+    min_cells: int = MIN_LINEAGE_EVIDENCE_CELLS,
+    min_fraction: float = MIN_LINEAGE_EVIDENCE_FRACTION,
+) -> Dict[str, object]:
+    """Find lineages present in the target that the reference cannot name.
+
+    A KNN vote is taken over the classes the reference happens to contain, so a
+    cell whose true type is absent still receives its nearest available label,
+    usually at high confidence. Confidence therefore cannot answer "is this
+    reference adequate for this tissue?" -- only the target's own marker evidence
+    can.
+
+    This reuses the strict :func:`marker_lineage` rule rather than a looser
+    population estimator. That is a deliberate trade of sensitivity for
+    defensibility: the strict rule under-counts, because most targeted-panel cells
+    are too sparse to beat the dominance test, but it does not invent populations.
+    Two looser estimators were tried and rejected -- raw marker argmax hands
+    low-expression lineages (endothelial) to abundant ones (neuronal) on
+    background signal, and per-lineage standardization pushes assignment toward
+    uniform across lineages, inventing thousands of lymphoid cells in a brain
+    section. Both produced numbers that could not be defended.
+
+    So the counts here are a **floor, not an estimate**: the true uncovered share
+    is higher, and the fraction is named ``confident_uncovered_fraction`` to keep
+    that honest. The refusal decision rests on *which lineages* are confidently
+    present and unnameable, which the strict rule does establish, rather than on
+    a precise share it cannot.
+
+    Coverage is deliberately strict about ``COMPATIBLE_LINEAGES``, which is not
+    consulted. That set suppresses false *disagreement* alarms between
+    neighbouring lineages, a different question. For coverage, "close enough"
+    still means the reference cannot name the cell correctly -- an OPC labelled
+    ``oligodendrocyte`` is a wrong label, not a near miss.
+    """
+    covered_lineages = {str(lineage) for lineage in reference_lineages if lineage}
+    counts: Counter = Counter()
+    indeterminate = 0
+    for record in dataset.records:
+        lineage, _score = marker_lineage(record.genes)
+        if lineage:
+            counts[lineage] += 1
+        else:
+            indeterminate += 1
+
+    total_cells = len(dataset.records)
+    floor = max(int(min_cells), int(math.ceil(min_fraction * total_cells)))
+    covered_cells = sum(count for lineage, count in counts.items() if lineage in covered_lineages)
+    # Only lineages with enough confident cells to be a population rather than a
+    # handful of ambiguous calls.
+    uncovered = {
+        lineage: count
+        for lineage, count in counts.items()
+        if lineage not in covered_lineages and count >= floor
+    }
+    below_floor = {
+        lineage: count
+        for lineage, count in counts.items()
+        if lineage not in covered_lineages and count < floor
+    }
+    uncovered_cells = sum(uncovered.values())
+    evidenced = covered_cells + uncovered_cells + sum(below_floor.values())
+    fraction = (uncovered_cells / float(evidenced)) if evidenced else 0.0
+
+    if not evidenced:
+        status = "indeterminate"
+    elif not uncovered:
+        status = "adequate"
+    elif len(uncovered) >= 2 or fraction >= 0.10:
+        status = "inadequate"
+    else:
+        status = "partial"
+
+    return {
+        "status": status,
+        "method": "strict per-cell marker lineage rule; counts are a floor, not an estimate",
+        "reference_lineages": sorted(covered_lineages),
+        "target_lineage_counts": dict(counts.most_common()),
+        "uncovered_lineages": sorted(uncovered, key=lambda name: -uncovered[name]),
+        "uncovered_lineage_counts": dict(sorted(uncovered.items(), key=lambda item: -item[1])),
+        "uncovered_below_evidence_floor": dict(sorted(below_floor.items(), key=lambda item: -item[1])),
+        "evidence_floor_cells": floor,
+        "confident_covered_cell_count": covered_cells,
+        "confident_uncovered_cell_count": uncovered_cells,
+        "no_marker_evidence_cell_count": indeterminate,
+        "confident_lineage_cell_count": evidenced,
+        "confident_uncovered_fraction": round(fraction, 4),
+    }
+
+
+def describe_lineage_coverage(report: Dict[str, object]) -> str:
+    """One-line human summary of a coverage report."""
+    uncovered = report.get("uncovered_lineages") or []
+    if not uncovered:
+        return "Every lineage confidently detected in the target has a matching reference class."
+    counts = report.get("uncovered_lineage_counts") or {}
+    detail = ", ".join("%s (%d cells)" % (name, counts.get(name, 0)) for name in uncovered)
+    return (
+        "The target carries confident marker evidence for %d lineage(s) the reference has no class for: "
+        "%s. That is at least %d cells (%.1f%% of the %d confidently assigned), and a floor rather than an "
+        "estimate -- the strict per-cell rule leaves %d further cells unassigned."
+        % (
+            len(uncovered),
+            detail,
+            int(report.get("confident_uncovered_cell_count") or 0),
+            float(report.get("confident_uncovered_fraction") or 0.0) * 100,
+            int(report.get("confident_lineage_cell_count") or 0),
+            int(report.get("no_marker_evidence_cell_count") or 0),
+        )
+    )
 
 
 SPECIES_ALIASES = {
@@ -987,6 +1384,28 @@ def _knn_reference_label_transfer(
         raise MissingPreconditionError(
             "reference_label_transfer requires a reference with at least two labelled classes; got %d." % len(labels)
         )
+
+    # Lineage each reference class belongs to, resolved once and reused below.
+    label_lineages = {label: lineage_for_label(label) for label in labels}
+    reference_lineages = {lineage for lineage in label_lineages.values() if lineage}
+
+    # Run before fitting anything: this needs only the reference's class names and
+    # the target's own markers, so an inadequate reference is refused in seconds
+    # rather than after a multi-minute KNN over the full section.
+    coverage = assess_reference_lineage_coverage(dataset, reference_lineages)
+    if coverage["status"] == "inadequate" and not params.get("allow_incomplete_reference"):
+        raise MissingPreconditionError(
+            "reference_label_transfer refuses an incomplete reference: %s The reference can only name %s. "
+            "Every one of those cells would still be assigned its nearest available label, usually at high "
+            "confidence, so the vote fraction cannot surface this. Add reference classes covering the missing "
+            "lineages, or pass allow_incomplete_reference=True to transfer anyway and review the "
+            "lineage_absent_from_reference flags."
+            % (
+                describe_lineage_coverage(coverage),
+                ", ".join(sorted(reference_lineages)) or "no recognised lineage",
+            )
+        )
+
     try:
         import numpy as np  # type: ignore
         from sklearn.neighbors import KNeighborsClassifier  # type: ignore
@@ -1036,9 +1455,10 @@ def _knn_reference_label_transfer(
     median_target_distance = float(np.median(target_distances))
     median_reference_distance = float(np.median(reference_baseline))
 
-    # Lineage each reference class belongs to, resolved once.
-    label_lineages = {label: lineage_for_label(label) for label in classes}
-    reference_lineages = {lineage for lineage in label_lineages.values() if lineage}
+    # `classes` comes back from the fitted classifier and should match `labels`;
+    # resolve any class the earlier pass did not see rather than assuming.
+    for label in classes:
+        label_lineages.setdefault(label, lineage_for_label(label))
 
     predictions = []
     low_confidence = 0
@@ -1108,6 +1528,7 @@ def _knn_reference_label_transfer(
             "marker_disagreement_count": disagreements,
             "lineage_absent_from_reference_count": uncovered,
             "reference_lineages": sorted(reference_lineages),
+            "lineage_coverage": coverage,
             "distant_from_reference_count": out_of_reference,
             "review_priority_percentile": review_percentile,
             "reference_distance_threshold": round(distance_threshold, 4),
@@ -1133,9 +1554,25 @@ def _knn_reference_label_transfer(
             "only to rank review priority within this dataset."
             % (median_target_distance / max(median_reference_distance, 1e-9)),
         ]
+        + _lineage_coverage_caveats(coverage)
         + _type_honesty_caveats(dataset),
         label_caveat="Cell-type labels were transferred from a reference and must be expert-reviewed before use.",
     )
+
+
+def _lineage_coverage_caveats(coverage: Dict[str, object]) -> List[str]:
+    """Caveat for a reference that only partly covers the target's lineages.
+
+    Only reachable when coverage is short of adequate: either between the warn and
+    refuse thresholds, or past the refuse threshold with an explicit override.
+    """
+    if coverage.get("status") not in {"partial", "inadequate"}:
+        return []
+    return [
+        "%s Those cells received their nearest available label regardless, so their transferred labels "
+        "are systematically wrong rather than uncertain, and mean confidence does not reflect it."
+        % describe_lineage_coverage(coverage)
+    ]
 
 
 def spatial_clustering(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
@@ -1242,6 +1679,31 @@ def _scanpy_marker_detection_one_vs_rest(dataset: SpatialDataset, params: Dict[s
         retained_labels = [label for label, include in zip(group_labels, keep) if include]
         adata.obs["spatialmind_group"] = retained_labels
         adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
+
+        # Scanpy raises a bare ValueError for a one-cell group -- "Could not
+        # calculate statistics for groups X since they only contain one sample"
+        # -- and that surfaced as a library traceback from a gate the app had
+        # just called `validated_ready`. Checked here so the refusal is typed,
+        # names the groups, and says what to do about them.
+        counts = Counter(retained_labels)
+        singleton = sorted(name for name, count in counts.items()
+                           if count < MIN_CELLS_FOR_GROUP_STATISTICS)
+        if singleton and len(counts) - len(singleton) < 2:
+            raise InsufficientDataError(
+                "marker_detection needs at least two groups with %d or more cells. %s. "
+                "Merge them into a larger class, or leave those cells unlabelled."
+                % (MIN_CELLS_FOR_GROUP_STATISTICS,
+                   "; ".join("`%s` has %d" % (name, counts[name]) for name in singleton)))
+        if singleton:
+            # Enough testable groups remain, so drop the untestable ones rather
+            # than failing the whole tool -- and say which, because a silently
+            # smaller analysis is the thing a reader cannot see.
+            keep_small = [label not in set(singleton) for label in retained_labels]
+            adata = adata[keep_small].copy()
+            retained_labels = [l for l, k in zip(retained_labels, keep_small) if k]
+            adata.obs["spatialmind_group"] = retained_labels
+            adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
+
         if not dataset.normalized:
             sc.pp.normalize_total(adata, target_sum=1e4)
             sc.pp.log1p(adata)
@@ -1697,11 +2159,13 @@ def _clustering_diagnostics(
 def _expression_qc_metrics(adata: Any) -> Dict[str, object]:
     import numpy as np  # type: ignore
 
+    raw_counts = bool((adata.uns.get("spatialmind") or {}).get("raw_counts_available"))
     if "counts" in adata.layers:
+        # An externally built AnnData may still carry one.
         source = "raw_counts"
         matrix = adata.layers["counts"]
     elif "source_values" in adata.layers:
-        source = "source_values"
+        source = "raw_counts" if raw_counts else "source_values"
         matrix = adata.layers["source_values"]
     else:
         source = "analysis_values_fallback"
@@ -1758,6 +2222,8 @@ def _screen_spatial_genes(
     candidate_count = max(int(params.get("screen_candidates", 0) or 0), 0) or max(n_top * 2, 50)
     screened = detected_genes
     method = "detection_filter_only"
+    screened_out: List[Dict[str, Any]] = []
+    detected_by_gene = {gene: int(count) for gene, count in zip(all_genes, detected)}
     if len(detected_genes) > candidate_count:
         analytic = sq.gr.spatial_autocorr(
             adata,
@@ -1771,8 +2237,21 @@ def _screen_spatial_genes(
             show_progress_bar=False,
         )
         if analytic is not None and not analytic.empty:
-            screened = [str(gene) for gene in analytic.sort_values("I", ascending=False).head(candidate_count).index]
+            ranked = analytic.sort_values("I", ascending=False)
+            screened = [str(gene) for gene in ranked.head(candidate_count).index]
             method = "analytic_moran_screen"
+            # The genes the screen excluded, with the statistic it excluded them
+            # on. Without these a reader sees only what survived and cannot tell
+            # what was dropped or how close it came -- and the result table would
+            # report 50 genes for a 296-gene panel with no way to audit the gap.
+            screened_out = [
+                {
+                    "gene": str(gene),
+                    "morans_i": round(float(row["I"]), 6),
+                    "detected_cells": detected_by_gene.get(str(gene), 0),
+                }
+                for gene, row in ranked.iloc[candidate_count:].iterrows()
+            ]
 
     # Keep the permutation budget per gene; the saving comes from testing fewer
     # genes. Raising it here would spend the saving straight back: 50 genes at 999
@@ -1786,6 +2265,8 @@ def _screen_spatial_genes(
     return {
         "tested_genes": screened,
         "permutations": permutations,
+        "screened_out_genes": screened_out,
+        "detected_by_gene": detected_by_gene,
         "report": {
             "rule": "detected in >= %d cells; %s" % (
                 min_cells,
@@ -1900,6 +2381,8 @@ def _squidpy_spatial_variable_genes(
                 "random_state": random_state,
                 "multiple_testing": adjusted_key or "not_available",
                 "screening": screening["report"],
+                "screened_out_genes": screening.get("screened_out_genes") or [],
+                "detected_by_gene": screening.get("detected_by_gene") or {},
                 "significant_gene_count_top_n": significant,
                 "significant_gene_count_all": significant_all,
                 "top_genes": rows,
@@ -1969,7 +2452,15 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
     try:
         adata = _dataset_to_anndata(dataset)
         group_labels, group_key = resolve_group_labels(dataset, params)
-        keep = [bool(label) for label in group_labels]
+        # On a partially reviewed section `cell_type` holds the reviewer's classes
+        # and the loader's marker guesses side by side. A validated pair table
+        # listing `Unannotated cell | endothelial cell` beside a reviewed pair is
+        # the conflation the gate exists to prevent, so a caller that knows which
+        # classes were reviewed passes them and the rest are dropped -- the same
+        # treatment unlabelled cells already get, for the same reason.
+        reviewed = params.get("reviewed_labels")
+        allowed = {str(name) for name in reviewed} if (reviewed and group_key == "cell_type") else None
+        keep = [bool(label) and (allowed is None or label in allowed) for label in group_labels]
         if sum(keep) < 3:
             raise MissingPreconditionError(
                 "neighborhood_enrichment needs at least three cells with populated group assignments."
@@ -1983,7 +2474,19 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         n_jobs = int(params.get("n_jobs", 1) or 1)
         backend = str(params.get("backend", "threading") or "threading")
         random_state = int(params.get("random_state", 0) or 0)
-        sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=max(2, n_neighs))
+        # A `radius` switches the weight matrix from kNN to a distance band. kNN
+        # adapts to local density -- every cell gets k neighbours however sparse
+        # its surroundings -- while a band applies one physical scale everywhere
+        # and leaves isolated cells with none. They can disagree, which is the
+        # point: the robustness sweep uses this to test whether a finding depends
+        # on the *kind* of neighbourhood and not only on its size.
+        band_radius = params.get("radius") if str(params.get("engine") or "") != "prototype" else None
+        isolated_cells = 0
+        if band_radius is not None and float(band_radius) > 0:
+            sq.gr.spatial_neighbors(adata, coord_type="generic", radius=float(band_radius), delaunay=False)
+            isolated_cells = int((adata.obsp["spatial_connectivities"].getnnz(axis=1) == 0).sum())
+        else:
+            sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=max(2, n_neighs))
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="invalid value encountered in divide", category=RuntimeWarning)
             sq.gr.nhood_enrichment(
@@ -2001,10 +2504,20 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
         all_pairs = _nhood_enrichment_pairs(result.get("zscore"), result.get("pvalue"), clusters, limit=None)
         expected_pair_count = len(clusters) * (len(clusters) + 1) // 2
         nonfinite_pair_count = max(expected_pair_count - len(all_pairs), 0)
-        top_pairs = all_pairs[:10]
+        # Self-adjacency is near-tautological for any spatially coherent group --
+        # cells of one type sit next to cells of that type -- so `i|i` pairs took
+        # the largest z-scores and four of the top ten, crowding out the
+        # cross-type relationships the table exists to show. They are kept, in
+        # their own list, because a group that is *not* self-adjacent is worth
+        # seeing; they just do not compete for the ranked slots.
+        cross_pairs = [pair for pair in all_pairs if not _is_self_pair(pair)]
+        self_pairs = [pair for pair in all_pairs if _is_self_pair(pair)]
+        top_pairs = cross_pairs[:10]
         metrics = {
             "engine": "squidpy",
             "method": "nhood_enrichment",
+            "self_pairs": self_pairs[:10],
+            "self_pairs_excluded_from_top": len(self_pairs),
             "group_key": group_key,
             "n_neighs": n_neighs,
             "n_perms": n_perms,
@@ -2013,6 +2526,13 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
             "random_state": random_state,
             "analyzed_cell_count": int(adata.n_obs),
             "excluded_unassigned_cell_count": len(group_labels) - int(adata.n_obs),
+            "reviewed_only": allowed is not None,
+            "excluded_unreviewed_cell_count": (
+                sum(1 for label in group_labels if label and label not in allowed) if allowed else 0
+            ),
+            "graph_family": "distance_band" if (band_radius and float(band_radius) > 0) else "knn",
+            "radius": round(float(band_radius), 2) if (band_radius and float(band_radius) > 0) else None,
+            "isolated_cells": isolated_cells,
             "top_pairs": top_pairs,
             "tested_pair_count": len(all_pairs),
             "undefined_pair_count": nonfinite_pair_count,
@@ -2026,7 +2546,8 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
             )
         return ToolResult(
             tool_name="neighborhood_enrichment",
-            summary="Computed neighborhood enrichment with Squidpy for %d cell-type pairs." % len(top_pairs),
+            summary="Computed neighborhood enrichment with Squidpy for %d cross-type pairs (%d self-pairs reported separately)."
+            % (len(top_pairs), len(self_pairs)),
             metrics=metrics,
             caveats=caveats,
         )
@@ -2040,57 +2561,108 @@ def _squidpy_neighborhood_enrichment(dataset: SpatialDataset, params: Dict[str, 
 # real gene counts. They are library-size / area proxies on a different scale and
 # must be excluded from the expression matrix, or they dominate PCA/clustering and
 # rank as spurious markers. Mirrors ingestion.labels.NON_BIOLOGICAL_FEATURES.
-EXPRESSION_EXCLUDED_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
+EXPRESSION_EXCLUDED_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
-# Xenium panels ship control probes alongside real targets: negative controls,
-# unassigned and deprecated codewords, blanks, and antisense probes. They exist to
-# measure background and misassignment, and they are a large share of the panel --
-# 41% of the breast panel and 38% of the glioblastoma panel in local data. Left in
-# the expression matrix they drive PCA, appear as cluster markers, and can define
-# entire clusters out of technical noise. They stay available for QC, which reads
-# them from the instrument metrics rather than from this matrix.
-CONTROL_FEATURE_PREFIXES = (
-    "UNASSIGNEDCODEWORD",
-    "NEGCONTROLCODEWORD",
-    "NEGCONTROLPROBE",
-    "DEPRECATEDCODEWORD",
-    "BLANK",
-    "ANTISENSE",
-    "NEGPROBE",
-    "NEGCONTROL",
-)
+# Re-exported: this module is where callers have always imported it from, and
+# the definition moved down to `schemas` so `ingestion` can reach it without
+# importing `tools`.
+expression_feature_names = _expression_feature_names
 
 
-def is_control_feature(name: str) -> bool:
-    """True for Xenium control/background probes rather than measured genes.
+# One entry, holding the most recently built AnnData and the fingerprint of the
+# dataset it came from. Deliberately not an unbounded dict: a full-section matrix
+# with its two layers is around 1.8 GB, and the access pattern this exists for is
+# many tools in a row over one dataset, which a single slot covers exactly.
+_ANNDATA_CACHE: Dict[str, Any] = {"fingerprint": None, "adata": None, "dataset": None}
 
-    Control probes follow ``Prefix_0123`` / ``Prefix0123``, so the prefix must be
-    followed by a separator or digits. Matching on the prefix alone would catch
-    real genes that merely start with the same letters.
+# Above this, the matrix is handed over and forgotten rather than cached. The
+# cache saves a rebuild across the several tools of one plan, which is worth a
+# few hundred megabytes and is not worth several gigabytes: retaining a large
+# section costs its size for the length of the run *and* doubles at the moment
+# the copy is taken. A 24,000-cell section is ~125 MB and still caches; the
+# 378,000-cell lymph node is ~2.3 GB and no longer does.
+_CACHE_MAX_BYTES = 1024 * 1024 * 1024
+
+
+def estimate_matrix_bytes(dataset: SpatialDataset, genes: Optional[List[str]] = None) -> int:
+    """Bytes the dense expression matrix and its source layer will occupy.
+
+    Counted before anything is allocated, so a section too large for the machine
+    can be refused in a sentence instead of dying inside NumPy with a MemoryError
+    and a half-written run.
     """
-    upper = str(name).upper()
-    for prefix in CONTROL_FEATURE_PREFIXES:
-        if not upper.startswith(prefix):
-            continue
-        remainder = upper[len(prefix):]
-        if not remainder or remainder[0] in "_-." or remainder[0].isdigit():
-            return True
-    return False
+    if genes is None:
+        genes = expression_feature_names(dataset)
+    return len(dataset.records) * len(genes) * 8 * 2  # X and source_values, float64
 
 
-def expression_feature_names(dataset: SpatialDataset) -> List[str]:
-    """Genes used for expression analysis.
+def _anndata_fingerprint(dataset: SpatialDataset, genes: List[str]) -> tuple:
+    """Everything the builder reads that can change between calls in a run.
 
-    Excludes QC/morphology pseudo-features and Xenium control probes, both of
-    which are technical rather than biological signal.
+    What it covers: the dataset object, its length, the gene list, the label and
+    region assignment, and the normalisation flag. Those are what actually move --
+    `apply_best_available_labels` rewrites `cell_type` and `apply_best_available_regions`
+    rewrites `region`, both before the tools run, and a region-stratified pass
+    builds shorter subset datasets which land on a different identity and length.
+
+    What it does *not* cover: in-place edits to `record.genes` values. Hashing
+    those would cost what building the matrix costs, which would defeat the
+    point. It is safe because exactly one place in the codebase mutates them --
+    `ingestion/pipeline.py`, restricting a reference to shared features during
+    label transfer -- and that happens at load, never between tool calls. If a
+    tool is ever written that rewrites expression in place, it must clear this
+    cache, and this comment is the reason why.
+
+    `id(dataset)` is in here to separate datasets, but an address only identifies
+    an object while that object is alive: CPython hands the same address to the
+    next allocation once the first is collected. Two datasets that never coexist
+    -- the usual shape of `analyse(build(a)); analyse(build(b))` -- could
+    therefore land on one fingerprint, differing only in expression values, which
+    is the one thing above that is deliberately not hashed. The second dataset
+    was then served the first one's matrix. The cache keeps a weak reference
+    alongside this tuple so a hit has to be the same live object, not merely the
+    same address; see `_cache_holds`.
     """
-    biological = [
-        gene
-        for gene in dataset.genes
-        if gene.upper() not in EXPRESSION_EXCLUDED_FEATURES and not is_control_feature(gene)
-    ]
-    # Only drop them when real genes remain, so tiny fixtures stay usable.
-    return biological if len(biological) >= 2 else list(dataset.genes)
+    labels = hash(tuple((record.cell_type, record.region) for record in dataset.records))
+    return (id(dataset), len(dataset.records), tuple(genes), labels,
+            bool(dataset.normalized), dataset.sample_id)
+
+
+def total_memory_bytes() -> int:
+    """Physical RAM, or 0 where the platform will not say."""
+    try:
+        return int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
+    except (AttributeError, ValueError, OSError):  # pragma: no cover - platform dependent
+        return 0
+
+
+# A dense matrix is not the whole cost: scanpy's PCA, the neighbour graph and
+# each tool's own working copy all come out of the same memory. Half of RAM for
+# the matrices is the point past which the rest stops fitting.
+_MEMORY_HEADROOM = 0.5
+
+
+def check_section_fits(dataset: SpatialDataset) -> Optional[str]:
+    """Why this section will not fit in memory, or None if it should.
+
+    A full section is the deliberate default -- sampling one would silently
+    narrow the analysis -- so the answer to a section too large is not to quietly
+    shrink it, it is to say so before any work starts. The alternative, which is
+    what happened before, is a MemoryError from inside NumPy after several
+    minutes, a failed job, and nothing a user can act on.
+    """
+    total = total_memory_bytes()
+    if not total:
+        return None
+    needed = estimate_matrix_bytes(dataset)
+    if needed <= total * _MEMORY_HEADROOM:
+        return None
+    return (
+        "This section needs about %.1f GB just to hold its expression matrix, and this machine has "
+        "%.1f GB of memory. Load fewer cells (the run dialog's cell limit), or run it on a larger "
+        "machine: %d cells x %d measured genes is past what fits here."
+        % (needed / 1e9, total / 1e9, len(dataset.records), len(expression_feature_names(dataset)))
+    )
 
 
 def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
@@ -2099,13 +2671,49 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     import pandas as pd  # type: ignore
 
     genes = expression_feature_names(dataset)
+    fingerprint = _anndata_fingerprint(dataset, genes) if genes else None
+    if fingerprint is not None and _ANNDATA_CACHE["fingerprint"] == fingerprint and _cache_holds(dataset):
+        # A copy, never the cached object: every caller mutates what it gets --
+        # scanpy normalises in place, squidpy writes into obsp and uns -- and
+        # handing out the same object would let one tool's graph leak into the
+        # next tool's result.
+        return _ANNDATA_CACHE["adata"].copy()
     if not genes:
         raise MissingPreconditionError("Scanpy/Squidpy wrappers require numeric features.")
-    matrix = np.array([[record.genes.get(gene, 0.0) for gene in genes] for record in dataset.records], dtype=float)
-    source_matrix = np.array(
-        [[record.raw_genes.get(gene, record.genes.get(gene, 0.0)) for gene in genes] for record in dataset.records],
-        dtype=float,
-    )
+
+    # Fill from what each cell actually measured, not by asking every cell about
+    # every gene. The old form was a nested comprehension over cells x genes --
+    # one dict lookup per pair, in Python, single-threaded. Xenium is sparse: a
+    # breast section carries a median of 70 detected genes per cell out of 471,
+    # so 85% of those lookups returned a default. Measured at 40,000 cells it
+    # took 14.6 s, and every tool and every robustness setting rebuilds it, which
+    # is what made a 164,000-cell run average 0.6 cores for an hour.
+    #
+    # Preallocating and writing only the nonzero entries makes the work
+    # proportional to what was measured. Values and dtype are unchanged, so no
+    # downstream number moves.
+    column_of = {gene: index for index, gene in enumerate(genes)}
+    matrix = np.zeros((len(dataset.records), len(genes)), dtype=float)
+    for row, record in enumerate(dataset.records):
+        target = matrix[row]
+        for gene, value in record.genes.items():
+            column = column_of.get(gene)
+            if column is not None:
+                target[column] = value
+    # `raw_genes` falls back to `genes` per gene, so start from the analysis
+    # values and overwrite only where a source value exists. Same result as the
+    # old `raw_genes.get(gene, genes.get(gene, 0.0))`, without the second sweep
+    # over every cell-gene pair.
+    source_matrix = matrix.copy()
+    for row, record in enumerate(dataset.records):
+        raw = record.raw_genes
+        if not raw:
+            continue
+        target = source_matrix[row]
+        for gene, value in raw.items():
+            column = column_of.get(gene)
+            if column is not None:
+                target[column] = value
     obs = pd.DataFrame(
         {
             "sample_id": [record.sample_id for record in dataset.records],
@@ -2120,8 +2728,11 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     adata = ad.AnnData(X=matrix, obs=obs)
     adata.var_names = genes
     adata.layers["source_values"] = source_matrix
-    if dataset.metadata.get("raw_counts_available"):
-        adata.layers["counts"] = source_matrix.copy()
+    # No `counts` layer. It used to be `source_matrix.copy()` -- byte-identical
+    # to `source_values`, never written to, and read by one function whose only
+    # use of it was to decide whether to call the numbers "raw_counts". At a
+    # 378,000-cell section that label cost 1.15 GB held for the length of the
+    # run. The semantics now travel in `uns`, where the rest of them already are.
     adata.obsm["spatial"] = np.array([[record.x, record.y] for record in dataset.records], dtype=float)
     adata.uns["spatialmind"] = {
         "sample_id": dataset.sample_id,
@@ -2129,7 +2740,34 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
         "source_value_semantics": dataset.metadata.get("source_value_semantics", "unspecified"),
         "raw_counts_available": bool(dataset.metadata.get("raw_counts_available")),
     }
+    if fingerprint is not None and estimate_matrix_bytes(dataset, genes) <= _CACHE_MAX_BYTES:
+        _ANNDATA_CACHE["fingerprint"] = fingerprint
+        _ANNDATA_CACHE["adata"] = adata
+        _ANNDATA_CACHE["dataset"] = weakref.ref(dataset)
+        return adata.copy()
+    # Nothing else holds this one, so the caller may have it outright: not
+    # caching a large matrix also spares the copy that caching would require.
     return adata
+
+
+def _cache_holds(dataset: SpatialDataset) -> bool:
+    """Is the cached matrix this very object's, rather than a recycled address's?
+
+    A dead referent answers None, which is a miss and a rebuild -- correct, and
+    the case the cache was never for: a plan holds its dataset alive across the
+    tools it runs.
+    """
+    reference = _ANNDATA_CACHE["dataset"]
+    return reference is not None and reference() is dataset
+
+
+def clear_anndata_cache() -> None:
+    """Drop the cached matrix. For tests, and for any caller that edits
+    expression values in place -- see `_anndata_fingerprint` for why that is the
+    one mutation the fingerprint cannot see."""
+    _ANNDATA_CACHE["fingerprint"] = None
+    _ANNDATA_CACHE["adata"] = None
+    _ANNDATA_CACHE["dataset"] = None
 
 
 def _rank_genes_groups_table(adata: Any, group: str, limit: int) -> List[Dict[str, object]]:
@@ -2158,6 +2796,12 @@ def _group_values(values: Any, group: str) -> List[Any]:
     if isinstance(values, dict):
         return list(values.get(group, []))
     return list(values)
+
+
+def _is_self_pair(pair: Dict[str, object]) -> bool:
+    """True for an `A | A` pair, whatever the group names contain."""
+    parts = [part.strip() for part in str(pair.get("pair", "")).split("|")]
+    return len(parts) == 2 and parts[0] == parts[1]
 
 
 def _nhood_enrichment_pairs(

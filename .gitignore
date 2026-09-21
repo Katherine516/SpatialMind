@@ -20,6 +20,26 @@ data/**
 !data/demo_spatial.csv
 !data/cell_ontology_terms/
 !data/cell_ontology_terms/CL_0000127_astrocyte.json
+# Provenance notes are documentation, not data: how a dataset was obtained,
+# what was verified about it, and what its labels and regions actually are.
+# Without these the only record of why a section can be trusted lives on one
+# person's disk.
+#
+# `!data/*/` is required and is not redundant: git will not re-include a file
+# whose parent directory is excluded, so the directory has to be walkable before
+# the negation below can match anything inside it.
+!data/*/
+!data/*/PROVENANCE.md
 
 # Scratch renders from local report checks
 tmp/
+
+# SpatialMind Studio macOS build artifacts
+build/
+dist/
+packaging/*.icns
+packaging/*.iconset/
+packaging/SpatialMindStudio.png
+
+# Agent-local settings; launch.json is shared, this is not
+.claude/settings.local.json

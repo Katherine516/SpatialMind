@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument(
         "--review-max-records",
         type=int,
-        default=5000,
+        default=0,
         help="Maximum rows written to expert-review templates; independent of analysis scope.",
     )
     parser.add_argument(
@@ -32,6 +32,8 @@ def main() -> None:
         help="Development-only override permitting validated analysis on a sampled section.",
     )
     parser.add_argument("--min-label-coverage", type=float, default=0.7)
+    parser.add_argument("--acknowledge-low-coverage", action="store_true",
+                        help="Permit a coverage threshold below the 20%% floor; the report states it.")
     parser.add_argument("--min-region-coverage", type=float, default=0.7)
     parser.add_argument("--allow-single-region", action="store_true")
     parser.add_argument(
@@ -52,6 +54,7 @@ def main() -> None:
         output_dir=Path(args.out),
         max_records=0 if args.full_section else args.max_records,
         min_label_coverage=args.min_label_coverage,
+        acknowledge_low_coverage=args.acknowledge_low_coverage,
         min_region_coverage=args.min_region_coverage,
         allow_single_region=args.allow_single_region,
         report_format=args.report_format,

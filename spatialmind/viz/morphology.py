@@ -55,15 +55,19 @@ def find_morphology_image(dataset_path: str) -> Optional[str]:
     return None
 
 
-def load_morphology_thumbnail(
+def load_morphology_plane(
     dataset_path: str,
     max_dimension: int = DEFAULT_MAX_DIMENSION,
 ) -> Dict[str, Any]:
-    """Render a downsampled morphology image as an embeddable PNG data URI.
+    """Decode a downsampled morphology plane and return the image itself.
 
     Reads the smallest pyramid level whose largest edge still exceeds
-    ``max_dimension`` so the returned image is detailed enough to review without
+    ``max_dimension`` so the result is detailed enough to review without
     decoding the full-resolution plane (which is hundreds of megabytes).
+
+    Separate from ``load_morphology_thumbnail`` because a caller that wants to
+    *crop* the tissue -- a region review packet, say -- needs the pixels, and
+    decoding a data URI back into an image to get them is silly.
     """
     image_path = find_morphology_image(dataset_path)
     if not image_path:
@@ -87,26 +91,38 @@ def load_morphology_thumbnail(
             full_height, full_width = _plane_shape(levels[0].shape)
         array = _to_2d_plane(array)
         thumbnail = _to_display_uint8(array, np, max_dimension, Image)
-        buffer = io.BytesIO()
-        thumbnail.save(buffer, format="PNG", optimize=True)
-        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     except Exception as exc:  # pragma: no cover - depends on local image files
         return {"status": "unavailable", "reason": "Morphology image could not be decoded: %s" % exc}
 
     return {
         "status": "loaded",
+        "image": thumbnail,
         "source": os.path.basename(image_path),
         "pyramid_level": level_index,
         "pyramid_levels": len(levels),
         "thumbnail_width": thumbnail.width,
         "thumbnail_height": thumbnail.height,
         "pixel_size_um": pixel_size,
-        # Extent of the FULL-resolution plane in microns; the viewer stretches the
+        # Extent of the FULL-resolution plane in microns; a viewer stretches the
         # thumbnail across this extent so cells in micron space align with tissue.
         "width_um": round(full_width * pixel_size, 4),
         "height_um": round(full_height * pixel_size, 4),
-        "data_uri": "data:image/png;base64,%s" % encoded,
     }
+
+
+def load_morphology_thumbnail(
+    dataset_path: str,
+    max_dimension: int = DEFAULT_MAX_DIMENSION,
+) -> Dict[str, Any]:
+    """Render a downsampled morphology image as an embeddable PNG data URI."""
+    plane = load_morphology_plane(dataset_path, max_dimension=max_dimension)
+    if plane.get("status") != "loaded":
+        return plane
+    thumbnail = plane.pop("image")
+    buffer = io.BytesIO()
+    thumbnail.save(buffer, format="PNG", optimize=True)
+    plane["data_uri"] = "data:image/png;base64,%s" % base64.b64encode(buffer.getvalue()).decode("ascii")
+    return plane
 
 
 def _choose_level(levels: Sequence[Any], max_dimension: int) -> int:

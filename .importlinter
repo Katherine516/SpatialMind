@@ -9,6 +9,7 @@ source_modules =
 forbidden_modules =
     spatialmind.agent
     spatialmind.api
+    spatialmind.app
     spatialmind.batch
     spatialmind.ingestion
     spatialmind.memory
@@ -17,13 +18,14 @@ forbidden_modules =
     spatialmind.viz
 
 [importlinter:contract:tools_do_not_import_agent]
-name = tools must not import the agent or API
+name = tools must not import the agent, API or app
 type = forbidden
 source_modules =
     spatialmind.tools
 forbidden_modules =
     spatialmind.agent
     spatialmind.api
+    spatialmind.app
 
 [importlinter:contract:viz_storage_do_not_import_agent]
 name = viz and storage are pure consumers
@@ -34,3 +36,50 @@ source_modules =
 forbidden_modules =
     spatialmind.agent
     spatialmind.api
+    spatialmind.app
+
+[importlinter:contract:app_is_the_top_layer]
+name = the app is a top layer nothing else may import
+type = forbidden
+source_modules =
+    spatialmind.ingestion
+    spatialmind.pilot
+    spatialmind.promotion
+    spatialmind.methods
+    spatialmind.review
+forbidden_modules =
+    spatialmind.app
+
+[importlinter:contract:gatekeeper_stays_at_the_bottom]
+name = the gatekeeper must be importable from every layer
+type = forbidden
+source_modules =
+    spatialmind.gatekeeper
+forbidden_modules =
+    spatialmind.agent
+    spatialmind.api
+    spatialmind.app
+    spatialmind.batch
+    spatialmind.pilot
+    spatialmind.storage
+    spatialmind.viz
+
+# The six tiers from docs/agent_architecture.md, enforced instead of described.
+# The table was accurate when written and stayed accurate by convention -- the
+# graph had zero violations when last checked -- but nothing would have said so
+# if it stopped being true. Everything above was five `forbidden` contracts
+# pinning individual edges; this pins the ordering itself.
+#
+# `algorithms`, `planner` and `agent_loop` are the v1 survivors. They are listed
+# in the tiers they actually occupy rather than left out, so retiring them is a
+# visible change to this file.
+[importlinter:contract:six_tiers]
+name = the six tiers are ordered, not merely described
+type = layers
+layers =
+    spatialmind.app : spatialmind.api : spatialmind.cli : spatialmind.batch : spatialmind.review : spatialmind.promotion
+    spatialmind.agent : spatialmind.agent_loop : spatialmind.pilot : spatialmind.workflows
+    spatialmind.viz : spatialmind.methods : spatialmind.datasets : spatialmind.governance
+    spatialmind.gatekeeper
+    spatialmind.ingestion : spatialmind.tools : spatialmind.storage : spatialmind.memory : spatialmind.llm : spatialmind.algorithms
+    spatialmind.contracts : spatialmind.schemas

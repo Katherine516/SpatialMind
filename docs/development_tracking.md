@@ -1624,3 +1624,29 @@ Verification:
 - Real backend validation passed Scanpy differential expression/clustering and Squidpy Moran's I/neighborhood enrichment.
 - `pip check` found no broken requirements; all three import contracts were kept; bytecode compilation and `git diff --check` passed.
 - Detailed implementation report: `outputs/NEXT_MOVE_IMPLEMENTATION_REPORT_20260812.md`.
+
+### Step: Remove Superseded Planning Documents and Reclaim the Repository
+
+Status: Complete
+
+Why:
+
+- The repository's `.git` directory had grown to 112 GB against a working tree whose largest tracked blob is a 1.7 MB PNG. 74 GB of that was leftover `tmp_pack_*` files from interrupted pack operations dated 23-24 May, which git itself reports as `garbage`; the rest was unreachable objects, almost certainly `data/` committed before `.gitignore` excluded it.
+- Sixteen documents were point-in-time records of superseded plans rather than descriptions of current behaviour. `docs/mvp_plan_v4_review.md` reviewed a file on a Desktop that was never in the repository at all.
+
+What was removed:
+
+- Repacked and pruned with `git gc --prune=now`: 112 GB to 7.5 MB. All nine refs, 89 commits and 1,205 reachable objects verified identical before and after, `git fsck` clean.
+- Plan and status records: `ARCHITECTURE_REVIEW.md` (a review of the original Visium v0.1 proposal), `INGESTION.md`, `docs/research_proposal.md`, `docs/next_steps.md`, `docs/phase_1_2_status.md`, `docs/v2_implementation_status.md`, `docs/plan_v1_v2_comparison.md`, `docs/layer_plan_review.md`, `docs/mvp_plan_v4_review.md`, `docs/mvp_plan_v7_review.md`, `docs/operational_readiness_audit.md`, `docs/expert_label_ready_xenium_mvp.md`, `docs/real_agent_acquisition_and_operations.md`, `docs/spatialomics_build_plan_v2.html`, `docs/spatialmind_studio_prototype.html`, `docs/SpatialMind.png`.
+- Regenerable artifacts: `.venv-deep` (3.4 GB, supporting only scaffold tools -- `cell2location` appears in the codebase once, as a documentation URL on `spatial_deconvolution`, which is `capability=unavailable`), `build/`, `tmp/`, every cache directory, and the stray `.DS_Store` files.
+
+What was deliberately kept:
+
+- `docs/gate_enforcement.md` and `docs/validated_xenium_pilot.md` had zero inbound references and would have been cut by a link-count rule. Both describe current product behaviour -- the gate invariant and the pilot layer -- rather than a past decision. Reference counting is not a test of whether a document is still true.
+- `data/`, `outputs/` and `dist/`: research inputs, analysis products and the built app.
+- `spatialmind/api/` and `spatialmind/batch/`: a second service, exercised only by `tests/test_api.py` and excluded from the packaged app. Unused is not the same as abandoned, and that call is not one to make while tidying.
+
+Verification:
+
+- Full suite 484/484, import contracts 6/6, legacy eval 16/16, MVP eval 13/13, `check_doc_numbers.py --check` clean.
+- `docs/agent_architecture.md` corrected: it still described the `layers["counts"]` that the matrix-memory work removed.

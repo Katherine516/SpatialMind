@@ -4,6 +4,12 @@ from pathlib import Path
 
 from .agent import SpatialMindAgent
 from .datasets import inspect_data_root, write_dataset_report
+from .gatekeeper import (
+    DEFAULT_MIN_LABEL_COVERAGE,
+    DEFAULT_MIN_REGION_COVERAGE,
+    MIN_COVERAGE_FLOOR,
+    CoverageFloorError,
+)
 from .ingestion import infer_data_type
 from .llm import build_llm_provider
 from .pilot import run_pilot
@@ -25,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["local", "openai", "gpt", "anthropic", "claude"],
         help="Planner backend. local uses deterministic rules; openai/gpt and anthropic/claude call hosted APIs.",
     )
-    parser.add_argument("--llm-model", default="", help="Hosted model name, for example gpt-4.1 or claude-sonnet-4-20250514.")
+    parser.add_argument("--llm-model", default="", help="Hosted model name, for example gpt-4.1 or claude-sonnet-5.")
     parser.add_argument(
         "--report-format",
         default="html",
@@ -34,10 +40,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-records", type=int, default=5000, help="Maximum cells loaded for Xenium review runs.")
     parser.add_argument("--full-section", action="store_true", help="Load all Xenium cells for final validated inference.")
-    parser.add_argument("--review-max-records", type=int, default=5000, help="Rows written to Xenium review templates.")
-    parser.add_argument("--min-label-coverage", type=float, default=0.7)
-    parser.add_argument("--min-region-coverage", type=float, default=0.7)
+    parser.add_argument("--review-max-records", type=int, default=0, help="Rows written to Xenium review templates.")
+    parser.add_argument("--min-label-coverage", type=float, default=DEFAULT_MIN_LABEL_COVERAGE)
+    parser.add_argument("--min-region-coverage", type=float, default=DEFAULT_MIN_REGION_COVERAGE)
     parser.add_argument("--allow-single-region", action="store_true")
+    parser.add_argument(
+        "--acknowledge-low-coverage",
+        action="store_true",
+        # .format, not %-interpolation: argparse runs its own % substitution over
+        # the help text, so a literal "20%" from a first pass is read as a format
+        # spec and --help dies. Leaving %% for argparse to consume is the fix.
+        help="Permit a coverage threshold below {:.0f}%%. At that setting the gate cannot refuse a "
+             "near-empty review table, so the report states the override on every claim."
+             .format(100 * MIN_COVERAGE_FLOOR),
+    )
     parser.add_argument(
         "--allow-sampled-validation",
         action="store_true",
@@ -87,19 +103,25 @@ def main() -> None:
     if not args.prompt:
         parser.error("prompt is required unless --inspect-data is used")
     if infer_data_type(args.data) in {"xenium_directory", "xenium_experiment_file"}:
-        result = run_pilot(
-            dataset_path=args.data,
-            output_dir=Path(args.out),
-            max_records=0 if args.full_section else args.max_records,
-            min_label_coverage=args.min_label_coverage,
-            min_region_coverage=args.min_region_coverage,
-            allow_single_region=args.allow_single_region,
-            report_format=args.report_format,
-            readiness_only=args.readiness_only,
-            require_complete_section=not args.allow_sampled_validation,
-            review_max_records=args.review_max_records,
-            query=args.prompt,
-        )
+        try:
+            result = run_pilot(
+                dataset_path=args.data,
+                output_dir=Path(args.out),
+                max_records=0 if args.full_section else args.max_records,
+                min_label_coverage=args.min_label_coverage,
+                min_region_coverage=args.min_region_coverage,
+                allow_single_region=args.allow_single_region,
+                report_format=args.report_format,
+                readiness_only=args.readiness_only,
+                require_complete_section=not args.allow_sampled_validation,
+                review_max_records=args.review_max_records,
+                acknowledge_low_coverage=args.acknowledge_low_coverage,
+                query=args.prompt,
+            )
+        except CoverageFloorError as exc:
+            # argparse's own error path, so a misconfigured threshold exits 2 with
+            # usage rather than a traceback.
+            parser.error(str(exc))
         print("Xenium pilot status: %s" % result["status"])
         if result.get("report_path"):
             print("Report: %s" % os.path.abspath(str(result["report_path"])))

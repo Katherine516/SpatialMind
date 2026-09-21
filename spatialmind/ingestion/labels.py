@@ -8,12 +8,21 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from ..schemas import SpatialDataset
+from ..schemas import NON_EXPRESSION_FEATURE_NAMES, SpatialDataset
 
 
 CELL_ID_KEYS = ("cell_id", "cell", "barcode", "cell_barcode", "spot_id", "id")
 LABEL_KEYS = ("expert_label", "cell_type", "celltype", "annotation", "cell_label", "label", "predicted_label")
 CONFIDENCE_KEYS = ("confidence", "score", "probability", "prediction_score", "label_confidence")
+# What the reviewer decided, as opposed to how many cells the decision covered.
+# Written by the Studio; absent from a hand-authored table, which is reported as
+# unknown rather than guessed at.
+SCOPE_KEYS = ("assignment_scope", "scope", "selection")
+# Who made the call. Carried through to the report, because a table that says
+# "composition-derived, not a pathologist call" in its own reviewer column is
+# honest about itself and the gate still counts it as reviewed -- the report
+# read `validated_ready` with 19 regions and never said where they came from.
+REVIEWER_KEYS = ("reviewer_id", "reviewer", "annotator", "curator")
 REGION_KEYS = ("region", "region_label", "tissue_region", "roi", "compartment", "zone", "area")
 REGION_CONFIDENCE_KEYS = ("region_confidence", "confidence", "score", "probability")
 LABEL_TABLE_NAMES = (
@@ -64,7 +73,7 @@ MARKER_EVIDENCE_FEATURES = (
     "AQP4",
     "MBP",
 )
-NON_BIOLOGICAL_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
+NON_BIOLOGICAL_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
 
 @dataclass
@@ -75,11 +84,40 @@ class LabelApplicationReport:
     matched_cells: int = 0
     total_records: int = 0
     label_counts: Dict[str, int] = field(default_factory=dict)
+    # Distinct classes that came from the reviewed table, for cells it actually
+    # matched. `label_counts` is a Counter over every loaded record *after*
+    # application, so it also contains whatever the loader's marker rule guessed
+    # for the unmatched remainder -- which is why the gate's "at least two
+    # biological classes" condition used to pass on one reviewed cell.
+    reviewed_labels: List[str] = field(default_factory=list)
+    reviewers: Dict[str, int] = field(default_factory=dict)
+    # How many distinct decisions produced `matched_cells` rows. Ten clicks that
+    # each name a cluster cover a whole section; read as per-cell expert calls
+    # they look like 24,000 independent judgements. 0 means the table carried no
+    # scope column, which is unknown, not one.
+    review_decisions: int = 0
+    assignment_scopes: Dict[str, int] = field(default_factory=dict)
     confidence_summary: Dict[str, float] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        # `label_counts` reads as biology -- "Neural/Glial cell", "T/NK cell" --
+        # whatever its provenance, because the loader's marker rule names the
+        # cells it can and the counter does not distinguish. The report text is
+        # careful about this; the serialized form was not, and a consumer of
+        # `plan_results.json` got named cell types with nothing beside them
+        # saying no one had reviewed any of it. The discipline has to be in the
+        # data, not only in the prose.
+        payload["labels_are_reviewed"] = bool(self.reviewed_labels)
+        payload["label_counts_meaning"] = (
+            "Counts of reviewed expert labels, over the %d cells the table matched."
+            % self.matched_cells
+            if self.reviewed_labels else
+            "Not reviewed. These names are the loader's marker-rule guess and data-derived groups; "
+            "they are not expert calls and support no biological claim."
+        )
+        return payload
 
 
 @dataclass
@@ -90,11 +128,27 @@ class RegionApplicationReport:
     matched_cells: int = 0
     total_records: int = 0
     region_counts: Dict[str, int] = field(default_factory=dict)
+    # Distinct regions the reviewer's table actually assigned. `region_counts`
+    # includes the loader's own section-wide placeholder region, which counted
+    # toward the gate's "at least two user-defined regions" condition.
+    reviewed_regions: List[str] = field(default_factory=list)
+    reviewers: Dict[str, int] = field(default_factory=dict)
+    review_decisions: int = 0
+    assignment_scopes: Dict[str, int] = field(default_factory=dict)
     confidence_summary: Dict[str, float] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["regions_are_reviewed"] = bool(self.reviewed_regions)
+        payload["region_counts_meaning"] = (
+            "Counts of reviewer-defined regions, over the %d cells the table matched."
+            % self.matched_cells
+            if self.reviewed_regions else
+            "Not reviewed. This includes the loader's section-wide placeholder region and supports "
+            "no claim about anatomy."
+        )
+        return payload
 
 
 @dataclass
@@ -217,14 +271,26 @@ def apply_external_label_table(
         _store_label_report(dataset, report)
         return report
 
+    resolved_scope_key = _choose_key(keys, SCOPE_KEYS)
+    resolved_reviewer_key = _choose_key(keys, REVIEWER_KEYS)
     label_by_cell: Dict[str, str] = {}
     confidence_by_cell: Dict[str, float] = {}
+    scope_by_cell: Dict[str, str] = {}
+    reviewer_by_cell: Dict[str, str] = {}
     for row in rows:
         cell_id = _normalize_cell_id(row.get(resolved_cell_key, ""))
         label = str(row.get(resolved_label_key, "")).strip()
         if not cell_id or not label:
             continue
         label_by_cell[cell_id] = label
+        if resolved_scope_key:
+            scope = str(row.get(resolved_scope_key, "")).strip()
+            if scope:
+                scope_by_cell[cell_id] = scope
+        if resolved_reviewer_key:
+            reviewer = str(row.get(resolved_reviewer_key, "")).strip()
+            if reviewer:
+                reviewer_by_cell[cell_id] = reviewer
         if resolved_confidence_key:
             try:
                 confidence_by_cell[cell_id] = float(row.get(resolved_confidence_key, ""))
@@ -233,13 +299,21 @@ def apply_external_label_table(
 
     matched = 0
     confidences: List[float] = []
+    applied_labels: set = set()
+    applied_scopes: Counter = Counter()
+    applied_reviewers: Counter = Counter()
     for record in dataset.records:
         cell_id = _normalize_cell_id(record.cell_id or "")
         label = label_by_cell.get(cell_id)
         if not label:
             continue
         record.cell_type = label
+        applied_labels.add(label)
         matched += 1
+        if cell_id in scope_by_cell:
+            applied_scopes[scope_by_cell[cell_id]] += 1
+        if cell_id in reviewer_by_cell:
+            applied_reviewers[reviewer_by_cell[cell_id]] += 1
         if cell_id in confidence_by_cell:
             confidences.append(confidence_by_cell[cell_id])
 
@@ -251,6 +325,10 @@ def apply_external_label_table(
         matched_cells=matched,
         total_records=len(dataset.records),
         label_counts=dict(Counter(record.cell_type for record in dataset.records)),
+        reviewed_labels=sorted(applied_labels),
+        review_decisions=len(applied_scopes),
+        assignment_scopes=dict(applied_scopes),
+        reviewers=dict(applied_reviewers),
         confidence_summary=_confidence_summary(confidences),
     )
     if matched < len(dataset.records):
@@ -287,14 +365,26 @@ def apply_external_region_table(
         _store_region_report(dataset, report)
         return report
 
+    resolved_scope_key = _choose_key(keys, SCOPE_KEYS)
+    resolved_reviewer_key = _choose_key(keys, REVIEWER_KEYS)
     region_by_cell: Dict[str, str] = {}
     confidence_by_cell: Dict[str, float] = {}
+    scope_by_cell: Dict[str, str] = {}
+    reviewer_by_cell: Dict[str, str] = {}
     for row in rows:
         cell_id = _normalize_cell_id(row.get(resolved_cell_key, ""))
         region = str(row.get(resolved_region_key, "")).strip()
         if not cell_id or not region:
             continue
         region_by_cell[cell_id] = region
+        if resolved_scope_key:
+            scope = str(row.get(resolved_scope_key, "")).strip()
+            if scope:
+                scope_by_cell[cell_id] = scope
+        if resolved_reviewer_key:
+            reviewer = str(row.get(resolved_reviewer_key, "")).strip()
+            if reviewer:
+                reviewer_by_cell[cell_id] = reviewer
         if resolved_confidence_key:
             try:
                 confidence_by_cell[cell_id] = float(row.get(resolved_confidence_key, ""))
@@ -303,13 +393,21 @@ def apply_external_region_table(
 
     matched = 0
     confidences: List[float] = []
+    applied_regions: set = set()
+    applied_scopes: Counter = Counter()
+    applied_reviewers: Counter = Counter()
     for record in dataset.records:
         cell_id = _normalize_cell_id(record.cell_id or "")
         region = region_by_cell.get(cell_id)
         if not region:
             continue
         record.region = region
+        applied_regions.add(region)
         matched += 1
+        if cell_id in scope_by_cell:
+            applied_scopes[scope_by_cell[cell_id]] += 1
+        if cell_id in reviewer_by_cell:
+            applied_reviewers[reviewer_by_cell[cell_id]] += 1
         if cell_id in confidence_by_cell:
             confidences.append(confidence_by_cell[cell_id])
 
@@ -321,6 +419,10 @@ def apply_external_region_table(
         matched_cells=matched,
         total_records=len(dataset.records),
         region_counts=dict(Counter(record.region or "unassigned" for record in dataset.records)),
+        reviewed_regions=sorted(applied_regions),
+        review_decisions=len(applied_scopes),
+        assignment_scopes=dict(applied_scopes),
+        reviewers=dict(applied_reviewers),
         confidence_summary=_confidence_summary(confidences),
     )
     if matched < len(dataset.records):
@@ -538,18 +640,30 @@ def build_xenium_label_intake_report(
     )
 
 
+
+# The containers a Xenium table arrives in. Named once here because the same
+# list was spelled out independently in the type inference, the catalogue, the
+# Studio's cell index and this readiness check, and they disagreed.
+ASSET_SUFFIXES = (".csv.gz", ".csv", ".parquet", ".parquet.gz")
+
+
+def _any_asset(root: Path, stem: str) -> bool:
+    return any((root / ("%s%s" % (stem, suffix))).exists() for suffix in ASSET_SUFFIXES)
+
+
 def summarize_xenium_expert_readiness(dataset_path: str) -> XeniumExpertReadiness:
     root = _resolve_xenium_path(Path(dataset_path))
-    has_cell_table = any((root / name).exists() for name in ("cells.csv.gz", "cells.csv", "cells.parquet"))
+    # Every container these tables arrive in, including the gzipped parquet a
+    # GEO deposit ships. This check reported "missing Xenium cell table" for a
+    # bundle whose `cells.parquet.gz` the loader reads without complaint, and
+    # the gate refused it on an asset it had.
+    has_cell_table = _any_asset(root, "cells")
     has_feature_matrix = any((root / name).exists() for name in ("cell_feature_matrix.h5", "cell_feature_matrix.zarr.zip", "cell_feature_matrix.tar.gz"))
     has_morphology = (
         any((root / name).exists() for name in ("morphology.ome.tif", "morphology_focus.ome.tif", "morphology_mip.ome.tif"))
         or (root / "morphology_focus").exists()
     )
-    has_boundaries = any(
-        (root / name).exists()
-        for name in ("cell_boundaries.csv.gz", "cell_boundaries.parquet", "nucleus_boundaries.csv.gz", "nucleus_boundaries.parquet")
-    )
+    has_boundaries = _any_asset(root, "cell_boundaries") or _any_asset(root, "nucleus_boundaries")
     label_tables = discover_label_tables(dataset_path)
     region_tables = discover_region_label_tables(dataset_path)
     cluster_methods = list_xenium_cluster_methods(dataset_path)

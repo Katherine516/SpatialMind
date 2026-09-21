@@ -16,6 +16,7 @@ from spatialmind.ingestion import (
 from spatialmind.methods.replication import assess_condition_replication
 from spatialmind.ingestion.labels import MARKER_EVIDENCE_FEATURES, NON_BIOLOGICAL_FEATURES, load_xenium_analysis_clusters
 from spatialmind.schemas import SpatialDataset
+from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.implementations import annotation, marker_detection, neighborhood_enrichment, reference_label_transfer, region_summary
 
 
@@ -148,16 +149,24 @@ def build_reference_assist_report(
                 }
             )
             if reference_ready and len(shared) >= min_shared_features:
-                result = reference_label_transfer(
-                    target,
-                    {
-                        "reference_dataset": reference,
-                        "reference_features": reference.genes,
-                        "min_shared_features": min_shared_features,
-                    },
-                )
-                payload["status"] = "reference_assist_ready"
-                payload["reference_assist_result"] = result.__dict__
+                try:
+                    result = reference_label_transfer(
+                        target,
+                        {
+                            "reference_dataset": reference,
+                            "reference_features": reference.genes,
+                            "min_shared_features": min_shared_features,
+                        },
+                    )
+                except MissingPreconditionError as exc:
+                    # A refused reference is a valid outcome, not a crash: shared
+                    # features can clear the bar while the reference still has no
+                    # class for populations present in the section.
+                    payload["status"] = "blocked_unusable_reference"
+                    payload.setdefault("blockers", []).append(str(exc))
+                else:
+                    payload["status"] = "reference_assist_ready"
+                    payload["reference_assist_result"] = result.__dict__
             else:
                 payload["blockers"] = list(reference_blockers)
                 if len(shared) < min_shared_features:

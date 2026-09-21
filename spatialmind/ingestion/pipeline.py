@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import gzip
 import json
@@ -8,14 +9,23 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from ..schemas import RawDataSource, SpatialDataset, SpotRecord
+from ..schemas import (
+    NON_EXPRESSION_FEATURE_NAMES,
+    NON_GENE_FEATURE_TYPES,
+    RawDataSource,
+    SpatialDataset,
+    SpotRecord,
+    control_feature_names,
+    is_control_feature,
+)
 
 
 KNOWN_COLUMNS = {"sample_id", "x", "y", "cell_type", "region", "spot_id", "barcode", "cell_id"}
 TABLE_TYPES = {"tidy_csv", "segmentation_csv", "multiplex_imaging_csv", "spatial_table"}
 COMMON_ANNOTATION_KEYS = ("cell_type", "celltype", "cell_type_key", "annotation", "cluster", "leiden", "seurat_clusters")
 COMMON_SPATIAL_KEYS = ("spatial", "X_spatial")
-NON_EXPRESSION_FEATURES = {"TRANSCRIPT_COUNTS", "TOTAL_COUNTS", "CELL_AREA", "NUCLEUS_AREA"}
+# Single definition lives in schemas so ingestion, tools and labels cannot drift.
+NON_EXPRESSION_FEATURES = NON_EXPRESSION_FEATURE_NAMES
 
 SUPPORTED_RAW_DATA_TYPES = [
     {
@@ -411,10 +421,18 @@ class DataIngestionLayer:
             [
                 os.path.join(path, "cells.csv.gz"),
                 os.path.join(path, "cells.csv"),
+                # Parquet is how a Xenium bundle arrives from GEO, and how 10x
+                # itself now ships the cell table. The asset check already
+                # counted it as present, so a parquet-only bundle passed
+                # readiness and then failed to load -- the two disagreed.
+                os.path.join(path, "cells.parquet"),
+                os.path.join(path, "cells.parquet.gz"),
             ]
         )
         if not cells_path:
-            raise IngestionValidationError("Xenium directory is missing cells.csv.gz/cells.csv: %s" % path)
+            raise IngestionValidationError(
+                "Xenium directory is missing a cell table (cells.csv.gz, cells.csv or "
+                "cells.parquet): %s" % path)
         metadata = _read_xenium_metadata(path)
         metadata["xenium_input_path"] = input_path
         metadata["xenium_resolved_directory"] = path
@@ -428,8 +446,7 @@ class DataIngestionLayer:
         record_limit = max_records if max_records > 0 else None
         if estimated_total and record_limit is not None and estimated_total > record_limit:
             target_indices = set(_sample_indices(estimated_total, max_records))
-        with _open_text(cells_path) as handle:
-            reader = csv.DictReader(handle)
+        with _open_cell_rows(cells_path) as reader:
             for row_index, row in enumerate(reader):
                 total_rows += 1
                 if target_indices is not None and row_index not in target_indices:
@@ -447,6 +464,13 @@ class DataIngestionLayer:
                                 "TOTAL_COUNTS": float(row.get("total_counts") or 0.0),
                                 "CELL_AREA": float(row.get("cell_area") or 0.0),
                                 "NUCLEUS_AREA": float(row.get("nucleus_area") or 0.0),
+                                # The instrument's own per-cell background. Previously
+                                # parsed past and dropped, which discarded the only
+                                # per-cell signal-to-noise measure Xenium provides and
+                                # left cell QC with nothing to threshold on.
+                                "CONTROL_PROBE_COUNTS": float(row.get("control_probe_counts") or 0.0),
+                                "CONTROL_CODEWORD_COUNTS": float(row.get("control_codeword_counts") or 0.0),
+                                "UNASSIGNED_CODEWORD_COUNTS": float(row.get("unassigned_codeword_counts") or 0.0),
                             },
                             region=str(metadata.get("region_name") or "") or None,
                             cell_id=cell_id,
@@ -485,9 +509,14 @@ class DataIngestionLayer:
         for record in records:
             record.raw_genes = dict(record.genes)
 
+        # Decide scope from the scan, before QC removes anything. Otherwise cells
+        # dropped for quality would make a full section look like a sample and
+        # wrongly block validated inference.
         complete_section = max_records <= 0 or (
             target_indices is None and not reached_record_limit and bool(estimated_total and len(records) >= estimated_total)
         )
+        scanned_record_count = len(records)
+        records, cell_qc = apply_xenium_cell_qc(records)
 
         sources = [
             RawDataSource(
@@ -517,21 +546,34 @@ class DataIngestionLayer:
                 "raw_counts_available": bool(matrix_features),
                 "raw_count_source": "cell_feature_matrix.h5" if matrix_features else "cells.csv count summaries",
                 "analysis_scope": "full_section" if complete_section else "sampled",
+                "cell_qc": cell_qc,
+                # Declared by the matrix where available, so downstream stops
+                # guessing control status from probe names.
+                "control_features": matrix_metadata.get("control_features", []),
+                "control_feature_source": matrix_metadata.get("control_feature_source", "name_prefix_fallback"),
                 "sampling": {
                     "method": "all" if complete_section else ("deterministic_even_index" if target_indices is not None else "first_n"),
                     "requested_records": max_records,
+                    "scanned_records": scanned_record_count,
                     "loaded_records": len(records),
                     "total_records": estimated_total,
-                    "fraction_loaded": round(len(records) / float(estimated_total or len(records)), 6),
+                    # Scope fraction describes what the scan selected, so cells
+                    # removed by QC do not read as incomplete coverage.
+                    "fraction_loaded": round(scanned_record_count / float(estimated_total or scanned_record_count), 6),
                 },
                 **metadata,
             },
         )
         dataset.notes.extend(matrix_warnings)
         if matrix_features:
+            # Count against the cells that survived QC, not the matcher's own
+            # tally: matching runs on the scanned set, QC then drops cells, and
+            # reporting one against the other produced "24404/24362 loaded
+            # cells" -- a fraction above 1, from two different populations.
+            attached_cell_count = sum(1 for record in records if record.cell_id in matrix_features)
             dataset.notes.append(
                 "Xenium adapter attached top expressed genes from cell_feature_matrix.h5 to %d/%d loaded cells."
-                % (matrix_metadata.get("n_cells_matched", 0), len(records))
+                % (attached_cell_count, len(records))
             )
             if matrix_metadata.get("marker_rule_annotations", 0):
                 dataset.notes.append(
@@ -542,8 +584,22 @@ class DataIngestionLayer:
             dataset.notes.append(
                 "Xenium adapter loaded cell centroids/count summaries. Gene-level expression will attach automatically when h5py can read cell_feature_matrix.h5."
             )
-        if len(records) < estimated_total:
-            dataset.notes.append("Loaded a deterministic subset of %d/%d cells for agent-safe execution." % (len(records), estimated_total))
+        if cell_qc["dropped_cell_count"]:
+            dataset.notes.append(
+                "Cell QC removed %d/%d cells (%d below %d transcripts, %d above %.0f%% background); %d cells have no detected nucleus."
+                % (
+                    cell_qc["dropped_cell_count"],
+                    cell_qc["input_cell_count"],
+                    cell_qc["dropped_low_transcript_count"],
+                    cell_qc["min_transcripts"],
+                    cell_qc["dropped_high_background_count"],
+                    cell_qc["max_control_fraction"] * 100,
+                    cell_qc["nucleus_free_cell_count"],
+                )
+            )
+            dataset.processing_steps.append("Applied Xenium per-cell QC: %s." % cell_qc["rule"])
+        if scanned_record_count < estimated_total:
+            dataset.notes.append("Loaded a deterministic subset of %d/%d cells for agent-safe execution." % (scanned_record_count, estimated_total))
         if input_path != path:
             dataset.processing_steps.append("Resolved Xenium experiment descriptor %s to %s." % (input_path, path))
         dataset.processing_steps.append("Loaded Xenium cell table from %s." % cells_path)
@@ -637,13 +693,26 @@ class DataIngestionLayer:
         ys = [record.y for record in dataset.records]
         coordinate_pairs = [(record.x, record.y) for record in dataset.records]
         duplicate_coordinates = len(coordinate_pairs) - len(set(coordinate_pairs))
-        expression_values = [
-            {feature: value for feature, value in record.raw_genes.items() if feature not in NON_EXPRESSION_FEATURES}
-            for record in dataset.records
-        ]
-        missing_feature_rows = sum(1 for values in expression_values if not values)
-        negative_values = sum(1 for values in expression_values for value in values.values() if value < 0)
-        totals = [sum(max(value, 0.0) for value in values.values()) for values in expression_values]
+        # These three summaries used to be read off a second copy of every cell's
+        # gene dict, built only to be counted and thrown away -- a whole extra
+        # expression table in memory, and three passes over it. One pass, same
+        # values, same summation order.
+        missing_feature_rows = 0
+        negative_values = 0
+        totals = []
+        for record in dataset.records:
+            total = 0.0
+            has_expression = False
+            for feature, value in record.raw_genes.items():
+                if feature in NON_EXPRESSION_FEATURES:
+                    continue
+                has_expression = True
+                if value < 0:
+                    negative_values += 1
+                total += max(value, 0.0)
+            if not has_expression:
+                missing_feature_rows += 1
+            totals.append(total)
         if not any(totals):
             totals = [
                 max(record.raw_genes.get("TRANSCRIPT_COUNTS", record.raw_genes.get("TOTAL_COUNTS", 0.0)), 0.0)
@@ -695,23 +764,42 @@ class DataIngestionLayer:
             dataset.notes.append("%d duplicate coordinate pairs were detected." % duplicate_coordinates)
 
     def _normalize_features(self, dataset: SpatialDataset) -> None:
+        # Control probes measure background, not expression, so they must not
+        # scale real genes. Excluding only the QC pseudo-features left them in the
+        # denominator, which made a cell's normalised expression shift with how
+        # much misassignment it happened to carry.
+        controls = control_feature_names(dataset)
+        # Whether a feature name is expression depends only on the name, and a
+        # section asks the same few hundred names once per cell: 24,000 cells
+        # meant ~7.8 million `.upper()` calls and set lookups to re-derive an
+        # answer that never changes. Memoised across records, and the clip is
+        # computed once instead of twice -- `max` alone was 6 million calls.
+        # Both are bookkeeping: the arithmetic and its order are untouched.
+        is_expression: Dict[str, bool] = {}
         for record in dataset.records:
             if not record.raw_genes:
                 record.raw_genes = dict(record.genes)
-            expression = {
-                feature: value for feature, value in record.raw_genes.items() if feature not in NON_EXPRESSION_FEATURES
-            }
-            total = sum(max(value, 0.0) for value in expression.values())
+            expression = {}
+            for feature, value in record.raw_genes.items():
+                keep = is_expression.get(feature)
+                if keep is None:
+                    keep = feature not in NON_EXPRESSION_FEATURES and feature.upper() not in controls
+                    is_expression[feature] = keep
+                if keep:
+                    expression[feature] = max(value, 0.0)
+            total = sum(expression.values())
             if total <= 0:
                 continue
             for feature, value in expression.items():
-                record.genes[feature] = math.log1p((max(value, 0.0) / total) * 10000.0)
+                record.genes[feature] = math.log1p((value / total) * 10000.0)
         dataset.normalized = True
         dataset.metadata["expression_layers"] = {
             "analysis": "genes: library-size normalized log1p values",
             "source": "raw_genes: immutable source values",
             "normalization_target_sum": 10000.0,
             "non_expression_features_excluded": sorted(NON_EXPRESSION_FEATURES),
+            "control_features_excluded": len(controls),
+            "control_feature_source": dataset.metadata.get("control_feature_source", "name_prefix_fallback"),
         }
         dataset.processing_steps.append("Applied library-size normalization and log1p transform.")
         dataset.notes.append(
@@ -965,9 +1053,29 @@ def _looks_like_visium(path: str) -> bool:
     return any(name in names for name in expected)
 
 
+
+# Every container a Xenium table arrives in. Listed once because the same set
+# was spelled out separately in four places -- the type inference, the
+# catalogue, the Studio's cell index and this readiness check -- and they
+# disagreed: a GEO deposit ships `cells.parquet.gz` and `cell_boundaries.parquet.gz`,
+# and this check reported both as missing on a bundle the loader reads fine.
+ASSET_SUFFIXES = (".csv.gz", ".csv", ".parquet", ".parquet.gz")
+
+
+def _asset_present(names, stem: str) -> bool:
+    return any(("%s%s" % (stem, suffix)) in names for suffix in ASSET_SUFFIXES)
+
+
 def _looks_like_xenium(path: str) -> bool:
     names = set(os.listdir(path)) if os.path.isdir(path) else set()
-    return "experiment.xenium" in names or "cells.csv.gz" in names or "cell_feature_matrix.h5" in names
+    if names & {"experiment.xenium", "cells.csv.gz", "cell_feature_matrix.h5"}:
+        return True
+    # A GEO deposit ships `cells.parquet.gz` and no experiment file. The loader
+    # reads those; leaving them out here made `infer_data_type` return "unknown"
+    # for a bundle the rest of the stack could open, so the catalogue listed it
+    # as not reviewable and the gate never saw it.
+    return any(name.startswith("cells.parquet") or name.startswith("cells.csv")
+               for name in names)
 
 
 def _open_text(path: str, newline: Optional[str] = None):
@@ -1165,10 +1273,15 @@ def _load_xenium_gene_matrix(
             indices = matrix["indices"]
             data = matrix["data"]
             feature_names = _read_h5_feature_names(matrix)
+            controls, type_counts, control_source = _read_h5_control_features(matrix, feature_names)
             metadata.update(
                 {
                     "n_cells_in_matrix": len(barcodes),
                     "n_features_in_matrix": len(feature_names),
+                    "control_features": sorted(controls),
+                    "control_feature_count": len(controls),
+                    "feature_type_counts": type_counts,
+                    "control_feature_source": control_source,
                 }
             )
             if len(indptr) != len(barcodes) + 1:
@@ -1209,6 +1322,35 @@ def _read_h5_feature_names(matrix: Any) -> List[str]:
     shape = matrix.get("shape")
     feature_count = int(shape[0]) if shape is not None and len(shape[:]) else 0
     return ["FEATURE_%d" % index for index in range(feature_count)]
+
+
+def _read_h5_control_features(matrix: Any, feature_names: List[str]) -> Tuple[List[str], Dict[str, int], str]:
+    """Control features as the matrix itself declares them.
+
+    10x writes a `features/feature_type` dataset naming each feature's class:
+    `Gene Expression` against `Negative Control Probe`, `Negative Control
+    Codeword`, `Unassigned Codeword` and others. This was never read, so control
+    handling relied on guessing from probe names -- which is right for today's
+    files and silently wrong the moment a chemistry adds a class the prefix list
+    has not heard of.
+
+    Falls back to the prefix rule when a file carries no `feature_type`, and
+    reports which source was used so a reader can tell.
+    """
+    features = matrix.get("features")
+    types_node = features.get("feature_type") if features is not None else None
+    if types_node is None:
+        controls = [name for name in feature_names if is_control_feature(name)]
+        return controls, {"prefix_matched": len(controls)}, "name_prefix_fallback"
+
+    declared = [_decode_h5_value(value) for value in types_node[:]]
+    counts: Dict[str, int] = {}
+    controls = []
+    for name, feature_type in zip(feature_names, declared):
+        counts[feature_type] = counts.get(feature_type, 0) + 1
+        if feature_type.strip().lower() in NON_GENE_FEATURE_TYPES:
+            controls.append(name)
+    return controls, counts, "declared_feature_type"
 
 
 def _feature_slice_to_values(
@@ -1295,6 +1437,51 @@ def _normalize_cell_identifier(value: str) -> str:
     return str(value).strip().strip('"').strip("'")
 
 
+
+@contextlib.contextmanager
+def _open_cell_rows(path: str):
+    """Yield the cell table as row dicts, whatever container it arrived in.
+
+    CSV stays streamed, because a full section is 160k+ rows and there is no
+    reason to hold it. Parquet is read whole -- it is columnar, so there is no
+    streaming row reader worth the complexity at this size, and the file is a
+    few megabytes.
+    """
+    lowered = str(path).lower()
+    if lowered.endswith((".csv", ".csv.gz")):
+        handle = _open_text(path)
+        try:
+            yield csv.DictReader(handle)
+        finally:
+            handle.close()
+        return
+
+    try:
+        import pandas as pd
+    except ImportError as exc:  # pragma: no cover - pandas is a hard dependency
+        raise IngestionValidationError(
+            "Reading %s needs pandas (%s)." % (os.path.basename(path), exc))
+
+    if lowered.endswith(".gz"):
+        # Parquet is already compressed; a .parquet.gz has to be unwrapped
+        # before pyarrow will look at it.
+        import gzip
+        import io
+
+        with gzip.open(path, "rb") as handle:
+            buffer = io.BytesIO(handle.read())
+        frame = pd.read_parquet(buffer)
+    else:
+        frame = pd.read_parquet(path)
+
+    # `to_dict("records")` on 160k rows builds 160k dicts at once; iterating the
+    # columns keeps one row alive at a time and matches the CSV path's shape.
+    columns = list(frame.columns)
+    values = [frame[name].tolist() for name in columns]
+    yield ({column: row[index] for index, column in enumerate(columns)}
+           for row in zip(*values))
+
+
 def _read_xenium_metadata(path: str) -> Dict[str, Any]:
     path = _resolve_xenium_input_path(path)
     metadata: Dict[str, Any] = {}
@@ -1330,11 +1517,11 @@ def _summarize_xenium_files(path: str) -> Dict[str, bool]:
     names = set(os.listdir(path)) if os.path.isdir(path) else set()
     return {
         "experiment_xenium": "experiment.xenium" in names,
-        "cells": "cells.csv.gz" in names or "cells.csv" in names or "cells.parquet" in names,
+        "cells": _asset_present(names, "cells"),
         "cell_feature_matrix_h5": "cell_feature_matrix.h5" in names,
-        "transcripts": "transcripts.csv.gz" in names or "transcripts.parquet" in names,
-        "cell_boundaries": "cell_boundaries.csv.gz" in names or "cell_boundaries.parquet" in names,
-        "nucleus_boundaries": "nucleus_boundaries.csv.gz" in names or "nucleus_boundaries.parquet" in names,
+        "transcripts": _asset_present(names, "transcripts"),
+        "cell_boundaries": _asset_present(names, "cell_boundaries"),
+        "nucleus_boundaries": _asset_present(names, "nucleus_boundaries"),
         "morphology": any(name.startswith("morphology") and name.endswith((".tif", ".ome.tif")) for name in names),
         "analysis": "analysis.tar.gz" in names or "analysis.zarr.zip" in names,
     }
@@ -1408,6 +1595,91 @@ def _median(values: List[float]) -> float:
     if len(ordered) % 2:
         return ordered[mid]
     return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def apply_xenium_cell_qc(
+    records: List[SpotRecord],
+    min_transcripts: int = 10,
+    max_control_fraction: float = 0.05,
+) -> Tuple[List[SpotRecord], Dict[str, Any]]:
+    """Drop cells the instrument's own counts say are not usable.
+
+    Nothing filtered a Xenium load before this. `_apply_threshold_qc` exists but is
+    reachable only from the config-driven pipeline, so every statistic in every
+    Xenium report was computed over an unfiltered population -- a full section
+    lost 3 of 24,406 cells, and those went for having zero features downstream
+    rather than from any quality rule.
+
+    Two rules, both on values the instrument supplies per cell:
+
+    - **Transcript count.** A cell with a handful of transcripts cannot support a
+      cluster assignment or a marker call; it contributes noise to both.
+    - **Background fraction.** Control probes and unassigned codewords measure
+      misassignment. A cell whose counts are mostly background is a segmentation
+      or decoding failure, however many total counts it has.
+
+    Nucleus-free cells are counted and reported but not dropped: a zero nucleus
+    area is a segmentation warning, not proof the cell is wrong, and dropping on
+    it would silently discard whole morphologies.
+
+    Returns the retained records and a report. Nothing is dropped silently -- the
+    report carries the rule, the thresholds and every count, and is written into
+    dataset metadata, the run payload and the rendered report.
+    """
+    kept: List[SpotRecord] = []
+    low_count = 0
+    high_background = 0
+    nucleus_free = 0
+    for record in records:
+        source = record.raw_genes or record.genes
+        transcripts = float(source.get("TRANSCRIPT_COUNTS", 0.0))
+        total = float(source.get("TOTAL_COUNTS", 0.0))
+        background = (
+            float(source.get("CONTROL_PROBE_COUNTS", 0.0))
+            + float(source.get("CONTROL_CODEWORD_COUNTS", 0.0))
+            + float(source.get("UNASSIGNED_CODEWORD_COUNTS", 0.0))
+        )
+        if float(source.get("NUCLEUS_AREA", 0.0)) <= 0:
+            nucleus_free += 1
+        if transcripts < min_transcripts:
+            low_count += 1
+            continue
+        # Guard the denominator: total_counts should include background, but a
+        # malformed export could leave it at zero while background is positive.
+        denominator = total if total > 0 else transcripts + background
+        if denominator > 0 and (background / denominator) > max_control_fraction:
+            high_background += 1
+            continue
+        kept.append(record)
+
+    dropped = low_count + high_background
+    report = {
+        "status": "applied",
+        "rule": "transcript_counts >= %d and background fraction <= %.3f"
+        % (min_transcripts, max_control_fraction),
+        "min_transcripts": min_transcripts,
+        "max_control_fraction": max_control_fraction,
+        "input_cell_count": len(records),
+        "retained_cell_count": len(kept),
+        "dropped_cell_count": dropped,
+        "dropped_low_transcript_count": low_count,
+        "dropped_high_background_count": high_background,
+        "nucleus_free_cell_count": nucleus_free,
+        "background_features": [
+            "CONTROL_PROBE_COUNTS",
+            "CONTROL_CODEWORD_COUNTS",
+            "UNASSIGNED_CODEWORD_COUNTS",
+        ],
+    }
+    if not kept:
+        # Refuse rather than hand back an empty dataset that fails obscurely later.
+        report["status"] = "refused_all_cells_filtered"
+        raise IngestionValidationError(
+            "Xenium cell QC removed every cell (%d below %d transcripts, %d above %.0f%% background). "
+            "Loosen min_transcripts/max_control_fraction, or check the run's QC metrics."
+            % (low_count, min_transcripts, high_background, max_control_fraction * 100)
+        )
+    return kept, report
 
 
 def _apply_threshold_qc(dataset: SpatialDataset, config: IngestionConfig) -> None:

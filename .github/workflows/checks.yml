@@ -1,0 +1,83 @@
+name: Checks
+
+# Everything that asserts an invariant, run on every push.
+#
+# Until now the only workflow was the macOS app build, triggered on tags, running
+# one of the four test files. The 234-test suite, both eval suites and the import
+# contracts were run by hand or not at all -- and this project's two worst
+# regressions (scaffold detection dying inside the frozen app, the gate holding
+# on one execution path of four) were each caught by a human reading output when
+# a check that would have caught them already existed.
+#
+# Both Pythons, because the project develops on 3.9 and ships on 3.11: the macOS
+# build job freezes with 3.11, so that is the interpreter inside the app people
+# actually run. Until this was a matrix the full suite only ever ran on 3.9 and
+# the shipped runtime was covered by one test file.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Tests, evals, import contracts (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
+
+      - name: Import contracts
+        run: lint-imports
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py'
+
+      # The suites assert on which tools the router picks and on registry
+      # invariants a query case cannot reach: that scaffolds are still detected,
+      # that none reaches an LLM schema, and that the gated set is intact.
+      - name: Legacy eval
+        run: python -m eval.runner --out "$RUNNER_TEMP/eval_legacy.json"
+
+      # --mvp selects the MVP registry as well as the MVP cases. Without it the
+      # cases run against the legacy agent and score 2/13, which reads as a
+      # regression and is not one.
+      - name: MVP eval
+        run: python -m eval.runner --mvp --out "$RUNNER_TEMP/eval_mvp.json"
+
+      # The counts in docs/agent_architecture.md drifted three times. They are
+      # derived now, so this fails rather than a reader believing 166 tests.
+      - name: Doc counts match the code
+        run: python scripts/check_doc_numbers.py --check
+
+      - name: Compile check
+        run: python -m compileall -q spatialmind eval tests scripts
+
+      - name: Eval reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports-py${{ matrix.python-version }}
+          path: ${{ runner.temp }}/eval_*.json
+          if-no-files-found: ignore

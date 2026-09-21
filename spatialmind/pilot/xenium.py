@@ -8,9 +8,17 @@ from collections import Counter
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from spatialmind.agent.runtime import DEFAULT_XENIUM_INPUTS, build_xenium_mvp_plan, validate_tool_plan
+from spatialmind.dataset_context import apply_to_dataset
+from spatialmind.gatekeeper import (
+    DEFAULT_MIN_LABEL_COVERAGE,
+    DEFAULT_MIN_REGION_COVERAGE,
+    build_gate_evidence,
+    enforce_coverage_floor,
+    pilot_gate,
+)
 from spatialmind.ingestion import (
     apply_best_available_labels,
     apply_best_available_regions,
@@ -23,17 +31,28 @@ from spatialmind.ingestion import (
     write_region_label_template,
 )
 from spatialmind.pilot.claims import build_pilot_claim_ledger, build_pilot_claim_reliability, claim_ledger_summary
+from spatialmind.tools.region_proposal import hotspot_regions, propose_regions, write_region_candidates
+from spatialmind.tools.spatial_statistics import (
+    DEFAULT_LISA_GENES,
+    bivariate_spatial_correlation,
+    cell_type_spatial_autocorrelation,
+    local_moran_hotspots,
+    ripley_cell_types,
+)
 from spatialmind.pilot.spatial_relationships import build_spatial_relationship_summary
 from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
 from spatialmind.tools import build_mvp_registry
 from spatialmind.tools.implementations import (
     CLUSTER_ASSIGNMENT_KEY,
+    control_feature_names,
+    expression_feature_names,
     run_distance_dependent_cooccurrence,
     run_neighborhood_robustness,
     run_region_stratified_neighborhoods,
 )
 from spatialmind.viz.renderers import PALETTE
+from spatialmind.viz.tables import TABLE_DIRNAME, write_result_tables
 from spatialmind.viz import (
     PdfFigure,
     PdfSection,
@@ -46,6 +65,12 @@ from spatialmind.viz import (
 
 
 MIN_CELLS_FOR_STABLE_CLUSTERS = 6000
+
+# Tools whose groups are reviewed cell types, and which therefore must be told
+# which classes the reviewer actually supplied. Without it they group by
+# `record.cell_type`, which on a partially reviewed section also holds the
+# loader's marker-rule guesses.
+CELL_TYPE_GROUPED_TOOLS = {"cell_neighborhood_enrichment", "neighborhood_enrichment"}
 DEFAULT_DATASET = "data/Human_Breast_Biomarkers_S1_Top_outs"
 DEFAULT_OUTPUT = "outputs/xenium_validated_pilot"
 
@@ -54,22 +79,35 @@ def run_pilot(
     dataset_path: str,
     output_dir: Path,
     max_records: int = 5000,
-    min_label_coverage: float = 0.7,
-    min_region_coverage: float = 0.7,
+    min_label_coverage: float = DEFAULT_MIN_LABEL_COVERAGE,
+    min_region_coverage: float = DEFAULT_MIN_REGION_COVERAGE,
     allow_single_region: bool = False,
     report_format: str = "html",
     readiness_only: bool = False,
     review_artifacts: bool = True,
     require_complete_section: bool = True,
-    review_max_records: int = 5000,
+    # 0 means "every cell this run analysed". The old default was a flat 5,000
+    # while the analysis default is 20,000, so a reviewer who filled in the
+    # template the run handed them reached 25% coverage against a 70% gate --
+    # the default path issued a template that could not clear the gate.
+    review_max_records: int = 0,
+    acknowledge_low_coverage: bool = False,
     query: str = "Validated Xenium pilot: annotate cells, summarize user regions, and test spatial relationships.",
 ) -> Dict[str, Any]:
+    # Refused before anything is loaded: a threshold under the floor is a caller
+    # error, not a property of the data, and finding out after a ten-minute
+    # full-section run wastes the run.
+    enforce_coverage_floor(min_label_coverage, min_region_coverage, acknowledge_low_coverage)
     normalized_format = normalize_report_format(report_format)
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset = load_xenium(dataset_path, max_records=max_records)
     dataset.metadata["analysis_dataset_path"] = dataset_path
     label_report = apply_best_available_labels(dataset, dataset_path, fallback=None)
     region_report = apply_best_available_regions(dataset, dataset_path)
+    # User context is attached as attributed notes and carried into the report's
+    # limitations. It is read here and nowhere that decides anything: the gate
+    # below never sees it.
+    user_context = apply_to_dataset(dataset, dataset_path)
     contract = validate_cell_by_feature_contract(dataset)
     readiness = build_readiness_report(dataset)
     asset_readiness = summarize_xenium_expert_readiness(dataset_path)
@@ -164,7 +202,7 @@ def run_pilot(
     analysis_backend_error = ""
     if gate["status"] == "validated_ready" and not readiness_only:
         try:
-            results = _run_validated_tools(dataset, plan)
+            results = _run_validated_tools(dataset, plan, list(label_report.reviewed_labels or []))
             for result in results:
                 _write_json(output_dir / ("%s.json" % result.tool_name), result)
             figures.extend(_write_figures(dataset, output_dir))
@@ -208,7 +246,47 @@ def run_pilot(
         "reason": "Distance-dependent co-occurrence runs only for validated pilots.",
         "curves": [],
     }
+    # Both name cell types, so both sit on the validated side of the gate. The
+    # descriptive lane runs the same statistics grouped by cluster, which names
+    # nothing.
+    cell_type_autocorrelation: Dict[str, Any] = {
+        "status": "not_run",
+        "reason": "Cell-type spatial autocorrelation runs only for validated pilots.",
+        "groups": [],
+    }
+    cell_type_point_pattern: Dict[str, Any] = {
+        "status": "not_run",
+        "reason": "Cell-type point-pattern analysis runs only for validated pilots.",
+        "groups": [],
+    }
+    gene_pair_spatial: Dict[str, Any] = {
+        "status": "not_run",
+        "reason": "Bivariate spatial correlation runs only for validated pilots.",
+        "pairs": [],
+    }
     if gate["status"] == "validated_ready" and not readiness_only:
+        # Only the classes the reviewer actually supplied. A partially reviewed
+        # section still carries the loader's marker guesses on every cell the
+        # reviewer did not reach, and grouping by `cell_type` mixes the two.
+        reviewed_labels = list(label_report.reviewed_labels or [])
+        cell_type_autocorrelation = _safe_spatial(
+            lambda: cell_type_spatial_autocorrelation(dataset, {
+                "strict_engine": True, "n_perms": 100, "reviewed_labels": reviewed_labels,
+            }),
+            "Cell-type spatial autocorrelation",
+        )
+        cell_type_point_pattern = _safe_spatial(
+            lambda: ripley_cell_types(dataset, {
+                "strict_engine": True, "n_simulations": 100, "reviewed_labels": reviewed_labels,
+            }),
+            "Cell-type point-pattern analysis",
+        )
+        gene_pair_spatial = _safe_spatial(
+            lambda: bivariate_spatial_correlation(
+                dataset, _marker_gene_pairs(descriptive), {"strict_engine": True}
+            ),
+            "Bivariate spatial correlation",
+        )
         try:
             region_stratified_neighborhoods = run_region_stratified_neighborhoods(
                 dataset, params={"strict_engine": True}
@@ -262,6 +340,9 @@ def run_pilot(
             )
         _write_json(output_dir / "region_stratified_neighborhoods.json", region_stratified_neighborhoods)
         _write_json(output_dir / "distance_dependent_cooccurrence.json", distance_cooccurrence)
+        _write_json(output_dir / "cell_type_spatial_autocorrelation.json", cell_type_autocorrelation)
+        _write_json(output_dir / "cell_type_point_pattern.json", cell_type_point_pattern)
+        _write_json(output_dir / "gene_pair_spatial_correlation.json", gene_pair_spatial)
 
     if gate["status"] == "validated_ready" and not readiness_only:
         relationship_figure = _render_spatial_relationship_heatmap(
@@ -284,14 +365,47 @@ def run_pilot(
         "required_next_inputs": gate["required_next_inputs"],
         "records_loaded": len(dataset.records),
         "analysis_scope": analysis_scope,
+        "cell_qc": dataset.metadata.get("cell_qc", {}),
         "expression_layers": dataset.metadata.get("expression_layers", {}),
         "analysis_backend_error": analysis_backend_error,
-        "features_loaded": len(dataset.genes),
+        # The measured gene panel. This counted control probes and QC
+        # pseudo-features until now, so the Limitations line -- the one sentence a
+        # reader leans on to judge what the assay could have seen -- overstated a
+        # 319-gene brain panel as 495 features. The raw count stays available
+        # below for provenance.
+        "features_loaded": len(expression_feature_names(dataset)),
+        "raw_features_loaded": len(dataset.genes),
+        # Controls present in the loaded data, not the panel's full declared list:
+        # the report says these were excluded from analysis, so it must count the
+        # ones that were actually there to exclude.
+        "control_features_loaded": len(
+            {gene.upper() for gene in dataset.genes} & control_feature_names(dataset)
+        ),
+        "panel_control_feature_count": len(dataset.metadata.get("control_features") or []),
+        "control_feature_source": dataset.metadata.get("control_feature_source", "name_prefix_fallback"),
+        # The measured panel, not just its size. Panel adequacy scoring needs to
+        # know *which* genes were measured to judge whether a claim's markers are
+        # present; without the list it could only ever return a constant.
+        "feature_names": expression_feature_names(dataset),
         "cell_types": dataset.cell_types,
         "regions": sorted({record.region for record in dataset.records if record.region}),
         "cell_type_counts": dict(Counter(record.cell_type for record in dataset.records)),
         "region_counts": dict(Counter(record.region or "unassigned" for record in dataset.records)),
         "label_report": label_report.to_dict(),
+        # The numbers the gate decided on, carried so the report can print them.
+        # Without this the Limitations section said "expert_labels_applied"
+        # identically at 99.8% coverage and at 0.01%.
+        "gate_evidence": build_gate_evidence(
+            gate=gate,
+            label_report=label_report.to_dict(),
+            region_report=region_report.to_dict(),
+            min_label_coverage=min_label_coverage,
+            min_region_coverage=min_region_coverage,
+            allow_single_region=allow_single_region,
+            acknowledge_low_coverage=acknowledge_low_coverage,
+        ),
+        "user_context": user_context.to_dict(),
+        "user_context_caveats": user_context.caveats(),
         "region_report": region_report.to_dict(),
         "label_intake": intake_report.to_dict(),
         "asset_readiness": asset_readiness.to_dict(),
@@ -314,6 +428,9 @@ def run_pilot(
         "spatial_relationships": spatial_relationships,
         "region_stratified_neighborhoods": region_stratified_neighborhoods,
         "distance_cooccurrence": distance_cooccurrence,
+        "cell_type_spatial_autocorrelation": cell_type_autocorrelation,
+        "cell_type_point_pattern": cell_type_point_pattern,
+        "gene_pair_spatial_correlation": gene_pair_spatial,
         "report_md": "" if readiness_only else str(output_dir / "validated_xenium_pilot_report.md"),
         "report_html": "" if readiness_only else str(output_dir / "validated_xenium_pilot_report.html"),
         "report_pdf": str(output_dir / "validated_xenium_pilot_report.pdf")
@@ -339,6 +456,34 @@ def run_pilot(
         return payload
     planned_run_id = "mvp_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), uuid.uuid4().hex[:8])
     payload["run_record_path"] = str(output_dir / "runs" / ("%s.json" % planned_run_id))
+
+    # Written before the reports, so the report can name the files it produced.
+    # Result tables are the only machine-readable per-gene and per-cell output
+    # this run has; until now everything tabular lived inside a JSON blob or was
+    # truncated to the top fifty rows.
+    # Never fatal. The analysis is finished by this point -- every statistic is
+    # computed, every JSON written -- and losing the whole run because a table
+    # writer tripped would throw away minutes of work for a convenience export.
+    try:
+        payload["result_tables"] = write_result_tables(payload, dataset, output_dir, run_id=planned_run_id, results=results)
+    except Exception as exc:  # noqa: BLE001
+        payload["result_tables"] = {
+            "status": "not_written",
+            "reason": "Result table export failed: %s: %s" % (type(exc).__name__, exc),
+            "tables": [],
+        }
+
+    # The per-cell LISA map is tens of thousands of rows. It has done its work by
+    # now -- the tables have it and the region proposal was built from it -- and
+    # embedding it in pilot_validation.json would multiply that file's size for
+    # data nobody reads from there.
+    local_block = (payload.get("descriptive_analysis") or {}).get("local_spatial_structure")
+    if isinstance(local_block, dict):
+        local_block.pop("per_cell", None)
+    proposal_block = (payload.get("descriptive_analysis") or {}).get("region_proposal")
+    if isinstance(proposal_block, dict):
+        proposal_block.pop("assignments", None)
+
     _write_markdown_report(output_dir / "validated_xenium_pilot_report.md", payload, results)
     _write_html_report(output_dir / "validated_xenium_pilot_report.html", payload, results)
     if payload["report_pdf"]:
@@ -374,7 +519,12 @@ def run_pilot(
         input_files=[dataset_path],
         artifacts=report_artifacts,
         figures=figures,
-        tables=[label_template, region_template],
+        tables=[label_template, region_template]
+        + [str(item.get("path")) for item in (payload.get("result_tables") or {}).get("tables") or []]
+        # The region candidates are a draft the gate does not read, and they are
+        # also the file whose contents a reviewer turns into regions. Hashing it
+        # means a run can show the domains it actually proposed.
+        + [str((payload.get("descriptive_analysis") or {}).get("region_proposal", {}).get("candidate_file") or "")],
         run_id=planned_run_id,
     )
     payload["run_record_path"] = run_record.run_record_path
@@ -423,67 +573,6 @@ def scan_pilot_readiness(
     return summary
 
 
-def pilot_gate(
-    dataset: SpatialDataset,
-    asset_readiness: Dict[str, Any],
-    label_report: Dict[str, Any],
-    region_report: Dict[str, Any],
-    min_label_coverage: float,
-    min_region_coverage: float,
-    allow_single_region: bool,
-) -> Dict[str, Any]:
-    blockers: List[str] = []
-    required: List[str] = []
-    for key, name in [
-        ("has_cell_table", "Xenium cell table"),
-        ("has_feature_matrix", "Xenium feature matrix"),
-        ("has_morphology", "morphology image metadata"),
-        ("has_boundaries", "cell/nucleus boundaries"),
-    ]:
-        if not asset_readiness.get(key):
-            blockers.append("Missing %s." % name)
-            required.append("Provide %s." % name)
-
-    total = max(int(label_report.get("total_records") or len(dataset.records)), 1)
-    label_coverage = float(label_report.get("matched_cells") or 0) / float(total)
-    if label_report.get("status") != "expert_labels_applied":
-        blockers.append("Expert cell labels were not applied.")
-        required.append("Add `expert_cell_labels.csv` with `cell_id,expert_label,confidence,notes` to the Xenium folder.")
-    elif label_coverage < min_label_coverage:
-        blockers.append("Expert label coverage %.3f is below required %.3f." % (label_coverage, min_label_coverage))
-        required.append("Increase expert label coverage or lower the explicit threshold.")
-
-    region_total = max(int(region_report.get("total_records") or len(dataset.records)), 1)
-    region_coverage = float(region_report.get("matched_cells") or 0) / float(region_total)
-    if region_report.get("status") != "user_regions_applied":
-        blockers.append("User-provided region labels were not applied.")
-        required.append("Add `cell_regions.csv` with `cell_id,region,region_confidence,notes` to the Xenium folder.")
-    elif region_coverage < min_region_coverage:
-        blockers.append("Region label coverage %.3f is below required %.3f." % (region_coverage, min_region_coverage))
-        required.append("Increase region label coverage or lower the explicit threshold.")
-
-    labels = {record.cell_type for record in dataset.records if record.cell_type and "unannotated" not in record.cell_type.lower()}
-    if len(labels) < 2:
-        blockers.append("At least two biological cell labels are required for marker/neighborhood validation.")
-        required.append("Provide at least two reviewed biological cell classes.")
-
-    regions = {record.region for record in dataset.records if record.region}
-    if not allow_single_region and len(regions) < 2:
-        blockers.append("At least two user-defined regions are required for a validated region summary pilot.")
-        required.append("Provide at least two reviewed tissue/ROI regions.")
-
-    return {
-        "status": "validated_ready" if not blockers else "blocked_missing_validation_inputs",
-        "blocking_reasons": _dedupe(blockers),
-        "required_next_inputs": _dedupe(required),
-        "label_coverage": round(label_coverage, 4),
-        "region_coverage": round(region_coverage, 4),
-    }
-
-
-
-# Instrument-level QC from metrics_summary.csv. These are the first numbers a
-# wet-lab scientist checks, and they were parsed at ingestion but never reported.
 RUN_QC_FIELDS = (
     ("fraction_transcripts_decoded_q20", "Transcripts decoded (Q20)", "fraction", 0.80, "higher is better"),
     ("fraction_transcripts_assigned", "Transcripts assigned to cells", "fraction", 0.50, "higher is better"),
@@ -616,6 +705,309 @@ def _silhouette_reading(silhouette: Any, modularity: Any) -> str:
         pass
     return strength
 
+def _local_spatial_lines(descriptive: Dict[str, Any]) -> List[str]:
+    """Where the spatially variable genes are, not just which ones they are."""
+    block = descriptive.get("local_spatial_structure") or {}
+    rows = [row for row in block.get("genes") or [] if row.get("status") == "computed"]
+    if block.get("status") != "computed" or not rows:
+        reason = block.get("reason")
+        return ["### Local spatial structure", "", "Not computed: %s" % reason, ""] if reason else []
+    graph = block.get("graph") or {}
+    lines = [
+        "### Where those genes are (local Moran's I)",
+        "",
+        "Global Moran's I above says a gene is spatially structured. This says where. Every cell "
+        "is classified against its own neighbourhood: `high-high` is a cell with high expression "
+        "among high-expressing neighbours -- a hotspot -- and `low-low` is the opposite. Spatial "
+        "outliers (`high-low`, `low-high`) are single cells unlike their surroundings.",
+        "",
+        "Graph: %s, %s neighbours. Significance from a conditional-randomisation z-score, "
+        "Benjamini-Hochberg corrected across cells within each gene."
+        % (graph.get("family", "knn"), graph.get("n_neighs", "?")),
+        "",
+        "| Gene | Hotspot cells | Coldspot cells | Spatial outliers | Not significant |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        lines.append("| `%s` | %s | %s | %s | %s |" % (
+            row.get("gene"), row.get("hotspot_cells"), row.get("coldspot_cells"),
+            row.get("outlier_cells"), row.get("not_significant_cells")))
+    lines.extend([
+        "",
+        "Per-cell classifications are in `tables/cells.tsv`, one column per gene.",
+        "",
+    ])
+    return lines
+
+
+def _group_autocorrelation_lines(block: Dict[str, Any], heading: str, intro: str) -> List[str]:
+    rows = block.get("groups") or []
+    if block.get("status") != "computed" or not rows:
+        return []
+    graph = block.get("graph") or {}
+    lines = [heading, "", intro, "",
+             "| Group | Moran's I | p (permutation) | FDR | Cells | Reading |",
+             "| --- | ---: | ---: | ---: | ---: | --- |"]
+    for row in rows:
+        lines.append("| `%s` | %s | %s | %s | %s | %s |" % (
+            row.get("group"), row.get("morans_i"), row.get("pval_sim"),
+            row.get("pval_adj"), row.get("n_cells"), row.get("interpretation")))
+    lines.append("")
+    skipped = block.get("skipped_groups") or []
+    if skipped:
+        # Grouped by the reason each was skipped. Printing them under one heading
+        # produced "Not tested (fewer than 50 cells): Neural/Glial cell (2446)",
+        # which contradicts itself -- two different exclusions were being
+        # described by whichever heading happened to be hard-coded.
+        by_reason: Dict[str, List[str]] = {}
+        for row in skipped:
+            reason = str(row.get("reason") or "not tested")
+            by_reason.setdefault(reason, []).append("%s (%s)" % (row["group"], row["n_cells"]))
+        for reason, names in sorted(by_reason.items()):
+            if "fewer than" in reason:
+                lines.append(
+                    "Not tested, %s: %s. Below that, autocorrelation reflects where a handful of "
+                    "cells happened to land rather than any structure." % (reason, ", ".join(names))
+                )
+            else:
+                lines.append("Not tested, %s: %s." % (reason, ", ".join(names)))
+        lines.append("")
+    if block.get("reviewed_only") and block.get("unreviewed_cells"):
+        lines.extend([
+            "%s cells are excluded: they carry the loader's marker-rule guess rather than a "
+            "label the reviewer supplied, and a table headed \"cell type\" on a validated run "
+            "must not list them beside reviewed classes."
+            % f"{int(block['unreviewed_cells']):,}",
+            "",
+        ])
+    if block.get("scale_caveat"):
+        lines.extend(["> %s" % block["scale_caveat"], ""])
+    return lines
+
+
+def _region_proposal_lines(descriptive: Dict[str, Any]) -> List[str]:
+    block = descriptive.get("region_proposal") or {}
+    domains = block.get("spatial_domains") or {}
+    hotspots = block.get("hotspots") or {}
+    if domains.get("status") != "computed" and hotspots.get("status") != "computed":
+        return []
+    lines = [
+        "### Draft regions for review",
+        "",
+        "The validation gate needs reviewed regions and cannot invent them. These are data-derived "
+        "proposals to accept, rename, merge or throw away -- they are written to "
+        "`cell_regions_candidate.csv`, which the gate does not read.",
+        "",
+    ]
+    if domains.get("status") == "computed":
+        lines.extend([
+            "**Spatial domains** (%d, covering %.1f%% of cells, Leiden resolution %s on a graph "
+            "that uses position as well as expression). These tile the section."
+            % (domains.get("proposed_region_count", 0), 100.0 * float(domains.get("coverage") or 0.0),
+               domains.get("resolution")),
+            "",
+            "| Domain | Cells | Share |", "| --- | ---: | ---: |",
+        ])
+        for row in (domains.get("regions") or [])[:12]:
+            lines.append("| `%s` | %s | %.1f%% |" % (
+                row.get("candidate_region"), row.get("n_cells"), 100.0 * float(row.get("fraction") or 0.0)))
+        lines.append("")
+    if hotspots.get("status") == "computed" and hotspots.get("regions"):
+        lines.extend([
+            "**Gene hotspots** (%d). These do not tile the section and can overlap -- %s cells fall "
+            "in more than one."
+            % (hotspots.get("proposed_region_count", 0), hotspots.get("cells_in_multiple_hotspots", 0)),
+            "",
+            "| Hotspot | Cells |", "| --- | ---: |",
+        ])
+        for row in hotspots.get("regions") or []:
+            lines.append("| `%s` | %s |" % (row.get("candidate_region"), row.get("n_cells")))
+        lines.append("")
+    lines.extend([
+        "A domain is named `domain_N` and a hotspot after its gene. Neither names a tissue: that "
+        "is the expert judgement the gate exists to require.",
+        "",
+    ])
+    return lines
+
+
+def _point_pattern_lines(payload: Dict[str, Any]) -> List[str]:
+    block = payload.get("cell_type_point_pattern") or {}
+    rows = block.get("groups") or []
+    if block.get("status") != "computed" or not rows:
+        return []
+    lines = [
+        "## Cell-Type Point Pattern (Besag's L)",
+        "",
+        "Does each cell type cluster, spread out, or sit at complete spatial randomness? Scored "
+        "against a simulated CSR envelope in the same observation window, not against the "
+        "theoretical L(r) = r line -- in a window this shape the theoretical line is wrong by "
+        "hundreds of microns and reports every population as dispersed.",
+        "",
+        "Radii tested: 0 to %s um. %s"
+        % (block.get("max_distance_um"), block.get("radius_rule", "")),
+        "",
+        "| Cell type | Cells | Peak deviation | At radius (um) | Radii above envelope | Verdict |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for row in rows:
+        lines.append("| `%s` | %s | %s | %s | %.0f%% | %s |" % (
+            row.get("group"), row.get("n_cells"), row.get("peak_deviation"),
+            row.get("peak_radius_um"), 100.0 * float(row.get("radii_above_envelope") or 0.0),
+            row.get("verdict")))
+    if block.get("reviewed_only") and block.get("unreviewed_cells"):
+        lines.append(
+            "%s cells carry a label the reviewer did not supply -- the loader's marker-rule "
+            "guesses on cells review did not reach -- and are excluded from this table rather "
+            "than listed as cell types beside the reviewed classes."
+            % f"{int(block['unreviewed_cells']):,}"
+        )
+    if block.get("window_resolution_note"):
+        lines.extend(["", "> %s" % block["window_resolution_note"]])
+    lines.append("")
+    return lines
+
+
+def _gene_pair_lines(payload: Dict[str, Any]) -> List[str]:
+    block = payload.get("gene_pair_spatial_correlation") or {}
+    rows = [row for row in block.get("pairs") or [] if row.get("status") == "computed"]
+    if block.get("status") != "computed" or not rows:
+        return []
+    lines = [
+        "## Gene-Pair Spatial Co-Variation (Lee's L)",
+        "",
+        "Marker detection can say two genes are high in the same cluster. This asks whether their "
+        "expression fields overlap *in space*, which is a different claim. Pairs are the top two "
+        "markers of each cluster, not all-against-all.",
+        "",
+        "| Gene A | Gene B | Lee's L | Pearson r | Reading |",
+        "| --- | --- | ---: | ---: | --- |",
+    ]
+    for row in rows:
+        lines.append("| `%s` | `%s` | %s | %s | %s |" % (
+            row.get("gene_a"), row.get("gene_b"), row.get("lees_l"),
+            row.get("pearson_r"), row.get("interpretation")))
+    lines.extend(["", "> %s" % block.get("comparability_caveat", ""), ""])
+    return lines
+
+
+def _result_table_lines(payload: Dict[str, Any]) -> List[str]:
+    block = payload.get("result_tables") or {}
+    tables = block.get("tables") or []
+    if block.get("status") != "written" or not tables:
+        return []
+    lines = [
+        "## Result Tables",
+        "",
+        "Long-format TSVs for anything that needs to leave this report -- a spreadsheet, R, a "
+        "supplementary table. Each file repeats the run id, dataset and gate status as a header "
+        "comment, because a table is usually read apart from the report that qualifies it.",
+        "",
+        "| File | Rows |", "| --- | ---: |",
+    ]
+    for item in tables:
+        lines.append("| `%s/%s` | %s |" % (TABLE_DIRNAME, item.get("table"), item.get("rows")))
+    lines.append("")
+    return lines
+
+
+def _marker_gene_pairs(descriptive: Dict[str, Any], limit: int = 6) -> List[Tuple[str, str]]:
+    """Gene pairs worth a bivariate test: the top two markers of each cluster.
+
+    Deliberately not all-against-all. On a 319-gene panel that is 50,000 tests
+    nobody asked for, and Lee's L is not comparable across pairs measured on
+    different expression scales, so a ranked all-pairs table would invite exactly
+    the comparison the statistic cannot support.
+    """
+    pairs: List[Tuple[str, str]] = []
+    for genes in (descriptive.get("markers_by_cluster") or {}).values():
+        names = [str(name) for name in (genes or [])[:2] if str(name)]
+        if len(names) == 2 and tuple(names) not in pairs:
+            pairs.append((names[0], names[1]))
+        if len(pairs) >= limit:
+            break
+    return pairs
+
+
+def _safe_spatial(call, label: str) -> Dict[str, Any]:
+    """Run an optional spatial analysis; report a failure instead of raising.
+
+    These are additions to a lane that already produced a useful report without
+    them. A new statistic failing must degrade the report, not the run -- the
+    same reason every viewer layer degrades to a status payload.
+    """
+    try:
+        return call()
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "not_computed", "reason": "%s failed: %s: %s" % (label, type(exc).__name__, exc)}
+
+
+def _lisa_gene_candidates(payload: Dict[str, Any], limit: int) -> List[str]:
+    """The genes the global test already ranked, so local and global agree.
+
+    Picking a different set would let the report rank one set of genes as
+    spatially variable and map a different set, which reads as a contradiction.
+    """
+    spatial = payload.get("spatial_genes") or {}
+    genes: List[str] = []
+    for row in spatial.get("top_genes") or []:
+        name = str((row or {}).get("gene") or "")
+        if name and name not in genes:
+            genes.append(name)
+        if len(genes) >= limit:
+            break
+    return genes
+
+
+def _run_local_spatial(dataset: SpatialDataset, payload: Dict[str, Any]) -> Dict[str, Any]:
+    genes = _lisa_gene_candidates(payload, DEFAULT_LISA_GENES)
+    if not genes:
+        return {
+            "status": "not_run",
+            "reason": "No spatially variable genes were ranked, so there is nothing to localise.",
+            "genes": [],
+        }
+    result = _safe_spatial(
+        lambda: local_moran_hotspots(dataset, genes, {"strict_engine": True}),
+        "Local Moran's I",
+    )
+    # The per-cell map is large and belongs in the tables, not in every payload
+    # that gets embedded in a report. Kept on the object for the table writer and
+    # the region proposal, dropped before the payload is serialised.
+    return result
+
+
+def _build_region_proposal(dataset: SpatialDataset, payload: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+    """Spatial domains plus LISA hotspots, written as review candidates."""
+    domains = _safe_spatial(
+        lambda: propose_regions(dataset, {"strict_engine": True}),
+        "Spatial-domain region proposal",
+    )
+    hotspots = _safe_spatial(
+        lambda: hotspot_regions(payload.get("local_spatial_structure") or {}),
+        "Hotspot region proposal",
+    )
+    written = _safe_spatial(
+        lambda: write_region_candidates(dataset, [domains, hotspots], output_dir),
+        "Region candidate export",
+    )
+    return {
+        "status": "computed" if written.get("status") == "written" else written.get("status", "not_written"),
+        "spatial_domains": {key: value for key, value in domains.items() if key != "assignments"},
+        "hotspots": {key: value for key, value in hotspots.items() if key != "assignments"},
+        "candidate_file": written.get("path", ""),
+        "candidate_rows": written.get("rows", 0),
+        "assignments": {
+            "spatial_domain": domains.get("assignments") or {},
+            "lisa_hotspot": hotspots.get("assignments") or {},
+        },
+        "gate_note": (
+            "Proposals are written to cell_regions_candidate.csv. The validation gate reads only "
+            "cell_regions.csv, which a reviewer writes; nothing here can clear it."
+        ),
+    }
+
+
 def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str, Any]:
     """Label-free analysis: QC, clusters, per-cluster markers, cluster neighbourhoods.
 
@@ -704,7 +1096,13 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
                 "significant_gene_count_top_n": result.metrics.get("significant_gene_count_top_n"),
                 "significant_gene_count_all": result.metrics.get("significant_gene_count_all"),
                 "screening": result.metrics.get("screening"),
+                # Fifteen for the report table; the full ranked list and the
+                # genes the screen excluded are kept for `tables/genes_spatial.tsv`,
+                # which otherwise reported 15 rows for a 296-gene panel.
                 "top_genes": result.metrics.get("top_genes", [])[:15],
+                "all_tested_genes": result.metrics.get("top_genes", []),
+                "screened_out_genes": result.metrics.get("screened_out_genes") or [],
+                "detected_by_gene": result.metrics.get("detected_by_gene") or {},
             }
         else:
             payload[key] = {
@@ -728,6 +1126,31 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
         "Clusters are derived from measured expression, not from cell-type labels. Marker genes "
         "describe what distinguishes each cluster; naming clusters as cell types requires expert review."
     )
+    # Local statistics: where the spatially variable genes actually are. Global
+    # Moran's I ranks genes and can draw no map; LISA classifies every cell, which
+    # is what turns a gene list into something a pathologist can look at. Run on
+    # the genes the global test already ranked, so the two agree by construction.
+    stage_start = time.time()
+    payload["local_spatial_structure"] = _run_local_spatial(dataset, payload)
+    timings["local_spatial_structure"] = round(time.time() - stage_start, 2)
+
+    # Moran's I per data-derived cluster. Grouped by cluster it names nothing, so
+    # it belongs in the descriptive lane; the cell-type version is gated.
+    stage_start = time.time()
+    payload["cluster_spatial_autocorrelation"] = _safe_spatial(
+        lambda: cell_type_spatial_autocorrelation(
+            dataset, {"group_key": "cluster", "strict_engine": True, "n_perms": 100}
+        ),
+        "Cluster spatial autocorrelation",
+    )
+    timings["cluster_spatial_autocorrelation"] = round(time.time() - stage_start, 2)
+
+    # Draft regions. The gate demands cell_regions.csv and the agent had no way to
+    # help produce one; these are candidates written to their own filename.
+    stage_start = time.time()
+    payload["region_proposal"] = _build_region_proposal(dataset, payload, output_dir)
+    timings["region_proposal"] = round(time.time() - stage_start, 2)
+
     stage_start = time.time()
     payload["figures"] = _write_descriptive_figures(dataset, payload, output_dir)
     timings["figures"] = round(time.time() - stage_start, 2)
@@ -885,13 +1308,22 @@ def _sort_cluster_key(value: str) -> Any:
         return (1, str(value))
 
 
-def _run_validated_tools(dataset: SpatialDataset, plan: List[Any]) -> List[ToolResult]:
+def _run_validated_tools(
+    dataset: SpatialDataset,
+    plan: List[Any],
+    reviewed_labels: Optional[List[str]] = None,
+) -> List[ToolResult]:
     registry = build_mvp_registry()
     results = []
     for spec in plan:
+        params = dict(spec.params)
+        # Every cell-type-grouped tool on the validated side sees the same
+        # reviewed set, so one table cannot list a class another excluded.
+        if reviewed_labels and spec.tool_name in CELL_TYPE_GROUPED_TOOLS:
+            params["reviewed_labels"] = list(reviewed_labels)
         # marker_detection runs one-vs-rest across every reviewed cell type by
         # default, so no arbitrary pairwise group selection is imposed here.
-        results.append(registry.get(spec.tool_name).run(dataset, dict(spec.params)))
+        results.append(registry.get(spec.tool_name).run(dataset, params))
     return results
 
 
@@ -899,16 +1331,23 @@ def _analysis_scope(dataset: SpatialDataset) -> Dict[str, Any]:
     sampling = dict(dataset.metadata.get("sampling") or {})
     total = int(sampling.get("total_records") or dataset.metadata.get("n_obs_total") or len(dataset.records))
     loaded = len(dataset.records)
+    # Completeness is about how much of the section was *covered*, not how many
+    # cells survived QC. Comparing the post-QC count against the section total
+    # made 44 cells dropped for quality read as incomplete coverage and block
+    # validated inference on a full section.
+    scanned = int(sampling.get("scanned_records") or loaded)
     complete = str(dataset.metadata.get("analysis_scope") or "").lower() == "full_section"
-    if total > 0 and loaded < total:
+    if total > 0 and scanned < total:
         complete = False
     return {
         "scope": "full_section" if complete else "sampled",
         "complete_section": complete,
         "complete_section_requirement_met": complete,
         "loaded_records": loaded,
+        "scanned_records": scanned,
+        "qc_removed_records": max(scanned - loaded, 0),
         "total_records": total,
-        "fraction_loaded": round(loaded / float(max(total, 1)), 6),
+        "fraction_loaded": round(scanned / float(max(total, 1)), 6),
         "sampling_method": sampling.get("method", "unknown"),
         "validated_claims_allowed": False,
     }
@@ -1267,6 +1706,64 @@ VALIDATION_ONLY_SECTIONS = (
 )
 
 
+
+
+def _composition_derived_regions(payload: Dict[str, Any]) -> bool:
+    """True when the region table names a script rather than a person.
+
+    Read from the table's own `reviewer_id`, which is the only place the
+    information exists -- the gate counts reviewed regions and cannot look
+    behind them.
+    """
+    reviewers = " ".join((payload.get("region_report") or {}).get("reviewers") or {}).lower()
+    return "composition" in reviewers or "derived" in reviewers
+
+
+def _region_circularity_note(payload: Dict[str, Any]) -> List[str]:
+    if not _composition_derived_regions(payload):
+        return []
+    return [
+        "These regions were named from the reviewed cell composition, so this table restates the "
+        "naming rule rather than testing it. See *Label and Region Readiness* for who supplied them.",
+        "",
+    ]
+
+
+def _reviewer_provenance_lines(payload: Dict[str, Any]) -> List[str]:
+    """Who supplied the labels and the regions, from the tables' own columns.
+
+    The gate counts a reviewed table; it cannot read who wrote it. On this
+    workspace's one validated section the labels are a peer-reviewed publication
+    and the regions were named by a script from cell composition -- the region
+    table says so in its `reviewer_id`, and until now that string stopped at the
+    table. A reader saw `validated_ready`, 19 regions, and no way to tell the two
+    apart.
+
+    A region named from cell composition and then summarised by cell composition
+    is partly circular, so that is said out loud rather than left for the reader
+    to notice.
+    """
+    lines: List[str] = []
+    for key, noun in (("label_report", "Labels"), ("region_report", "Regions")):
+        reviewers = (payload.get(key) or {}).get("reviewers") or {}
+        if not reviewers:
+            continue
+        named = sorted(reviewers.items(), key=lambda item: item[1], reverse=True)
+        lines.append("- %s supplied by: %s" % (
+            noun, "; ".join("%s (%s cells)" % (who, format(count, ",")) for who, count in named)))
+    if not lines:
+        return lines
+    if _composition_derived_regions(payload):
+        lines.append("")
+        lines.append(
+            "Regions here were named from cell composition rather than from morphology, so a region "
+            "summary that reports composition is partly circular: `tumor_rich` is tumour-rich by "
+            "construction. Neighbourhood results *within* a region do not inherit that circularity, "
+            "because the composition did not set which pairs sit adjacent."
+        )
+    return lines
+
+
 def _filter_descriptive_sections(lines: List[str], payload: Dict[str, Any]) -> List[str]:
     """Drop validated-tier sections from a descriptive report.
 
@@ -1336,17 +1833,37 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         "- Dataset: `%s`" % payload["dataset_path"],
         "- Loaded cells: `%d`" % payload["records_loaded"],
         "- Loaded features: `%d`" % payload["features_loaded"],
-        "- Analysis scope: `%s` (%s/%s cells; %.2f%%)"
+        # Tolerate payloads written before scanned/QC counts existed, and
+        # hand-built ones: a report must not crash on a missing key.
+        "- Analysis scope: `%s` (%s of %s cells scanned, %.2f%%; %s analysed after QC removed %s)"
         % (
-            scope["scope"],
-            scope["loaded_records"],
-            scope["total_records"],
-            100.0 * float(scope["fraction_loaded"]),
+            scope.get("scope", "unknown"),
+            scope.get("scanned_records", scope.get("loaded_records", 0)),
+            scope.get("total_records", 0),
+            100.0 * float(scope.get("fraction_loaded", 0.0)),
+            scope.get("loaded_records", 0),
+            scope.get("qc_removed_records", 0),
         ),
         "- QC expression source: `%s`"
         % payload.get("expression_layers", {}).get("source", "source layer unavailable"),
         "",
     ]
+    cell_qc = payload.get("cell_qc") or {}
+    if cell_qc.get("status") == "applied":
+        lines.extend(
+            [
+                "- Cell QC: `%s` — removed %d of %d cells (%d low transcript count, %d high background); %d cells had no detected nucleus and were kept."
+                % (
+                    cell_qc["rule"],
+                    cell_qc["dropped_cell_count"],
+                    cell_qc["input_cell_count"],
+                    cell_qc["dropped_low_transcript_count"],
+                    cell_qc["dropped_high_background_count"],
+                    cell_qc["nucleus_free_cell_count"],
+                ),
+                "",
+            ]
+        )
     lines.extend(_descriptive_markdown(payload))
     if payload["blocking_reasons"]:
         lines.extend(["## What Is Still Needed To Go Further", ""])
@@ -1374,9 +1891,10 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
             "",
             "- Label status: `%s`" % payload["label_report"]["status"],
             "- Region status: `%s`" % payload["region_report"]["status"],
-            "",
         ]
     )
+    lines.extend(_reviewer_provenance_lines(payload))
+    lines.append("")
     lines.extend(["## Review Visualizations", ""])
     lines.extend("- `%s`" % item for item in payload["review_figures"])
     lines.extend(
@@ -1396,6 +1914,9 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
     for region, count in sorted(payload["region_counts"].items(), key=lambda item: item[1], reverse=True):
         lines.append("| `%s` | %d |" % (region, count))
     lines.append("")
+    # Repeated here rather than left to the readiness section 150 lines up: this
+    # is the table a reader jumps to, and it is the one the circularity applies to.
+    lines.extend(_region_circularity_note(payload))
     if results:
         lines.extend(["## Tool Results", ""])
         for result in results:
@@ -1525,17 +2046,34 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         )
         for index, item in enumerate(payload["claim_reliability"], start=1):
             lines.append(
-                "| `%s` | %.4f | %.4f | %.4f | %.4f | %.4f | %s |"
+                "| `%s` | %s | %s | %s | %s | %s | %s |"
                 % (
                     item.get("claim_ref") or "claim_%03d" % index,
-                    float(item.get("reliability") or 0.0),
-                    float(item.get("S_statistical") or 0.0),
-                    float(item.get("A_annotation") or 0.0),
-                    float(item.get("P_panel") or 0.0),
-                    float(item.get("R_spatial_robustness") or 0.0),
+                    _reliability_cell(item),
+                    _component_cell(item, "S_statistical"),
+                    _component_cell(item, "A_annotation"),
+                    _component_cell(item, "P_panel"),
+                    _component_cell(item, "R_spatial_robustness"),
                     str(item.get("interpretation") or "").replace("|", "/"),
                 )
             )
+        lines.extend(
+            [
+                "",
+                "`n/a` marks a component that does not apply to that claim type. It is scored 1.0 internally so "
+                "weakest-link does not penalise a claim for a test it never needed -- which is not the same as "
+                "measured evidence, and was printed as `1.0000` until now.",
+                "",
+                "`P_panel` measures the assay, not this run: it is the share of canonical markers for the cell "
+                "types present that this targeted panel carries. It is the same for every claim and every section "
+                "on the same panel, so where it is the limiting component the ceiling is the panel's, and a higher "
+                "score is reached by measuring more genes rather than by better evidence.",
+                "",
+                "`A_annotation` is coverage of the loaded cells. Reviewer confidence and the number of review "
+                "decisions are reported beside it and are deliberately not folded into it -- coverage is not "
+                "review depth, and a whole section can be covered by a handful of cluster-level decisions.",
+            ]
+        )
     else:
         lines.append("No claim reliability records were generated.")
     robustness_rows = _spatial_robustness_rows(payload)
@@ -1555,6 +2093,30 @@ def _write_markdown_report(path: Path, payload: Dict[str, Any], results: List[To
         reason = payload.get("spatial_robustness", {}).get("reason")
         if reason:
             lines.extend(["", "Note: %s" % reason])
+    family = (payload.get("spatial_robustness") or {}).get("graph_family_check") or {}
+    if family.get("status") == "computed":
+        lines.extend([
+            "",
+            "**Graph family check.** Every setting above is a k-nearest-neighbour graph, so the "
+            "sweep can only say whether the answer survives changing *k*. Repeating it on a "
+            "distance-band graph at %s um -- one physical scale everywhere, rather than k "
+            "neighbours however sparse the neighbourhood -- gives sign agreement %s and top-K "
+            "Jaccard %s (%s cells had no neighbour within the band). Low agreement does not "
+            "invalidate the result; it means the finding depends on how neighbourhoods are "
+            "defined."
+            % (family.get("radius_um"), family.get("sign_agreement"),
+               family.get("topk_jaccard"), family.get("isolated_cells")),
+        ])
+    lines.extend(_group_autocorrelation_lines(
+        payload.get("cell_type_spatial_autocorrelation") or {},
+        "## Cell-Type Spatial Autocorrelation (Moran's I)",
+        "Neighbourhood enrichment says whether A sits near B. This says whether A sits near A -- "
+        "whether a population forms patches at all, which is usually the first thing asked of a "
+        "section.",
+    ))
+    lines.extend(_point_pattern_lines(payload))
+    lines.extend(_gene_pair_lines(payload))
+    lines.extend(_result_table_lines(payload))
     lines.extend(["", "## Limitations", ""])
     lines.extend("- %s" % item for item in _limitations(payload))
     if payload.get("run_record_path"):
@@ -1599,14 +2161,14 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         for item in payload["claim_ledger"]
     )
     reliability_rows = "".join(
-        "<tr><td>%s</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%s</td></tr>"
+        "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
         % (
             html.escape(str(item.get("claim_ref") or "")),
-            float(item.get("reliability") or 0.0),
-            float(item.get("S_statistical") or 0.0),
-            float(item.get("A_annotation") or 0.0),
-            float(item.get("P_panel") or 0.0),
-            float(item.get("R_spatial_robustness") or 0.0),
+            html.escape(_reliability_cell(item)),
+            html.escape(_component_cell(item, "S_statistical")),
+            html.escape(_component_cell(item, "A_annotation")),
+            html.escape(_component_cell(item, "P_panel")),
+            html.escape(_component_cell(item, "R_spatial_robustness")),
             html.escape(str(item.get("interpretation") or "")),
         )
         for item in payload.get("claim_reliability", [])
@@ -2398,17 +2960,154 @@ def _spatial_robustness_rows(payload: Dict[str, Any]) -> List[Tuple[str, str]]:
     return rows
 
 
+def _component_cell(item: Dict[str, Any], name: str) -> str:
+    """Render one reliability component, distinguishing measured from inapplicable.
+
+    `S_statistical` and `R_spatial_robustness` short-circuit to 1.0 with status
+    `not_applicable` for claim types that need no spatial test. Printing the bare
+    number put "no test was required" and "maximal permutation evidence" in the
+    same cell, in the same column, with nothing to tell them apart -- and one run
+    showed `R_spatial_robustness 1.0000` in a payload whose robustness sweep was
+    recorded as `not_run`.
+    """
+    component = (item.get("components") or {}).get(name) or {}
+    status = str(component.get("status") or "")
+    score = float(item.get(name) or 0.0)
+    if status == "not_applicable":
+        return "n/a"
+    if status == "blocked":
+        return "%.4f (blocked)" % score
+    return "%.4f" % score
+
+
+def _reliability_cell(item: Dict[str, Any]) -> str:
+    """The combined score, marked when the claim it scores was not made.
+
+    A refused or dropped claim still gets a row, and "0.5000" beside the word
+    "moderate" read as a result rather than as the score of something the ledger
+    had already declined to say.
+    """
+    score = float(item.get("reliability") or 0.0)
+    if str(item.get("status") or "") == "blocked":
+        return "%.4f (claim not made)" % score
+    return "%.4f" % score
+
+
+def _coverage_phrase(payload: Dict[str, Any], kind: str) -> str:
+    """" applied to N of M cells (X%), threshold Y%" -- or "" when unknown.
+
+    Coverage and the threshold it was judged against travel together: either
+    alone is half the fact, and the half that was printed was neither.
+    """
+    evidence = payload.get("gate_evidence") or {}
+    coverage = evidence.get("%s_coverage" % kind)
+    if coverage is None:
+        return ""
+    matched = evidence.get("%s_matched_cells" % kind)
+    total = evidence.get("%s_total_records" % kind)
+    threshold = evidence.get("min_%s_coverage" % kind)
+    scope = (
+        " applied to %s of %s loaded cells" % (f"{int(matched):,}", f"{int(total):,}")
+        if matched is not None and total
+        else ""
+    )
+    # The number of decisions behind the coverage, when the table records it.
+    # 90% coverage from eleven cluster clicks and 90% from 22,000 per-cell calls
+    # are the same percentage and not the same evidence.
+    decisions = evidence.get("%s_review_decisions" % kind) or 0
+    decided = ""
+    if decisions:
+        decided = ", from %d review decision%s" % (decisions, "" if decisions == 1 else "s")
+    return "%s (%.1f%% coverage, gate threshold %.0f%%%s)" % (
+        scope, 100.0 * float(coverage), 100.0 * float(threshold or 0.0), decided
+    )
+
+
+def gate_threshold_notes(evidence: Dict[str, Any]) -> List[str]:
+    """Say so, in the report, when the gate was run at a relaxed setting.
+
+    Shared by the markdown, HTML and PDF writers so a reader cannot get the
+    unqualified version by choosing a different format.
+    """
+    notes: List[str] = []
+    below = list(evidence.get("below_coverage_floor") or [])
+    lowered = list(evidence.get("thresholds_lowered") or [])
+    if below:
+        notes.append(
+            "COVERAGE FLOOR OVERRIDDEN: the %s coverage threshold was set below %.0f%% and the run proceeded "
+            "on an explicit acknowledgement. At this setting the gate cannot refuse a near-empty review table, "
+            "so every claim below rests on the coverage figure above rather than on the gate."
+            % (" and ".join(below), 100.0 * float(evidence.get("coverage_floor") or 0.0))
+        )
+    elif lowered:
+        notes.append(
+            "The %s coverage threshold was lowered from the %.0f%% default to %s for this run; the gate's verdict "
+            "is relative to that relaxed setting."
+            % (
+                " and ".join(lowered),
+                100.0 * float(evidence.get("default_min_label_coverage") or 0.0),
+                ", ".join(
+                    "%.0f%% (%s)" % (100.0 * float(evidence.get("min_%s_coverage" % name) or 0.0), name)
+                    for name in lowered
+                ),
+            )
+        )
+    if evidence.get("allow_single_region"):
+        notes.append(
+            "The two-region requirement was waived for this run, so region contrasts rest on a single reviewed region."
+        )
+    if (evidence.get("reviewed_basis") or {}).get("labels") == "record_scan_fallback":
+        notes.append(
+            "Reviewed class and region counts fall back to a scan of loaded records for this run, which "
+            "includes loader-assigned values; treat those counts as an upper bound."
+        )
+    return notes
+
+
 def _limitations(payload: Dict[str, Any]) -> List[str]:
+    """Report limitations, ending with anything the submitter told us.
+
+    Submitter context is appended rather than merged, and every line names its
+    author and says it is unverified. A handling note sitting among the agent's
+    own measured limitations would read as something the pipeline established.
+    """
     feature_count = payload.get("features_loaded", 0)
     label_status = payload.get("label_report", {}).get("status", "unknown")
     region_status = payload.get("region_report", {}).get("status", "unknown")
     items = [
-        "Xenium uses a targeted panel (%s loaded features); absence of a gene means it was not measured, not that it is unexpressed." % feature_count,
-        "Cell-type labels status: %s. Validated biological interpretation requires expert-reviewed labels." % label_status,
-        "Region labels status: %s. Region summaries use user-provided regions; they are not image-derived or independently validated by this MVP." % region_status,
+        "Xenium uses a targeted panel (%s measured genes%s); absence of a gene means it was not measured, not that it is unexpressed."
+        % (
+            feature_count,
+            (
+                "; %d control probes were excluded from analysis, identified by %s"
+                % (payload["control_features_loaded"], payload.get("control_feature_source", "name prefix"))
+            )
+            if payload.get("control_features_loaded")
+            else ""
+        ),
+        "Cell-type labels status: %s%s. Validated biological interpretation requires expert-reviewed labels."
+        % (label_status, _coverage_phrase(payload, "label")),
+        "Region labels status: %s%s. Region summaries use user-provided regions; they are not image-derived or independently validated by this MVP."
+        % (region_status, _coverage_phrase(payload, "region")),
         "Neighborhood enrichment reflects spatial adjacency only; it does not establish interaction, signaling, causation, or mechanism.",
         "No deconvolution, trajectory, motif activity, ligand-receptor, pathway, CNV, or causal inference was run.",
     ]
+    # Who supplied the reviewed tables. In `_limitations` rather than only in the
+    # markdown body because the HTML report is the artifact a reviewer is sent,
+    # and it carried the gate's verdict without ever naming its sources.
+    for key, noun in (("label_report", "Cell-type labels"), ("region_report", "Regions")):
+        reviewers = (payload.get(key) or {}).get("reviewers") or {}
+        if reviewers:
+            items.append("%s were supplied by: %s. The gate counts a reviewed table and cannot "
+                         "read who wrote it, so the source is reported rather than enforced."
+                         % (noun, "; ".join(sorted(reviewers))))
+    if _composition_derived_regions(payload):
+        items.append(
+            "These regions were named from the reviewed cell composition, not from morphology. A "
+            "region summary over them is therefore partly circular -- a domain called `tumor_rich` "
+            "is tumour-rich by construction. Within-region neighbourhood enrichment is not affected: "
+            "composition set which cells fall in which domain, not which types sit adjacent."
+        )
     if payload.get("analysis_scope", {}).get("scope") != "full_section":
         items.append(
             "This run is a deterministic cell sample, not a complete-section analysis; final biological claims require a full-section rerun."
@@ -2418,10 +3117,25 @@ def _limitations(payload: Dict[str, Any]) -> List[str]:
             "Validation-gated biological tools were not run because required inputs are incomplete; "
             "the reported QC, expression clusters, cluster markers, spatial genes, and cluster neighborhoods are descriptive analyses only."
         )
+    # A lowered threshold changes what "the gate passed" means, so it is stated
+    # wherever the gate's verdict is, not left to the run record. Placed before
+    # the method caveats because it qualifies every claim below it.
+    evidence = payload.get("gate_evidence") or {}
+    for line in gate_threshold_notes(evidence):
+        items.append(line)
     if payload.get("region_stratified_neighborhoods", {}).get("status") == "computed":
         items.append("Region-stratified tests are within-section analyses; biological generalization requires replicate sections or donors.")
     if payload.get("distance_cooccurrence", {}).get("status") == "computed":
         items.append("Distance-dependent co-occurrence curves are descriptive probability ratios and do not provide permutation significance tests.")
+    for line in payload.get("user_context_caveats") or []:
+        items.append(str(line))
+    expected = (payload.get("user_context") or {}).get("expected_cell_types") or []
+    if expected:
+        items.append(
+            "The submitter expected these cell types: %s. That expectation ordered the review queue and "
+            "nothing else; it is not evidence, no label follows from it, and no claim above depends on it."
+            % ", ".join(str(name) for name in expected)
+        )
     return items
 
 
@@ -2619,6 +3333,15 @@ def _descriptive_markdown(payload: Dict[str, Any]) -> List[str]:
         for pair in neighborhood["top_pairs"][:8]:
             lines.append("| `%s` | %s |" % (pair.get("pair"), pair.get("zscore")))
         lines.append("")
+    lines.extend(_local_spatial_lines(descriptive))
+    lines.extend(_group_autocorrelation_lines(
+        descriptive.get("cluster_spatial_autocorrelation") or {},
+        "### Spatial clustering of each expression cluster",
+        "Moran's I on a cluster membership indicator: does this cluster form patches in the "
+        "tissue, or scatter through it? Different question from the co-occurrence table above, "
+        "which is about *pairs*.",
+    ))
+    lines.extend(_region_proposal_lines(descriptive))
     warning = descriptive.get("sampling_warning")
     if warning:
         lines.extend(["> **Sampling note:** %s" % warning, ""])
