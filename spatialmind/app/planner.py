@@ -407,6 +407,27 @@ def propose(question: str, gate_open: bool) -> Dict[str, Any]:
 
     if named and not matched:
         names = ", ".join(sorted({intent["tool"] for intent in named}))
+        # "Not built yet" and "this assay cannot support it" are different
+        # answers to the same question, and only one of them implies waiting.
+        limits = []
+        for name in sorted({intent["tool"] for intent in named}):
+            try:
+                limit = registry.get(name).assay_limit
+            except Exception:
+                limit = ""
+            if limit:
+                limits.append("%s: %s" % (name, limit))
+        if limits:
+            return {
+                "answer": (
+                    "I can't answer that, and not because it is unfinished. %s" % " ".join(limits)
+                ),
+                "tools": [],
+                "rationale": "Refused on the assay, not on the roadmap.",
+                "refusal": names,
+                "refusal_kind": "assay",
+                "possible_scaffolds": [],
+            }
         return {
             "answer": (
                 "I can't answer that. The tool for it (%s) is registered but is a scaffold: it returns a "
@@ -417,6 +438,8 @@ def propose(question: str, gate_open: bool) -> Dict[str, Any]:
             "rationale": "%d of %d registered tools are plannable; the rest are hidden from the planner rather than substituted."
             % (len(plannable), len(registry.list_all())),
             "refusal": names,
+            "refusal_kind": "unbuilt",
+            "possible_scaffolds": [],
         }
 
     if not matched:

@@ -86,6 +86,17 @@ def annotation(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult
     caveats = _type_honesty_caveats(dataset)
     _add_caveats(result, caveats)
     result.label_caveat = caveats[0] if caveats else None
+
+    # This is the tool that turns a reviewer's table into named cell types, so
+    # it is where the names get read back against the measurements. Reported,
+    # never enforced: the reviewer is the authority on what the labels say, and
+    # the run's job is to make sure they are told when the data disagrees.
+    audit = audit_labels_against_markers(dataset)
+    result.metrics["label_marker_audit"] = audit
+    disagreement_caveats = label_audit_caveats(audit)
+    if disagreement_caveats:
+        _add_caveats(result, disagreement_caveats)
+        result.label_caveat = disagreement_caveats[0]
     return result
 
 
@@ -1082,6 +1093,106 @@ def marker_lineage(
     if runner_up > 0 and best_score < runner_up * dominance:
         return "", 0.0
     return best_lineage, best_score
+
+
+# Below this share of a label's cells carrying marker evidence for a different
+# lineage, the disagreement is noise: ambiguous cells, doublets, a panel that
+# measures one lineage better than another. At or above it, the label and the
+# measurements are telling different stories and the reader has to be told.
+LABEL_AUDIT_FLOOR = 0.15
+
+
+def audit_labels_against_markers(
+    dataset: SpatialDataset,
+    floor: float = LABEL_AUDIT_FLOOR,
+) -> Dict[str, Any]:
+    """Do the reviewed labels agree with the cells' own markers?
+
+    The gate asks whether a human supplied labels, and checks coverage, class
+    count, region count and decision count. It does not ask whether the labels
+    are consistent with the measurements, so a section labelled confidently and
+    wrongly passes exactly like one labelled correctly. This is the missing
+    question, asked of the same data in the same run.
+
+    The pieces were all here already -- `marker_lineage` reads a cell's dominant
+    lineage from its own expression, `lineage_for_label` reads the lineage a
+    label asserts, `lineages_conflict` knows which pairs are genuinely
+    incompatible -- but they were wired only to labels a *reference* proposes.
+    A reviewer's own labels were never re-read against the evidence.
+
+    Only cells the markers speak confidently about count: `marker_lineage`
+    requires a dominant winner, so ambiguity abstains rather than voting. A
+    label whose lineage this vocabulary does not recognise is reported as
+    unknown, never as agreeing.
+    """
+    per_label: Dict[str, Dict[str, Any]] = {}
+    for record in dataset.records:
+        label = str(record.cell_type or "").strip()
+        if not label:
+            continue
+        entry = per_label.setdefault(label, {"cells": 0, "assessed": 0, "conflicting": 0,
+                                             "observed": Counter()})
+        entry["cells"] += 1
+        observed, _score = marker_lineage(record.genes)
+        if not observed:
+            continue  # the markers do not speak clearly about this cell
+        entry["assessed"] += 1
+        entry["observed"][observed] += 1
+        if lineages_conflict(lineage_for_label(label), observed):
+            entry["conflicting"] += 1
+
+    labels: List[Dict[str, Any]] = []
+    for label, entry in sorted(per_label.items()):
+        assessed = entry["assessed"]
+        share = (entry["conflicting"] / assessed) if assessed else 0.0
+        claimed = lineage_for_label(label)
+        dominant = entry["observed"].most_common(1)
+        labels.append({
+            "label": label,
+            "cells": entry["cells"],
+            "cells_with_marker_evidence": assessed,
+            "conflicting_cells": entry["conflicting"],
+            "disagreement_share": round(share, 4),
+            "claimed_lineage": claimed or "unrecognised",
+            "markers_suggest": dominant[0][0] if dominant else "",
+            "disagrees": bool(assessed) and share >= floor and bool(claimed),
+        })
+
+    flagged = [item for item in labels if item["disagrees"]]
+    assessed_total = sum(item["cells_with_marker_evidence"] for item in labels)
+    return {
+        "status": "computed" if assessed_total else "no_marker_evidence",
+        "floor": floor,
+        "labels_checked": len(labels),
+        "labels_disagreeing": len(flagged),
+        "cells_with_marker_evidence": assessed_total,
+        "labels": labels,
+        "flagged": [item["label"] for item in flagged],
+    }
+
+
+def label_audit_caveats(audit: Dict[str, Any]) -> List[str]:
+    """The sentence a reader needs when the labels and the markers disagree.
+
+    Loud and specific on purpose. A confident wrong label is harder to catch
+    than a blank one, and this is the only place the run says so.
+    """
+    if audit.get("status") != "computed" or not audit.get("labels_disagreeing"):
+        return []
+    worst = sorted((item for item in audit["labels"] if item["disagrees"]),
+                   key=lambda item: -item["disagreement_share"])
+    lines = [
+        "MARKERS DISAGREE with %d of %d reviewed labels. The labels are the reviewer's; "
+        "the markers are the measurement. Where they differ, check the label."
+        % (audit["labels_disagreeing"], audit["labels_checked"])
+    ]
+    for item in worst[:6]:
+        lines.append(
+            "  `%s`: %.0f%% of its %d cells carrying marker evidence look %s, not %s."
+            % (item["label"], 100 * item["disagreement_share"], item["cells_with_marker_evidence"],
+               item["markers_suggest"], item["claimed_lineage"])
+        )
+    return lines
 
 
 def lineages_conflict(predicted: str, observed: str) -> bool:

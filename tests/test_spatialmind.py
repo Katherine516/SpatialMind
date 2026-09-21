@@ -5104,6 +5104,116 @@ class SectionSizeTests(unittest.TestCase):
         self.assertEqual(_expression_qc_metrics(_dataset_to_anndata(plain))["source"], "source_values")
 
 
+class LabelMarkerAuditTests(unittest.TestCase):
+    """The gate asks whether a human labelled the section, never whether the
+    labels agree with the measurements.
+
+    An evaluation on 20 Sep labelled the healthy brain section by cluster index
+    -- arbitrary names, no biology -- and `marker_detection` then returned
+    GJA1/AQP4/SOX9, textbook astrocyte markers, for the class called excitatory
+    neuron. Five of five classes contradicted their label. The run reported
+    `succeeded`, the gate read `validated_ready`, and nothing anywhere said the
+    evidence disagreed. The pieces to catch it all existed; they were wired only
+    to labels a *reference* proposes.
+    """
+
+    def _dataset(self, labeller):
+        records = []
+        for index in range(200):
+            if index % 2:
+                genes, truth = {"GFAP": 9.0, "AQP4": 8.0, "SLC1A3": 7.0, "GJA1": 6.0}, "astrocyte"
+            else:
+                genes, truth = {"PTPRC": 9.0, "CD3D": 8.0, "CD3E": 7.0, "CD8A": 6.0}, "lymphoid"
+            records.append(SpotRecord("S", float(index), 0.0, labeller(truth), genes,
+                                      cell_id="c%d" % index))
+        return SpatialDataset(sample_id="S", source_path="x", records=records)
+
+    def test_swapped_labels_are_caught_and_named(self):
+        from spatialmind.tools.implementations import audit_labels_against_markers
+
+        audit = audit_labels_against_markers(
+            self._dataset(lambda t: "T cell" if t == "astrocyte" else "Astrocyte"))
+        self.assertEqual(audit["status"], "computed")
+        self.assertEqual(audit["labels_disagreeing"], 2)
+        by_label = {item["label"]: item for item in audit["labels"]}
+        self.assertEqual(by_label["Astrocyte"]["markers_suggest"], "lymphoid")
+        self.assertEqual(by_label["T cell"]["markers_suggest"], "astrocyte")
+        self.assertAlmostEqual(by_label["Astrocyte"]["disagreement_share"], 1.0, places=3)
+
+    def test_correct_labels_raise_nothing(self):
+        """A check that fires on correct labels is worse than no check."""
+        from spatialmind.tools.implementations import audit_labels_against_markers
+
+        audit = audit_labels_against_markers(
+            self._dataset(lambda t: "Astrocyte" if t == "astrocyte" else "T cell"))
+        self.assertEqual(audit["labels_disagreeing"], 0)
+        self.assertEqual(audit["flagged"], [])
+
+    def test_annotation_carries_the_audit_and_says_so_loudly(self):
+        from spatialmind.tools.implementations import annotation
+
+        result = annotation(self._dataset(lambda t: "T cell" if t == "astrocyte" else "Astrocyte"), {})
+        self.assertIn("label_marker_audit", result.metrics)
+        self.assertTrue(any("MARKERS DISAGREE" in c for c in result.caveats), result.caveats)
+        self.assertIn("MARKERS DISAGREE", result.label_caveat or "")
+
+    def test_cells_the_markers_cannot_place_abstain(self):
+        """`marker_lineage` requires a dominant winner, so ambiguity must not
+        count as either agreement or conflict."""
+        from spatialmind.tools.implementations import audit_labels_against_markers
+
+        records = [SpotRecord("S", float(i), 0.0, "Astrocyte", {"SOMEGENE": 1.0}, cell_id="c%d" % i)
+                   for i in range(40)]
+        audit = audit_labels_against_markers(
+            SpatialDataset(sample_id="S", source_path="x", records=records))
+        self.assertEqual(audit["cells_with_marker_evidence"], 0)
+        self.assertEqual(audit["labels_disagreeing"], 0)
+        self.assertEqual(audit["status"], "no_marker_evidence")
+
+    def test_an_unrecognised_label_is_never_reported_as_agreeing(self):
+        from spatialmind.tools.implementations import audit_labels_against_markers
+
+        audit = audit_labels_against_markers(self._dataset(lambda t: "Cluster 7"))
+        entry = audit["labels"][0]
+        self.assertEqual(entry["claimed_lineage"], "unrecognised")
+        self.assertFalse(entry["disagrees"], "an unknown label cannot be judged either way")
+
+
+class AssayLimitTests(unittest.TestCase):
+    """"Not built yet" and "this assay cannot support it" are different answers.
+
+    The registry presented all 18 scaffolds as one roadmap, so a reader
+    reasonably concluded each would arrive. A Xenium panel measures 319-377
+    genes against roughly 19,900 protein-coding ones; copy-number inference and
+    pathway footprints cannot be rescued by implementing them more carefully.
+    """
+
+    def test_assay_limited_tools_declare_why(self):
+        from spatialmind.tools import build_full_registry
+
+        registry = build_full_registry()
+        for name in ("cnv_inference", "pathway_activity", "transcription_factor_activity"):
+            tool = registry.get(name)
+            self.assertEqual(tool.capability, "unavailable")
+            self.assertTrue(tool.assay_limit, "%s must say why the assay cannot support it" % name)
+
+    def test_a_merely_unbuilt_tool_claims_no_assay_limit(self):
+        from spatialmind.tools import build_full_registry
+
+        self.assertEqual(build_full_registry().get("trajectory_inference").assay_limit, "")
+
+    def test_the_refusal_says_which_kind_it_is(self):
+        from spatialmind.app import planner
+
+        assay = planner.propose("Find malignant cells by copy number.", gate_open=False)
+        self.assertEqual(assay["refusal_kind"], "assay")
+        self.assertIn("not because it is unfinished", assay["answer"])
+
+        unbuilt = planner.propose("What is the pseudotime trajectory?", gate_open=False)
+        self.assertEqual(unbuilt["refusal_kind"], "unbuilt")
+        self.assertIn("scaffold", unbuilt["answer"])
+
+
 class MachineReadableHonestyTests(unittest.TestCase):
     """The gate has to reach the file, not only the sentence.
 

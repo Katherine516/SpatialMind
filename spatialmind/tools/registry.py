@@ -62,6 +62,45 @@ def _is_scaffold(func: Any) -> bool:
     return False
 
 
+# Why a scaffold is a scaffold. Without this the registry presents all 18 as one
+# undifferentiated roadmap -- "registered but not built yet" -- and a reader
+# reasonably concludes each will arrive. Some will not, on this assay, ever:
+# a Xenium panel measures 319-377 genes against roughly 19,900 protein-coding
+# ones, 1.6-1.9% of the transcriptome, and chosen for cell typing rather than
+# spread evenly across the genome. Methods whose priors assume broad coverage
+# cannot be rescued by implementing them more carefully.
+#
+# `targeted_panel` is the reason a tool is refused on a targeted panel. A tool
+# absent from this table is simply unbuilt, which is a different sentence and an
+# honest one.
+ASSAY_LIMITS: Dict[str, str] = {
+    "cnv_inference":
+        "Copy-number inference reads shifts in average expression along each chromosome. "
+        "A 319-377 gene targeted panel leaves a handful of genes per chromosome arm, chosen "
+        "for cell typing rather than genomic spread, so the moving window has nothing to "
+        "average. This needs whole-transcriptome data, not a better implementation.",
+    "pathway_activity":
+        "Pathway footprints (PROGENy and equivalents) score roughly 100 responsive genes per "
+        "pathway. At 1.6-1.9% panel coverage almost none of any footprint is measured, so a "
+        "score would be computed from a handful of genes and read as a pathway.",
+    "transcription_factor_activity":
+        "TF activity is inferred from the expression of a regulon's targets, hundreds of genes "
+        "per factor. A targeted panel measures too few of any regulon for the estimate to mean "
+        "what its name says.",
+    "motif_tf_activity":
+        "Same constraint as transcription_factor_activity, and it additionally needs chromatin "
+        "accessibility this assay does not measure.",
+    "chromatin_accessibility_spatial":
+        "Requires spatial ATAC. Xenium measures RNA only.",
+    "motif_enrichment_spatial":
+        "Requires spatial ATAC peaks. Xenium measures RNA only.",
+    "protein_coexpression":
+        "Requires protein-imaging intensities (CODEX, IMC, or equivalent). Xenium measures RNA.",
+    "cell_phenotyping_spatial":
+        "Requires protein-imaging intensities. Xenium measures RNA.",
+}
+
+
 @dataclass
 class SpatialTool:
     name: str
@@ -80,6 +119,15 @@ class SpatialTool:
     # experimental : real method, not yet trusted for claims
     # unavailable  : registered scaffold; must never be planned or presented as usable
     capability: str = "validated"
+
+    @property
+    def assay_limit(self) -> str:
+        """Why a targeted panel cannot support this tool, or "" if it could.
+
+        Distinguishes "not built" from "cannot be built here", which the
+        capability field alone flattens into one word.
+        """
+        return ASSAY_LIMITS.get(self.name, "")
 
     def __post_init__(self) -> None:
         if self.capability == "validated" and _is_scaffold(self.callable):

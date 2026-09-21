@@ -35,8 +35,21 @@ REGION_FILENAME = "cell_regions.csv"
 # calls -- the annotation-quality score among them. Appended to the documented
 # column set rather than replacing it: readers resolve columns by name, so a
 # table written before this column existed still loads.
-LABEL_FIELDS = ["cell_id", "expert_label", "confidence", "notes", "assignment_scope"]
-REGION_FIELDS = ["cell_id", "region", "region_confidence", "notes", "assignment_scope"]
+# `reviewer_id` is the column the loader has always looked for -- it accepts
+# `reviewer_id`, `reviewer`, `annotator` or `curator` -- and the one the Studio
+# never wrote. A table imported from a paper carried its authorship (the
+# Janesick section names `Janesick et al. 2023, Nat Commun 14:8353` on all
+# 159,226 rows); a review made in this app's own screen named nobody, so a
+# section could reach `validated_ready` with no record of who validated it.
+# Appended to the documented column set rather than inserted, because readers
+# resolve columns by name and a table written before this existed still loads.
+LABEL_FIELDS = ["cell_id", "expert_label", "confidence", "notes", "assignment_scope", "reviewer_id"]
+REGION_FIELDS = ["cell_id", "region", "region_confidence", "notes", "assignment_scope", "reviewer_id"]
+
+# Used when a caller supplies nothing. Deliberately not a person's name and
+# deliberately not blank: "someone using this app, unidentified" is a true
+# statement about the review and a blank is not.
+UNIDENTIFIED_REVIEWER = "unidentified (SpatialMind Studio)"
 
 KINDS = {
     "labels": (LABEL_FILENAME, LABEL_FIELDS, "expert_label"),
@@ -149,6 +162,7 @@ def assign(
     confidence: float = 0.9,
     notes: str = "",
     scope: str = "cells",
+    reviewer_id: str = "",
 ) -> AssignmentResult:
     """Merge one assignment into the table and rewrite it atomically."""
     if kind not in KINDS:
@@ -169,6 +183,7 @@ def assign(
             "cell_id": cell_id,
             value_field: value,
             confidence_field: "%.2f" % float(confidence),
+            "reviewer_id": str(reviewer_id).strip() or UNIDENTIFIED_REVIEWER,
             "notes": notes or "assigned in SpatialMind Studio",
             # One scope string per assignment, identical across every row it
             # wrote, so the count of distinct scopes is the count of decisions.

@@ -91,6 +91,41 @@ def _figures_section(payload: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _label_audit_section(payload: Dict[str, Any]) -> List[str]:
+    """Where the reviewed labels and the cells' own markers disagree.
+
+    Placed in the gate section deliberately: a reader deciding how much to trust
+    a validated run reads the gate first, and a gate that says `validated_ready`
+    over labels the measurements contradict is the thing they most need to see.
+    """
+    audit = {}
+    for result in payload.get("results") or []:
+        candidate = (result.get("metrics") or {}).get("label_marker_audit")
+        if candidate:
+            audit = candidate
+            break
+    if audit.get("status") != "computed" or not audit.get("labels_disagreeing"):
+        return []
+
+    flagged = sorted((item for item in audit["labels"] if item.get("disagrees")),
+                     key=lambda item: -item["disagreement_share"])
+    lines = ["", "### Markers disagree with %d of %d reviewed labels"
+             % (audit["labels_disagreeing"], audit["labels_checked"]), ""]
+    lines.append(
+        "The labels below are the reviewer's. The markers are what the instrument measured. "
+        "Where a label's own cells carry marker evidence for a different lineage, the label is "
+        "the part to re-check -- a confident wrong label is harder to notice than a blank one. "
+        "This is reported, not enforced: nothing here was blocked or rewritten.")
+    lines.append("")
+    lines.append("| Reviewed label | Cells with marker evidence | Disagree | Label says | Markers say |")
+    lines.append("| --- | ---: | ---: | --- | --- |")
+    for item in flagged:
+        lines.append("| `%s` | %s | %.0f%% | %s | %s |" % (
+            item["label"], format(item["cells_with_marker_evidence"], ","),
+            100 * item["disagreement_share"], item["claimed_lineage"], item["markers_suggest"]))
+    return lines
+
+
 def _gate_section(payload: Dict[str, Any], gate: Optional[Dict[str, Any]]) -> List[str]:
     label = payload.get("label_report") or {}
     region = payload.get("region_report") or {}
@@ -113,6 +148,8 @@ def _gate_section(payload: Dict[str, Any], gate: Optional[Dict[str, Any]]) -> Li
             "These regions were named from the reviewed cell composition rather than from "
             "morphology, so any composition summary over them is partly circular. Neighbourhood "
             "results *within* a region are not affected.")
+
+    lines.extend(_label_audit_section(payload))
 
     if gate:
         lines.append("")

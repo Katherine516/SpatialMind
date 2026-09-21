@@ -233,6 +233,17 @@ matrices above a gigabyte.
 
 ## 9. Recommendations, in order
 
+**All three were implemented the same day; see the commit following this
+document.** Re-running the identical scenario — the same arbitrary labels on the
+same section — the report now opens its gate section with *"Markers disagree
+with 5 of 10 reviewed labels"* and a table naming each one, and the provenance
+line reads *"Labels supplied by: evaluation harness (arbitrary labels) (24,362
+cells)"*. It flags 5 of 10 rather than 10 of 10 because `marker_lineage`
+abstains on cells it cannot place confidently and `COMPATIBLE_LINEAGES` treats
+astrocyte/neuronal as non-conflicting: the check under-reports by design rather
+than manufacturing conflicts.
+
+
 1. **Re-check submitted labels against the markers the same run computes**, and
    surface the disagreement in the report and the payload. The computation and
    the wording already exist in `review/sizing.py`; they are wired to the wrong

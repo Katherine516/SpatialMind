@@ -400,6 +400,11 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         cell_ids: Optional[List[str]] = None
         confidence: float = 0.9
         notes: str = ""
+        # Who is making this call. Optional so an existing client keeps working,
+        # and recorded as "unidentified" rather than blank when it is absent:
+        # the gate cannot ask who reviewed a section if nothing ever wrote it
+        # down.
+        reviewer_id: str = ""
 
     class ClearRequest(BaseModel):
         kind: str
@@ -556,6 +561,7 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
             result = review.assign(
                 entry.path, request.kind, cell_ids, request.value,
                 confidence=request.confidence, notes=request.notes, scope=scope_key,
+                reviewer_id=request.reviewer_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))

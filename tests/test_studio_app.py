@@ -9,6 +9,7 @@ What matters most: the app must never open the gate on its own, and the tool
 catalog must never present a scaffold as usable.
 """
 
+import csv
 import gzip
 import json
 import os
@@ -749,6 +750,49 @@ class StudioAppTests(unittest.TestCase):
         body = self.client.post("/api/ask", json={
             "dataset_id": self.dataset_id, "question": "What is the weather in Oslo?"}).json()
         self.assertEqual(body["tools"], [])
+
+    def test_a_review_made_in_the_app_records_who_made_it(self):
+        """A section could reach `validated_ready` with no record of who
+        validated it.
+
+        An imported table carries its authorship -- the Janesick section names
+        `Janesick et al. 2023, Nat Commun 14:8353` on all 159,226 rows -- and
+        the loader has always looked for `reviewer_id`. The Studio's own writer
+        was the one that never filled it in.
+        """
+        body = self.client.post(
+            "/api/datasets/%s/assign" % self.dataset_id,
+            json={"kind": "labels", "value": "Astrocyte",
+                  "cell_ids": ["cell-%d" % i for i in range(30)],
+                  "reviewer_id": "Dr A. Pathologist"}).json()
+        self.assertEqual(body["assignment"]["cells_written"], 30)
+
+        table = Path(review.table_path(self.bundle, "labels"))
+        header = table.read_text(encoding="utf-8").splitlines()[0]
+        self.assertIn("reviewer_id", header, header)
+        rows = list(csv.DictReader(table.open(encoding="utf-8")))
+        self.assertEqual({r["reviewer_id"] for r in rows}, {"Dr A. Pathologist"})
+
+    def test_an_unnamed_reviewer_is_recorded_as_unidentified_not_blank(self):
+        """"Someone using this app, unidentified" is true about the review.
+        A blank is not -- it reads as a column nobody filled in."""
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "labels", "value": "T cell",
+                               "cell_ids": ["cell-%d" % i for i in range(30, 60)]})
+        rows = list(csv.DictReader(Path(review.table_path(self.bundle, "labels")).open(encoding="utf-8")))
+        self.assertEqual({r["reviewer_id"] for r in rows}, {review.UNIDENTIFIED_REVIEWER})
+
+    def test_the_loader_reads_the_reviewer_back(self):
+        """The column is only worth writing if it survives the round trip."""
+        from spatialmind.ingestion import apply_best_available_labels, load_xenium
+
+        self.client.post("/api/datasets/%s/assign" % self.dataset_id,
+                         json={"kind": "labels", "value": "Astrocyte",
+                               "cell_ids": ["cell-%d" % i for i in range(40)],
+                               "reviewer_id": "Reviewer One"})
+        dataset = load_xenium(self.bundle, max_records=0)
+        report = apply_best_available_labels(dataset, self.bundle, fallback=None).to_dict()
+        self.assertEqual(report["reviewers"], {"Reviewer One": 40})
 
     def test_a_refusal_never_names_a_tool_on_one_ordinary_word(self):
         """The refusal has to be a reading of the question, not a substring hit.
