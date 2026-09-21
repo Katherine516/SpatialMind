@@ -115,6 +115,9 @@ to its directory.
 The agent operates at **cell** level, not transcript level. That is a deliberate
 scope boundary, not an omission.
 
+> Where a language model may and may not sit in this pipeline, and why the
+> plan DAG means it never needs to emit a plan: [`llm_placement.md`](llm_placement.md).
+
 ## Stage 2: Ingestion → `SpatialDataset`
 
 Everything downstream speaks one contract. `load_xenium` produces a
