@@ -41,6 +41,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # `infercnvpy` pulls in `pyreadr`, which ships no wheel for every
+      # interpreter here and builds librdata from source with
+      # -DHAVE_ZLIB -DHAVE_BZIP2 -DHAVE_LZMA. The runner has the libraries but
+      # not their headers, so the build stops at `bzlib.h: No such file`. This
+      # workflow had never run before the branch was pushed, so the gap showed
+      # up on its first execution rather than as a regression.
+      - name: System headers pyreadr builds against
+        run: sudo apt-get update && sudo apt-get install -y libbz2-dev liblzma-dev zlib1g-dev
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
