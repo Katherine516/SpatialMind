@@ -18,6 +18,7 @@ from ..agent.runtime import (
 from ..contracts import ToolCallSpec
 from ..gatekeeper import requires_labels, requires_regions
 from ..tools import build_default_registry
+from ..tools.grouping import GROUPED_TOOLS, normalize_group_key
 
 # Plan validation checks *structure* against the full input set; whether those
 # inputs actually exist is the gate's job. Validating against a reduced set here
@@ -42,12 +43,12 @@ TOOL_REQUIRES: Dict[str, List[str]] = {
 
 DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "qc_and_cluster": {"resolution": 0.55, "random_state": 0, "strict_engine": True},
-    "spatial_clustering": {"resolution": 0.8, "n_neighbors": 15},
+    "spatial_clustering": {"resolution": 0.8, "n_neighbors": 15, "strict_engine": True},
     "annotation": {"method": "expert_label_table"},
     "cell_type_annotation": {"method": "expert_label_table"},
     "reference_label_transfer": {"min_shared_features": 120},
     "marker_detection": {"group_key": "cell_type", "n_top": 25, "strict_engine": True},
-    "differential_expression": {"group_key": "cell_type", "n_top": 25},
+    "differential_expression": {"group_key": "cell_type", "n_top": 25, "strict_engine": True},
     "feature_overlay": {"feature": ""},
     "spatial_variable_genes": {
         "n_top": 50, "n_neighs": 6, "n_perms": 250, "random_state": 0, "strict_engine": True,
@@ -56,7 +57,7 @@ DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "cell_neighborhood_enrichment": {
         "n_neighs": 6, "n_perms": 250, "random_state": 0, "include_all_pairs": True, "strict_engine": True,
     },
-    "neighborhood_enrichment": {"n_neighs": 6, "n_perms": 250, "random_state": 0},
+    "neighborhood_enrichment": {"n_neighs": 6, "n_perms": 250, "random_state": 0, "strict_engine": True},
 }
 
 def _registry():
@@ -121,7 +122,7 @@ def unknown_tools(tool_names: Iterable[str]) -> List[str]:
     return [name for name in dict.fromkeys(tool_names) if name not in known]
 
 
-def order_plan(tool_names: Iterable[str]) -> List[str]:
+def order_plan(tool_names: Iterable[str], overrides=None) -> List[str]:
     """Insert missing dependencies and sort so producers precede consumers."""
     registry = _registry()
     wanted = [name for name in dict.fromkeys(tool_names) if name in {t.name for t in registry.list_all()}]
@@ -135,7 +136,7 @@ def order_plan(tool_names: Iterable[str]) -> List[str]:
     def add(name: str, seen: Tuple[str, ...] = ()) -> None:
         if name in resolved or name in seen:
             return
-        for key in TOOL_REQUIRES.get(name, []):
+        for key in requirements_for(name, overrides):
             producer = produced.get(key)
             if producer and producer != name:
                 add(producer, seen + (name,))
@@ -146,13 +147,24 @@ def order_plan(tool_names: Iterable[str]) -> List[str]:
     return resolved
 
 
+def requirements_for(name: str, overrides=None) -> List[str]:
+    params = dict(DEFAULT_PARAMS.get(name, {}))
+    params.update((overrides or {}).get(name, {}))
+    required = list(TOOL_REQUIRES.get(name, []))
+    if name in GROUPED_TOOLS and normalize_group_key(params) == "cluster":
+        required = ["clustering" if key == "annotation" else key for key in required]
+    return required
+
+
 def build_plan(tool_names: Iterable[str], overrides: Optional[Dict[str, Dict[str, Any]]] = None) -> List[ToolCallSpec]:
     overrides = overrides or {}
     plan: List[ToolCallSpec] = []
-    for name in order_plan(tool_names):
+    for name in order_plan(tool_names, overrides):
         params = dict(DEFAULT_PARAMS.get(name, {}))
         params.update(overrides.get(name, {}))
-        plan.append(ToolCallSpec(name, params, requires=list(TOOL_REQUIRES.get(name, []))))
+        if name in GROUPED_TOOLS:
+            params["group_key"] = normalize_group_key(params)
+        plan.append(ToolCallSpec(name, params, requires=requirements_for(name, overrides)))
     return plan
 
 

@@ -255,6 +255,7 @@ def apply_external_label_table(
     confidence_key: Optional[str] = None,
     method: str = "expert_label_table",
 ) -> LabelApplicationReport:
+    dataset.metadata["reviewed_cell_labels"] = {}
     rows = _read_label_table(label_path)
     if not rows:
         report = LabelApplicationReport(status="blocked", method=method, source_path=label_path, total_records=len(dataset.records))
@@ -308,6 +309,11 @@ def apply_external_label_table(
         if not label:
             continue
         record.cell_type = label
+        dataset.metadata["reviewed_cell_labels"][str(record.cell_id)] = {
+            "label": label, "source_path": label_path,
+            "reviewer_id": reviewer_by_cell.get(cell_id, ""),
+            "assignment_scope": scope_by_cell.get(cell_id, ""),
+        }
         applied_labels.add(label)
         matched += 1
         if cell_id in scope_by_cell:
@@ -324,7 +330,8 @@ def apply_external_label_table(
         source_path=label_path,
         matched_cells=matched,
         total_records=len(dataset.records),
-        label_counts=dict(Counter(record.cell_type for record in dataset.records)),
+        label_counts=dict(Counter(record.cell_type for record in dataset.records
+                                  if str(record.cell_id) in dataset.metadata["reviewed_cell_labels"])),
         reviewed_labels=sorted(applied_labels),
         review_decisions=len(applied_scopes),
         assignment_scopes=dict(applied_scopes),
@@ -349,6 +356,7 @@ def apply_external_region_table(
     confidence_key: Optional[str] = None,
     method: str = "user_region_table",
 ) -> RegionApplicationReport:
+    dataset.metadata["reviewed_cell_regions"] = {}
     rows = _read_label_table(region_path)
     if not rows:
         report = RegionApplicationReport(status="blocked", method=method, source_path=region_path, total_records=len(dataset.records))
@@ -402,6 +410,11 @@ def apply_external_region_table(
         if not region:
             continue
         record.region = region
+        dataset.metadata["reviewed_cell_regions"][str(record.cell_id)] = {
+            "region": region, "source_path": region_path,
+            "reviewer_id": reviewer_by_cell.get(cell_id, ""),
+            "assignment_scope": scope_by_cell.get(cell_id, ""),
+        }
         applied_regions.add(region)
         matched += 1
         if cell_id in scope_by_cell:
@@ -418,7 +431,8 @@ def apply_external_region_table(
         source_path=region_path,
         matched_cells=matched,
         total_records=len(dataset.records),
-        region_counts=dict(Counter(record.region or "unassigned" for record in dataset.records)),
+        region_counts=dict(Counter(record.region for record in dataset.records
+                                   if str(record.cell_id) in dataset.metadata["reviewed_cell_regions"])),
         reviewed_regions=sorted(applied_regions),
         review_decisions=len(applied_scopes),
         assignment_scopes=dict(applied_scopes),
@@ -441,6 +455,7 @@ def apply_best_available_regions(
     dataset_path: str,
     extra_region_paths: Optional[Iterable[str]] = None,
 ) -> RegionApplicationReport:
+    dataset.metadata["reviewed_cell_regions"] = {}
     region_tables = discover_region_label_tables(dataset_path, extra_region_paths)
     for region_table in region_tables:
         report = apply_external_region_table(dataset, region_table)
@@ -504,6 +519,7 @@ def apply_best_available_labels(
     extra_label_paths: Optional[Iterable[str]] = None,
     fallback: Optional[str] = None,
 ) -> LabelApplicationReport:
+    dataset.metadata["reviewed_cell_labels"] = {}
     label_tables = discover_label_tables(dataset_path, extra_label_paths)
     for label_table in label_tables:
         report = apply_external_label_table(dataset, label_table)

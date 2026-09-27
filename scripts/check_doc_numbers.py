@@ -20,7 +20,6 @@ import configparser
 import re
 import sys
 import unittest
-from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,16 +62,11 @@ def measure() -> dict:
 def expected_lines(counts: dict) -> dict:
     """Doc line -> what it should say. Keyed by a regex that finds the line."""
     return {
-        r"^Last verified: .*$": (
-            "Last verified: %s. Unit tests %d/%d; legacy eval %d/%d; MVP eval %d/%d; "
-            "real Scanpy/Squidpy backend checks passed; import-linter %d/%d. "
-            "(Counts derived by `scripts/check_doc_numbers.py`.)"
+        r"^Inventory counts: .*$": (
+            "Inventory counts: %d discovered unit tests; %d legacy cases; %d MVP cases; "
+            "%d import contracts. Counts are not execution results."
             % (
-                date.today().isoformat(),
-                counts["tests"], counts["tests"],
-                counts["legacy_cases"], counts["legacy_cases"],
-                counts["mvp_cases"], counts["mvp_cases"],
-                counts["contracts"], counts["contracts"],
+                counts["tests"], counts["legacy_cases"], counts["mvp_cases"], counts["contracts"],
             )
         ),
         r"^plannable and \d+ are hidden, so a model cannot select a tool that does nothing\.$": (

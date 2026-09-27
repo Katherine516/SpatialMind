@@ -21,8 +21,9 @@ from ..ingestion import (
 from ..pilot import run_pilot
 from ..storage import StorageLayer
 from ..tools import build_default_registry
-from ..tools.exceptions import MissingPreconditionError
+from ..tools.exceptions import MissingPreconditionError, InvalidParameterError
 from ..tools.implementations import check_section_fits
+from ..agent.runtime import check_execution_gate, execute_tool_step, require_valid_tool_plan, DEFAULT_XENIUM_INPUTS
 from ..schemas import expression_feature_names
 from ..viz.tables import write_result_tables
 from .. import dataset_context, gatekeeper
@@ -224,12 +225,14 @@ class Studio:
 # --------------------------------------------------------------------------- jobs
 
 def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
-                     overrides: Dict[str, Dict[str, Any]], max_records: int):
+                     overrides: Dict[str, Dict[str, Any]], max_records: int, effective_plan=None):
     """Execute exactly the tools the user chose, in dependency order."""
 
     def work(job) -> Dict[str, Any]:
         entry = studio.entry(dataset_id)
-        plan = planner.build_plan(tool_names, overrides=overrides)
+        plan = effective_plan if effective_plan is not None else planner.build_plan(tool_names, overrides=overrides)
+        gate = studio.gate(dataset_id) if entry.reviewable else None
+        check_execution_gate(entry.path, plan, gate=gate)
         job.steps_total = len(plan) + 2
 
         step(job, "Loading %s cells and the targeted panel." % ("all" if not max_records else format(max_records, ",")), 0)
@@ -251,14 +254,29 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
         label_report = apply_best_available_labels(dataset, entry.path, extra_label_paths=extra, fallback=None)
         region_report = apply_best_available_regions(dataset, entry.path, extra_region_paths=extra)
 
+        output_dir = studio.job_output_dir(job.job_id)
+        storage = StorageLayer(root=str(output_dir))
+        input_files = list(dict.fromkeys(path for path in
+                          (entry.path, label_report.source_path, region_report.source_path) if path))
+        run_params = {"workflow_type": "studio_plan", "tools": tool_names, "overrides": overrides,
+                      "max_records": max_records, "effective_plan": [asdict(spec) for spec in plan]}
+        record = storage.write_mvp_run_record(query=job.label, tool_trace=[], params=run_params,
+                                             input_files=input_files, run_id=job.job_id)
+
         registry = build_default_registry()
+        available = list(DEFAULT_XENIUM_INPUTS)
+        if label_report.status == "expert_labels_applied":
+            available.append("expert_labels")
+        if region_report.status == "user_regions_applied":
+            available.append("user_regions")
+        require_valid_tool_plan(plan, available, [tool.name for tool in registry.list_plannable()])
         results = []
         tool_results = []
         started = time.time()
         for position, spec in enumerate(plan):
             step(job, "Running %s (%d of %d)." % (spec.tool_name, position + 1, len(plan)), position + 2)
             tool_started = time.time()
-            result = registry.get(spec.tool_name).run(dataset, dict(spec.params))
+            result = execute_tool_step(dataset, spec, registry, entry.path, gate=gate)
             tool_results.append(result)
             results.append(
                 {
@@ -273,15 +291,6 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
             )
 
         step(job, "Writing the run record.", len(plan) + 2)
-        output_dir = studio.job_output_dir(job.job_id)
-        storage = StorageLayer(root=str(output_dir))
-        record = storage.write_mvp_run_record(
-            query=job.label,
-            tool_trace=results,
-            params={"tools": tool_names, "overrides": overrides, "max_records": max_records},
-            input_files=[entry.path],
-            run_id=job.job_id,
-        )
         # The gate belongs in the payload, not only in the prose the report
         # renders from it. `plan_results.json` and the result tables are what a
         # collaborator or a script actually reads, and they carried named cell
@@ -296,6 +305,7 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
             "tools": tool_names,
             "results": results,
             "gate": jsonable(gate) if gate else {"status": "not_reviewable"},
+            "status": (gate or {}).get("status", "not_reviewable"),
             "label_report": jsonable(label_report.to_dict()),
             "region_report": jsonable(region_report.to_dict()),
             "records_loaded": len(dataset.records),
@@ -334,7 +344,23 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
             payload["report_paths"] = {}
             job.log.append("Report failed: %s" % exc)
 
+        payload["delivery_status"] = ("complete" if payload.get("report_paths")
+                                      and payload.get("result_tables", {}).get("status") == "written"
+                                      and payload.get("figures") else "partial")
         (output_dir / "plan_results.json").write_text(_dumps(payload), encoding="utf-8")
+        completed = storage.write_mvp_run_record(
+            query=job.label, tool_trace=results, params=run_params, input_files=input_files,
+            artifacts={"payload": str(output_dir / "plan_results.json"), **payload.get("report_paths", {})},
+            figures=[row["path"] for row in payload.get("figures", [])],
+            tables=[row["path"] for row in payload.get("result_tables", {}).get("tables", [])],
+            run_id=job.job_id,
+        )
+        if completed.input_file_md5 != record.input_file_md5:
+            # Never attest to a different input revision than the one loaded.
+            completed.input_file_md5 = record.input_file_md5
+            completed.params["outcome"] = "inputs_changed"
+            storage.write_json(str(output_dir / "runs"), "%s.json" % job.job_id, completed)
+            raise RuntimeError("Inputs changed during analysis. Rerun against an immutable review/data snapshot.")
         return payload
 
     return work
@@ -687,13 +713,15 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
             # and a convention is not a guarantee: this endpoint accepted and ran
             # region_summary against a blocked section until it asked here too.
             try:
-                gatekeeper.require_gate_open(
-                    entry.path, request.tools,
+                effective_plan = planner.build_plan(request.tools, overrides=request.overrides)
+                check_execution_gate(
+                    entry.path, effective_plan,
                     gate=studio.gate(request.dataset_id) if entry.reviewable else None,
-                    overrides=request.overrides,
                 )
             except gatekeeper.GateBlockedError as exc:
                 raise HTTPException(status_code=409, detail=exc.to_dict())
+            except InvalidParameterError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
             worker = make_plan_worker(studio, request.dataset_id, request.tools, request.overrides, request.max_records)
         elif request.kind == "pilot":
             worker = make_pilot_worker(studio, request.dataset_id, request.options)

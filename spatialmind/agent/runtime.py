@@ -3,6 +3,9 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 from spatialmind.contracts import PlanValidationError, ToolCallSpec
 from spatialmind.schemas import SpatialDataset, ToolResult
+from spatialmind import gatekeeper
+from spatialmind.tools.grouping import GROUPED_TOOLS, normalize_group_key
+from spatialmind.tools.exceptions import MissingPreconditionError, ToolExecutionError, InvalidParameterError
 
 
 MVP_TOOL_OUTPUTS: Dict[str, List[str]] = {
@@ -13,10 +16,40 @@ MVP_TOOL_OUTPUTS: Dict[str, List[str]] = {
     "feature_overlay": ["figure"],
     "region_summary": ["region_summary"],
     "cell_neighborhood_enrichment": ["neighborhood_test", "spatial_evidence"],
+    "spatial_clustering": ["clustering"],
+    "cell_type_annotation": ["annotation"],
 }
 
 
 DEFAULT_XENIUM_INPUTS = ["normalized_counts", "spatial_coords", "targeted_panel", "segmentation"]
+
+
+def check_execution_gate(dataset_path, plan, gate=None, dataset=None):
+    """Check effective calls, including inserted dependencies, not just user intent."""
+    return gatekeeper.require_gate_open(
+        dataset_path, [spec.tool_name for spec in plan], dataset=dataset, gate=gate,
+        overrides={spec.tool_name: spec.params for spec in plan},
+    )
+
+
+def execute_tool_step(dataset, spec, registry, dataset_path=None, gate=None):
+    """Policy-enforcing execution boundary shared by Studio and the pilot."""
+    params = dict(spec.params)
+    if spec.tool_name in GROUPED_TOOLS | {"qc_and_cluster", "spatial_clustering", "spatial_variable_genes"}:
+        if params.get("engine") == "prototype" or params.get("strict_engine") is False:
+            raise InvalidParameterError("Studio/pilot scientific runs require real backends; prototype fallback is not allowed.")
+        params["strict_engine"] = True
+    if spec.tool_name in GROUPED_TOOLS:
+        params["group_key"] = normalize_group_key(params)
+    effective = ToolCallSpec(spec.tool_name, params, requires=spec.dependency_keys())
+    tool = registry.get(spec.tool_name)
+    if tool.capability == "unavailable":
+        raise ToolExecutionError("%s is unavailable." % spec.tool_name)
+    check_execution_gate(dataset_path or dataset.source_path, [effective], gate, dataset)
+    unmet = registry.check_preconditions(spec.tool_name, dataset)
+    if unmet:
+        raise MissingPreconditionError("%s: %s" % (spec.tool_name, "; ".join(unmet)))
+    return tool.run(dataset, params)
 
 
 @dataclass

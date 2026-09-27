@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal
+from typing import Any, Dict, List, Literal
 
 
 ClaimType = Literal[
@@ -31,6 +31,7 @@ class BiologicalClaim:
     confidence: Literal["low", "medium", "high"] = "low"
     allowed_wording: str = ""
     required_evidence: List[str] = field(default_factory=list)
+    spatial_target: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.required_evidence:

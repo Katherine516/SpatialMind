@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import asdict
-from math import erfc, exp, log10, sqrt
+from math import erfc, exp, isfinite, log10, sqrt
 from typing import Any, Dict, List, Optional
 
 from spatialmind.contracts import ClaimReliability, MetricProvenance, ReliabilityComponent
@@ -42,10 +42,13 @@ def score_claim_reliability(
     calibration_model: Optional[Dict[str, Any]] = None,
 ) -> ClaimReliability:
     claim_type = str(claim.get("claim_type") or "unknown")
+    panel_payload = payload
+    if (claim.get("spatial_target") or {}).get("pair"):
+        panel_payload = dict(payload, cell_types=list(claim["spatial_target"]["pair"]))
     components = {
         "S_statistical": _statistical_component(claim, results),
         "A_annotation": _annotation_component(claim, payload),
-        "P_panel": _panel_component(claim, payload),
+        "P_panel": _panel_component(claim, panel_payload),
         "R_spatial_robustness": _spatial_robustness_component(claim, payload, results),
     }
     scores = {key: component.score for key, component in components.items()}
@@ -53,7 +56,7 @@ def score_claim_reliability(
         reliability, status, model = calibrated_score(scores, calibration_model)
     else:
         reliability, status, model = weakest_link_score(scores), "computed", None
-    if str(claim.get("status")) in {"refused", "dropped"}:
+    if str(claim.get("status")) in {"refused", "dropped"} or any(c.status == "blocked" for c in components.values()):
         status = "blocked"
     interpretation = _interpret_reliability(reliability, claim, components)
     return ClaimReliability(
@@ -130,6 +133,12 @@ def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> 
             evidence=["claim_type:%s" % claim_type],
             caveat="This claim does not require a spatial statistical test; other components control reliability.",
         )
+    target = claim.get("spatial_target") or {}
+    target_pair = _pair_key(target.get("pair"))
+    direction = target.get("direction")
+    if not target_pair or not target.get("tool") or direction not in {"enrichment", "depletion", "association"}:
+        return ReliabilityComponent(name="S_statistical", score=0.0, status="blocked", evidence=[],
+                                    caveat="No explicit tool/pair/direction evidence binding was supplied for this claim.")
     best = 0.0
     evidence: List[str] = []
     # The number of pairs the tool *tested*, not the number it *reported*.
@@ -138,13 +147,25 @@ def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> 
     # display setting, so raising the top-N would have silently made the
     # statistics stricter. `tested_pair_count` was already in the same metrics
     # dict, unused.
-    tested = sum(_tested_pair_count(result) for result in results)
+    tested = 0
     for result in results:
+        if result.tool_name != target["tool"]:
+            continue
+        if any(result.metrics.get(key) != target[key] for key in ("region", "graph_family", "n_neighs", "radius") if key in target):
+            continue
+        tested = _tested_pair_count(result)
         for pair in _top_pairs(result):
-            z = _safe_float(pair.get("zscore") or pair.get("neighbor_count"))
-            p = _safe_float(pair.get("pval_adj") or pair.get("p_adj") or pair.get("pvalue") or pair.get("pval"))
+            if _pair_key(pair.get("pair")) != target_pair:
+                continue
+            z = _safe_float(pair.get("zscore"))
+            if direction != "association" and (z is None or (z <= 0 if direction == "enrichment" else z >= 0)):
+                continue
+            p = _first_number(pair, ("pval_adj", "p_adj"))
+            raw = _first_number(pair, ("pvalue", "pval"))
+            if p is None and raw is not None:
+                p = min(1.0, raw * max(tested, 1)) if 0 <= raw <= 1 else None
             component = 0.0
-            if p is not None:
+            if p is not None and 0 <= p <= 1:
                 # An adjusted p-value already accounts for the pair count.
                 component = _evidence_strength(p)
             elif z is not None:
@@ -178,10 +199,24 @@ def _statistical_component(claim: Dict[str, Any], results: List[ToolResult]) -> 
         score=round(best, 4),
         status="computed",
         evidence=evidence,
-        caveat="Strength is the best pair's evidence, Bonferroni-corrected by the number of pairs tested. "
-               "Calibrated against matched permutation-null and stripe-implant controls (AUROC 0.98); "
-               "those controls establish separation from noise, not biological truth.",
+        caveat="Evidence is bound to the specified tool, pair, scope and direction. Raw p-values and "
+               "normal-approximation z-score p-values are Bonferroni-corrected over tested pairs. "
+               "This is an uncalibrated evidence index, not a probability of biological truth.",
     )
+
+
+def _pair_key(value: Any) -> tuple:
+    parts = value.split("|") if isinstance(value, str) else value
+    if not isinstance(parts, (list, tuple)) or len(parts) != 2:
+        return ()
+    return tuple(sorted(str(part).strip() for part in parts)) if all(str(p).strip() for p in parts) else ()
+
+
+def _first_number(values: Dict[str, Any], keys: tuple) -> Optional[float]:
+    for key in keys:
+        if key in values and values[key] is not None:
+            return _safe_float(values[key])
+    return None
 
 
 def _annotation_component(claim: Dict[str, Any], payload: Dict[str, Any]) -> ReliabilityComponent:
@@ -310,49 +345,35 @@ def _spatial_robustness_component(
         )
     sweep = payload.get("spatial_robustness")
     if isinstance(sweep, dict) and sweep.get("status") == "computed":
-        score = _clip(_safe_float(sweep.get("score")) or 0.0)
+        target = claim.get("spatial_target") or {}
+        pair_key = _pair_key(target.get("pair"))
+        if (target.get("tool") not in {"cell_neighborhood_enrichment", "neighborhood_enrichment"}
+                or target.get("region") != sweep.get("region")
+                or target.get("graph_family", "knn") != "knn"
+                or ("n_neighs" in target and target["n_neighs"] not in sweep.get("settings", []))):
+            return ReliabilityComponent(name="R_spatial_robustness", score=0.0, status="blocked", evidence=[],
+                                        caveat="The sweep does not match the claim's spatial scope.")
+        pair = next((row for row in sweep.get("pair_stability", [])
+                     if pair_key and _pair_key(row.get("pair")) == pair_key), None)
+        if pair is None:
+            return ReliabilityComponent(name="R_spatial_robustness", score=0.0, status="blocked", evidence=[],
+                                        caveat="No measured robustness sweep is bound to this claim's pair.")
+        present = float(pair.get("settings_present") or 0) / max(len(sweep.get("settings") or []), 1)
+        score = min(1.0, present) * (0.6 * float(pair.get("sign_agreement") or 0) + 0.4 * float(pair.get("top_k_presence") or 0))
         return ReliabilityComponent(
             name="R_spatial_robustness",
             score=round(score, 4),
             status="computed",
             evidence=[
                 "settings:%s" % ",".join(str(value) for value in sweep.get("settings", [])),
-                "sign_agreement:%.4f" % (_safe_float(sweep.get("mean_sign_agreement")) or 0.0),
-                "topk_jaccard:%.4f" % (_safe_float(sweep.get("mean_topk_jaccard")) or 0.0),
+                "pair:%s" % " | ".join(pair_key),
+                "sign_agreement:%.4f" % float(pair.get("sign_agreement") or 0),
+                "top_k_presence:%.4f" % float(pair.get("top_k_presence") or 0),
             ],
-            caveat="Robustness = sign agreement and top-K overlap of neighborhood enrichment across a graph-size perturbation sweep.",
+            caveat="Pair-specific sign agreement and top-K presence across measured graph settings, penalized for missing settings.",
         )
-    top_pair_counts = []
-    radii = set()
-    engines = set()
-    for result in results:
-        metrics = result.metrics or {}
-        if "radius" in metrics:
-            radii.add(str(metrics.get("radius")))
-        if "n_neighs" in metrics:
-            radii.add("n_neighs:%s" % metrics.get("n_neighs"))
-        if "engine" in metrics:
-            engines.add(str(metrics.get("engine")))
-        top_pair_counts.append(len(_top_pairs(result)))
-    if not top_pair_counts:
-        return ReliabilityComponent(
-            name="R_spatial_robustness",
-            score=0.0,
-            status="blocked",
-            evidence=[],
-            caveat="Spatial robustness was not tested because no neighborhood result was available.",
-        )
-    richness = min(1.0, sum(top_pair_counts) / 10.0)
-    perturbation = 0.35 if len(radii) <= 1 else min(1.0, 0.35 + 0.2 * len(radii))
-    engine_bonus = 0.15 if "squidpy" in engines else 0.0
-    score = min(1.0, richness * 0.45 + perturbation + engine_bonus)
-    return ReliabilityComponent(
-        name="R_spatial_robustness",
-        score=round(_clip(score), 4),
-        status="computed",
-        evidence=["radii:%s" % ",".join(sorted(radii) or ["unknown"]), "engines:%s" % ",".join(sorted(engines) or ["prototype"])],
-        caveat="Full v12 robustness requires rerunning neighborhood enrichment across a radius/permutation grid; this score is a first-pass proxy.",
-    )
+    return ReliabilityComponent(name="R_spatial_robustness", score=0.0, status="blocked", evidence=[],
+                                caveat="No measured pair-specific spatial robustness sweep is available; no proxy was substituted.")
 
 
 def _interpret_reliability(
@@ -410,7 +431,7 @@ def _tested_pair_count(result: ToolResult) -> int:
 
 def _top_pairs(result: ToolResult) -> List[Dict[str, Any]]:
     metrics = result.metrics or {}
-    pairs = metrics.get("top_pairs")
+    pairs = metrics.get("all_pairs") or metrics.get("top_pairs")
     if isinstance(pairs, list):
         return [pair for pair in pairs if isinstance(pair, dict)]
     return []
@@ -456,7 +477,8 @@ def _safe_float(value: Any) -> Optional[float]:
     try:
         if value is None or value == "":
             return None
-        return float(value)
+        parsed = float(value)
+        return parsed if isfinite(parsed) else None
     except (TypeError, ValueError):
         return None
 

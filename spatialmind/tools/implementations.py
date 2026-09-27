@@ -279,6 +279,8 @@ def run_neighborhood_robustness(
     perturbation sweep. Requires the Squidpy permutation engine for z-scores.
     """
     params = dict(params or {})
+    from .grouping import reviewed_view
+    dataset = reviewed_view(dataset, "cell_neighborhood_enrichment", params)
     grid = [int(value) for value in (params.get("robustness_n_neighs") or [6, 10, 15])]
     n_perms = int(params.get("n_perms", 250) or 250)
     seed = int(params.get("random_state", 0) or 0)
@@ -575,6 +577,8 @@ def run_region_stratified_neighborhoods(
     """Run independent neighborhood-enrichment tests inside reviewed regions."""
     require_cell_types(dataset)
     params = dict(params or {})
+    from .grouping import reviewed_view
+    dataset = reviewed_view(dataset, "region_summary", params)
     min_region_cells = int(params.get("min_region_cells", 50) or 50)
     min_cells_per_type = int(params.get("min_cells_per_type", 20) or 20)
     max_regions = int(params.get("max_regions", 12) or 12)
@@ -765,6 +769,8 @@ def run_distance_dependent_cooccurrence(
     """Compute descriptive cell-type co-occurrence ratios over distance thresholds."""
     require_cell_types(dataset)
     params = dict(params or {})
+    from .grouping import reviewed_view
+    dataset = reviewed_view(dataset, "cell_neighborhood_enrichment", params)
     n_intervals = max(6, int(params.get("n_intervals", 20) or 20))
     max_pairs = max(1, int(params.get("max_pairs", 8) or 8))
     min_cells_per_type = max(2, int(params.get("min_cells_per_type", 20) or 20))
@@ -976,9 +982,12 @@ def resolve_group_labels(dataset: SpatialDataset, params: Dict[str, object]) -> 
     graph clusters -- which is what makes descriptive analysis possible before any
     expert annotation exists.
     """
-    group_key = str(params.get("group_key", "cell_type") or "cell_type")
+    from .grouping import normalize_group_key, cell_is_reviewed
+    group_key = normalize_group_key(params)
     if group_key != "cluster":
-        return [record.cell_type or "" for record in dataset.records], "cell_type"
+        scoped = "reviewed_cell_labels" in dataset.metadata
+        return [(record.cell_type or "") if not scoped or cell_is_reviewed(dataset, record) else ""
+                for record in dataset.records], "cell_type"
     assignments = params.get(CLUSTER_ASSIGNMENT_KEY) or dataset.metadata.get(CLUSTER_ASSIGNMENT_KEY) or {}
     if not isinstance(assignments, dict) or not assignments:
         raise MissingPreconditionError(
@@ -1941,10 +1950,10 @@ def _distance(x1: float, y1: float, x2: float, y2: float) -> float:
 def _scanpy_differential_expression(dataset: SpatialDataset, params: Dict[str, object]) -> Optional[ToolResult]:
     if params.get("engine") == "prototype":
         return None
-    group_key = str(params.get("group_key", "cell_type"))
+    group_labels, group_key = resolve_group_labels(dataset, params)
     group1 = str(params.get("group1", "CD8+ T cell"))
     group2 = str(params.get("group2", "Tumor cell"))
-    if group_key != "cell_type" or group1 not in dataset.cell_types or group2 not in dataset.cell_types:
+    if group1 not in group_labels or group2 not in group_labels:
         return None
     try:
         import scanpy as sc  # type: ignore
@@ -1954,11 +1963,15 @@ def _scanpy_differential_expression(dataset: SpatialDataset, params: Dict[str, o
         return None
     try:
         adata = _dataset_to_anndata(dataset)
+        keep = [label in {group1, group2} for label in group_labels]
+        adata = adata[keep].copy()
+        adata.obs["spatialmind_group"] = [label for label, include in zip(group_labels, keep) if include]
+        adata.obs["spatialmind_group"] = adata.obs["spatialmind_group"].astype("category")
         method = str(params.get("method", "wilcoxon"))
         if not dataset.normalized:
             sc.pp.normalize_total(adata, target_sum=1e4)
             sc.pp.log1p(adata)
-        sc.tl.rank_genes_groups(adata, groupby="cell_type", groups=[group1], reference=group2, method=method)
+        sc.tl.rank_genes_groups(adata, groupby="spatialmind_group", groups=[group1], reference=group2, method=method)
         table = _rank_genes_groups_table(adata, group1, limit=int(params.get("n_top", 50) or 50))
         return ToolResult(
             tool_name="differential_expression",

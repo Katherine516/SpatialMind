@@ -13,6 +13,21 @@ The base path remains dependency-light for fast testing, while the core workstat
 
 ## Reference
 
+The September 27 correctness update aligns Studio and pilot execution checks,
+uses per-cell review provenance, fixes descriptive cluster maps, and binds spatial
+reliability to the tested pair and direction. See
+[the implementation and verification record](docs/correctness_release_20260927.md).
+Earlier reports and fitted calibration models should not be reused as validation
+of the revised scorer. Expert brain labels, anatomical ROI review, and independent
+biological benchmarks are still required.
+
+The [held-out annotation benchmark and brain specialist handoff](docs/annotation_benchmark_20260927.md)
+now evaluate the production reference-transfer tool without test labels in predictor inputs.
+The current result is an internal, buffered breast-section holdout, not independent donor validation.
+Brain review packets are prepared but still require specialist decisions. This work also fixes
+legacy Xenium `Blank Codeword` controls being included in expression features; regenerate older
+breast analyses before reusing their numerical results.
+
 [docs/spatialmind_agent_reference.html](docs/spatialmind_agent_reference.html) — one page covering the
 workflow, the architecture, every function, the reliability model, and the current
 state with its gaps. Open it in a browser.
@@ -207,12 +222,12 @@ Scan every local dataset through the promotion workflow without the full artifac
 
 The v12 agent adds a claim-level reliability layer. The scoring unit is one individual claim in the report, not the whole run. Each claim is decomposed into four interpretable components:
 
-- `S_statistical`: strength of statistical evidence, such as adjusted p-values, z-scores, or effect sizes.
-- `A_annotation`: expert-label or validated reference-label support, including coverage and confidence.
+- `S_statistical`: evidence for the claim's explicit tool, cell pair, direction and graph/region scope. Raw p-values are corrected over tested pairs; unrelated pairs cannot contribute.
+- `A_annotation`: reviewed-label coverage, not annotation accuracy. Stated reviewer confidence is reported separately, not multiplied into the score.
 - `P_panel`: whether the targeted panel contains enough markers to support the claim.
-- `R_spatial_robustness`: whether spatial evidence survives radius/graph/permutation checks.
+- `R_spatial_robustness`: measured sign agreement and top-K presence for that pair across graph settings. Missing measurements block this component; there is no heuristic substitute.
 
-The current production-safe baseline is a weakest-link score:
+The current uncalibrated evidence index is a weakest-link score, not a probability of biological truth:
 
 ```text
 claim_reliability = min(S_statistical, A_annotation, P_panel, R_spatial_robustness)
