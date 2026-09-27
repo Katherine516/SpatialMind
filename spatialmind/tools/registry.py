@@ -6,6 +6,7 @@ from spatialmind.schemas import SpatialDataset, ToolResult
 
 from . import implementations
 from .exceptions import ToolExecutionError
+from .grouping import reviewed_view
 
 
 ToolCallable = Callable[[SpatialDataset, Dict[str, object]], ToolResult]
@@ -155,8 +156,14 @@ class SpatialTool:
                 "must not run. It is excluded from planning; reaching it means a caller went "
                 "around list_plannable()." % self.name
             )
-        result = self.callable(dataset, params)
-        return implementations.attach_quality_metrics(result, dataset, params)
+        scoped = reviewed_view(dataset, self.name, params)
+        result = self.callable(scoped, params)
+        if scoped is not dataset:
+            result.metrics["reviewed_only"] = True
+            result.metrics["scope_input_cells"] = len(dataset.records)
+            result.metrics["scope_analyzed_cells"] = len(scoped.records)
+            result.metrics["excluded_unreviewed_cell_count"] = len(dataset.records) - len(scoped.records)
+        return implementations.attach_quality_metrics(result, scoped, params)
 
 
 class ToolRegistry:

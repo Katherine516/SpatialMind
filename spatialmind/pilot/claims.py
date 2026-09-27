@@ -54,19 +54,36 @@ def build_pilot_claim_ledger(payload: Dict[str, Any], results: List[ToolResult])
             resolution="subcellular",
             confidence="medium",
         ),
-        BiologicalClaim(
-            claim_text="Cell-type neighborhood enrichment can support cell-level spatial adjacency claims when permutation z-scores and graph-sensitivity evidence are present.",
-            claim_type="spatial_colocalization",
-            evidence_refs=["neighborhood_test", "zscore", "cell_labels"],
-            resolution="subcellular",
-            confidence="medium",
-        ),
     ]
+    from spatialmind.methods.reliability.scoring import _statistical_component, _evidence_strength
+    for result in results:
+        if result.tool_name != "cell_neighborhood_enrichment":
+            continue
+        for pair in (result.metrics.get("top_pairs") or [])[:10]:
+            names = str(pair.get("pair") or "").split("|")
+            z = pair.get("zscore")
+            if len(names) != 2 or z is None or z == 0:
+                continue
+            names = [name.strip() for name in names]
+            direction = "enrichment" if z > 0 else "depletion"
+            target = {"tool": result.tool_name, "pair": names, "direction": direction}
+            target.update({key: result.metrics[key] for key in ("graph_family", "n_neighs", "radius") if key in result.metrics})
+            claims.append(BiologicalClaim(
+                claim_text="%s and %s show neighborhood %s under the tested spatial graph (z=%.3f); this is not a causal claim."
+                           % (names[0], names[1], direction, z),
+                claim_type="spatial_colocalization", spatial_target=target,
+                evidence_refs=["%s:%s" % (result.tool_name, pair["pair"])],
+                resolution="subcellular", confidence="medium",
+            ))
     grounded = ClaimGroundingChecker().ground(claims, results)
     ledger = []
     for claim in grounded:
         item = asdict(claim)
         item["status"] = "supported" if claim.allowed_wording else "dropped"
+        if item.get("spatial_target") and _statistical_component(item, results).score < _evidence_strength(0.05):
+            item["status"] = "dropped"
+            item["allowed_wording"] = ""
+            item["missing_inputs"] = ["Pair-specific adjusted statistical support at alpha=0.05."]
         ledger.append(item)
     return ledger
 

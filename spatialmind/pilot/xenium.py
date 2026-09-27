@@ -202,10 +202,11 @@ def run_pilot(
     analysis_backend_error = ""
     if gate["status"] == "validated_ready" and not readiness_only:
         try:
-            results = _run_validated_tools(dataset, plan, list(label_report.reviewed_labels or []))
+            results = _run_validated_tools(dataset, plan, list(label_report.reviewed_labels or []), gate=gate)
             for result in results:
                 _write_json(output_dir / ("%s.json" % result.tool_name), result)
-            figures.extend(_write_figures(dataset, output_dir))
+            from spatialmind.tools.grouping import reviewed_view
+            figures.extend(_write_figures(reviewed_view(dataset, "annotation", {}), output_dir))
             neighborhood_result = next(
                 (result for result in results if result.tool_name == "cell_neighborhood_enrichment"),
                 None,
@@ -387,9 +388,9 @@ def run_pilot(
         # know *which* genes were measured to judge whether a claim's markers are
         # present; without the list it could only ever return a constant.
         "feature_names": expression_feature_names(dataset),
-        "cell_types": dataset.cell_types,
+        "cell_types": list(label_report.reviewed_labels) if label_report.reviewed_labels else dataset.cell_types,
         "regions": sorted({record.region for record in dataset.records if record.region}),
-        "cell_type_counts": dict(Counter(record.cell_type for record in dataset.records)),
+        "cell_type_counts": dict(label_report.label_counts),
         "region_counts": dict(Counter(record.region or "unassigned" for record in dataset.records)),
         "label_report": label_report.to_dict(),
         # The numbers the gate decided on, carried so the report can print them.
@@ -1312,7 +1313,10 @@ def _run_validated_tools(
     dataset: SpatialDataset,
     plan: List[Any],
     reviewed_labels: Optional[List[str]] = None,
+    gate: Optional[Dict[str, Any]] = None,
 ) -> List[ToolResult]:
+    from spatialmind.agent.runtime import execute_tool_step
+    from spatialmind.contracts import ToolCallSpec
     registry = build_mvp_registry()
     results = []
     for spec in plan:
@@ -1323,7 +1327,7 @@ def _run_validated_tools(
             params["reviewed_labels"] = list(reviewed_labels)
         # marker_detection runs one-vs-rest across every reviewed cell type by
         # default, so no arbitrary pairwise group selection is imposed here.
-        results.append(registry.get(spec.tool_name).run(dataset, params))
+        results.append(execute_tool_step(dataset, ToolCallSpec(spec.tool_name, params), registry, gate=gate))
     return results
 
 

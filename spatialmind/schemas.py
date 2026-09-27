@@ -59,6 +59,7 @@ NON_GENE_FEATURE_TYPES = frozenset(
     {
         "negative control probe",
         "negative control codeword",
+        "blank codeword",
         "unassigned codeword",
         "deprecated codeword",
         "genomic control",

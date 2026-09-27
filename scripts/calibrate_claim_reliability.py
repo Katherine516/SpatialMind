@@ -63,8 +63,12 @@ def build_payload(dataset, variant, records_loaded: int) -> Dict[str, Any]:
 def run_variant(dataset, registry, variant, params: Dict[str, Any]) -> Dict[str, Any]:
     from spatialmind.methods.reliability import score_claim_reliability
 
-    for record in dataset.records:
-        record.cell_type = variant.labels.get(record.cell_id or "", "")
+    # Controls are deliberately synthetic; never reuse review provenance after
+    # relabelling cells in a simulation, or call these labels expert decisions.
+    from dataclasses import replace
+    dataset = replace(dataset, records=[replace(record, cell_type=variant.labels.get(record.cell_id or "", ""))
+                                        for record in dataset.records], metadata=dict(dataset.metadata))
+    dataset.metadata.pop("reviewed_cell_labels", None)
 
     started = time.time()
     result = registry.get("cell_neighborhood_enrichment").run(dataset, dict(params))
@@ -78,6 +82,8 @@ def run_variant(dataset, registry, variant, params: Dict[str, Any]) -> Dict[str,
         "status": "supported",
         "evidence_refs": ["cell_neighborhood_enrichment"],
         "allowed_wording": "",
+        "spatial_target": {"tool": "cell_neighborhood_enrichment", "pair": list(variant.implanted_pair),
+                           "direction": "enrichment"},
     }
     payload = build_payload(dataset, variant, len(dataset.records))
     scored = score_claim_reliability(claim, payload, [result])

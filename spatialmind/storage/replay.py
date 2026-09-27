@@ -146,6 +146,12 @@ def replay_run_record(record_path: str, output_dir: Optional[str] = None, verify
     query = str(payload.get("query") or "")
     input_paths = list((payload.get("input_file_md5") or {}).keys())
     params = dict(payload.get("params") or {})
+    if params.get("workflow_type") == "studio_plan" and input_paths:
+        return {
+            "status": "verified_studio_replay_ready", "verification": verification.to_dict(),
+            "dataset_path": input_paths[0], "query": query, "params": params,
+            "replay_output_dir": output_dir or "outputs/replay/%s" % payload["run_id"],
+        }
     is_xenium_pilot = (
         params.get("workflow_type") == "validated_xenium_pilot"
         or "Validated Xenium pilot" in query

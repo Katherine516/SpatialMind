@@ -146,8 +146,9 @@ def _gate_section(payload: Dict[str, Any], gate: Optional[Dict[str, Any]]) -> Li
         lines.append("")
         lines.append(
             "These regions were named from the reviewed cell composition rather than from "
-            "morphology, so any composition summary over them is partly circular. Neighbourhood "
-            "results *within* a region are not affected.")
+            "morphology, so composition summaries are partly circular. Within-region tests are "
+            "conditional on these data-derived boundaries; independent ROI review or full-pipeline "
+            "null controls are needed before treating them as confirmatory.")
 
     lines.extend(_label_audit_section(payload))
 
@@ -372,12 +373,15 @@ def write_figures(dataset: Any, payload: Dict[str, Any], output_dir: Path) -> Li
 
     lane = lane_for_payload(payload)
     if lane == LANE_VALIDATED:
-        groups = [str(getattr(r, "cell_type", "") or "unassigned") for r in records]
+        from ..tools.implementations import resolve_group_labels
+        groups, _ = resolve_group_labels(dataset, {"group_key": "cell_type"})
+        groups = [group or "unreviewed" for group in groups]
         title = "Reviewed cell types"
         caption = "Cells coloured by the reviewed label table."
     else:
-        groups = [str((getattr(r, "metadata", None) or {}).get("cluster")
-                      or getattr(r, "cell_type", "") or "unassigned") for r in records]
+        from ..tools.implementations import resolve_group_labels
+        groups, _ = resolve_group_labels(dataset, {"group_key": "cluster"})
+        groups = [group or "unassigned" for group in groups]
         title = "Data-derived clusters"
         caption = ("Cells coloured by unsupervised cluster. These are not cell types and are "
                    "not named as any.")

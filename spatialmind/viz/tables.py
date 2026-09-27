@@ -378,7 +378,7 @@ def _write_cells(
     # stamping `expert_label_table` on all of them -- which is what a single
     # table-wide source string did -- says the reviewer labelled cells they never
     # saw. The one column downstream code would use to filter was the one lying.
-    reviewed = {str(name) for name in (label_report.get("reviewed_labels") or [])}
+    from spatialmind.tools.grouping import cell_is_reviewed
 
     clusters = (dataset.metadata or {}).get("cluster_assignments") or {}
     lisa = ((payload.get("descriptive_analysis") or {}).get("local_spatial_structure") or {})
@@ -408,7 +408,7 @@ def _write_cells(
             label_column: record.cell_type or "",
             "label_source": (
                 "" if not record.cell_type
-                else review_method if (not reviewed or record.cell_type in reviewed)
+                else review_method if cell_is_reviewed(dataset, record)
                 else "loader_marker_rule"
             ),
             "region": record.region or "",

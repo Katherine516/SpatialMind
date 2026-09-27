@@ -119,6 +119,10 @@ class JobRunner:
             job.result = work(job)
             job.state = "succeeded"
             job.progress = "Done."
+            if job.result.get("delivery_status") == "partial":
+                job.state = "failed"
+                job.error = "Analysis completed, but one or more required report artifacts failed. Partial results are retained."
+                job.progress = "Partial output."
         except Exception as exc:  # surfaced to the UI verbatim; the trace goes to the log
             job.state = "failed"
             job.error = "%s: %s" % (type(exc).__name__, exc)

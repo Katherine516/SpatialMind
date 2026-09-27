@@ -23,12 +23,12 @@ agent-layer caller would have closed a loop.
 
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 import os
+from .tools.grouping import CLUSTER_GROUPINGS, GROUPED_TOOLS, normalize_group_key
 
 from .schemas import SpatialDataset
 
 # Grouping a tool by cluster keeps it descriptive: it then describes data-derived
 # groups and never names a cell type, which is exactly what the gate protects.
-CLUSTER_GROUPINGS = {"leiden", "cluster", "clusters", "leiden_cluster"}
 
 # The registry's preconditions understate `annotation`: it reads the reviewed
 # label table but only declares "requires normalized counts". Every other gated
@@ -114,12 +114,11 @@ class GateBlockedError(RuntimeError):
 def requires_labels(tool: Any, params: Optional[Dict[str, Any]] = None) -> bool:
     """True when this call would make a claim about named cell types."""
     params = params or {}
-    grouping = str(params.get("group_key") or params.get("group_by") or "").lower()
-    if grouping in CLUSTER_GROUPINGS:
-        return False
     name = getattr(tool, "name", str(tool))
     if name in ALWAYS_LABEL_GATED or name in LEGACY_LABEL_GATED:
         return True
+    if name in GROUPED_TOOLS:
+        return normalize_group_key(params) != "cluster"
     return any("cell-type label" in str(text).lower() for text in getattr(tool, "preconditions", ()))
 
 
@@ -145,8 +144,7 @@ def gated_tool_names(
             # Not in the registry: the legacy engine's tools are classified by
             # name, and anything else unknown is treated as gated rather than
             # waved through. An unrecognised tool is not evidence of safety.
-            if name in LEGACY_LABEL_GATED:
-                gated.append(name)
+            gated.append(name)
             continue
         if requires_labels(tool, params) or requires_regions(tool):
             gated.append(name)

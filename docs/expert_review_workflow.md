@@ -21,6 +21,13 @@ For a pilot, one domain expert plus one computational reviewer is acceptable. Fo
 
 ## Frozen Brain Benchmark Packet
 
+The September 27 specialist handoff preserves the frozen cohorts below and adds stricter decision validation:
+`outputs/brain_specialist_handoff_20260927/`. Start with its `REVIEW_INSTRUCTIONS.md` and the tissue-specific
+morphology ROI pages. [Implementation, benchmark results, and commands](annotation_benchmark_20260927.md).
+The new staging command requires explicit review status, reviewer/date, confidence, evidence references,
+anatomical region evidence, and at least 90% jointly accepted decisions in every split. Candidate values
+or a reviewer name alone do not qualify. Both brain cohorts currently remain awaiting review.
+
 The current leakage-aware packet is:
 
 `outputs/brain_expert_benchmark_20260812/`

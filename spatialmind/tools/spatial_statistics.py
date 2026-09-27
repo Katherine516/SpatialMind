@@ -319,6 +319,8 @@ def cell_type_spatial_autocorrelation(
     from .implementations import _dataset_to_anndata, resolve_group_labels
 
     params = dict(params or {})
+    from .grouping import reviewed_view
+    dataset = reviewed_view(dataset, "cell_neighborhood_enrichment", params)
     try:
         import squidpy as sq  # type: ignore
     except ImportError as exc:
@@ -607,6 +609,8 @@ def ripley_cell_types(
     from .implementations import _dataset_to_anndata, resolve_group_labels
 
     params = dict(params or {})
+    from .grouping import reviewed_view
+    dataset = reviewed_view(dataset, "cell_neighborhood_enrichment", params)
     try:
         import numpy as np  # type: ignore
         from scipy.spatial import cKDTree  # type: ignore

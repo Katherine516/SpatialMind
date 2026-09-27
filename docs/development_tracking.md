@@ -1625,6 +1625,37 @@ Verification:
 - `pip check` found no broken requirements; all three import contracts were kept; bytecode compilation and `git diff --check` passed.
 - Detailed implementation report: `outputs/NEXT_MOVE_IMPLEMENTATION_REPORT_20260812.md`.
 
+### Step: Correctness Release After the September 27 Audit
+
+Status: Implemented; final verification recorded in `docs/correctness_release_20260927.md`.
+
+- Shared Studio/pilot step execution now enforces the expanded plan's gate, preconditions, and real-backend requirement.
+- One grouping resolver handles aliases across planning, analysis, and figures. Cluster-only dependencies no longer insert annotation.
+- Label/ROI intake preserves cell-specific review provenance; biological tools and exports use that scope. Matching a reviewed class name alone does not confer review.
+- Repaired the mislabeled descriptive cluster map and added a regression test of actual legend labels.
+- Spatial claims bind to explicit tool/pair/direction/scope. Fixed raw/adjusted p handling, zero p-values, nonfinite statistics, and pair-specific measured robustness; removed the robustness proxy.
+- Final Studio manifests include output hashes and effective plans; replay is supported, and partial artifact delivery is not reported as successful.
+- Documentation inventory checks no longer change merely because the date advances or assert that discovered tests passed.
+- Ran the full healthy-brain descriptive recipe and a reviewed-label breast sample. Breast biological tools excluded 137 unreviewed cells; replay reproduced all five numerical tool outputs exactly.
+- Added reproducible evaluation script `scripts/evaluate_correctness_release.py` and regression suite `tests/test_correctness_boundary.py`.
+- Final verification passed 530/530 unit tests (31 new regression cases), 6/6 import contracts, legacy routing 16/16, and MVP routing 13/13. A real sampled breast sweep supported pair-specific robustness for three of ten spatial claims; seven correctly remained blocked because their pairs lacked stored sweep measurements.
+- Raw data, expert labels, and regions were not edited. No model was trained, no independent biological accuracy was asserted, and no GitHub push or desktop rebuild was performed.
+
+Next: independent held-out breast benchmark, specialist brain label/ROI review, and whole-pipeline statistical calibration. See the release record for outputs and remaining limitations.
+
+### Step: Buffered Annotation Holdout and Specialist Brain Handoff
+
+Status: Benchmark and review tooling implemented; specialist review and independent donor validation remain blocked on external inputs.
+
+- Evaluated the existing distance-weighted KNN transfer with label-free query objects, spatial-block train/validation/test splits, a 50-micron buffer, validation-only k selection, artifact hashes, and no-overwrite output directories.
+- Fixed legacy H5 `Blank Codeword` feature handling in the shared control filter. The first exploratory benchmark was superseded; the accepted `_v2` run uses 313 expression genes.
+- Accepted test result: 3,110 cells, 80.71% accuracy, 0.6208 macro-F1, 57.00% balanced accuracy. Fixed-threshold abstention retains 76.53% at 88.61% accuracy. These are internal section-level metrics, not independent donor accuracy.
+- Preserved both existing 750-cell brain cohorts; prepared blinded first-pass sheets and separate machine evidence, with morphology-backed candidate-domain context (12 healthy-brain and 13 glioblastoma domains).
+- Added explicit specialist decision/provenance and anatomical-evidence checks, immutable cohort/split checks, per-split joint coverage requirements, and staged export of accepted rows only. Current accepted labels/regions are zero for both cohorts; no final brain files were fabricated.
+- Added 18 tests covering leakage, hidden-label invariance, buffering, metrics, control parsing, review provenance, immutable splits, and staging.
+- Verification passed: 548/548 full-suite tests, 6/6 import contracts, all 12 accepted benchmark artifact hashes, compilation, and documentation checks. Logs are in `outputs/annotation_benchmark_verification_20260927/`.
+- Results, limitations, output links, and next steps: `docs/annotation_benchmark_20260927.md`.
+
 ### Step: Remove Superseded Planning Documents and Reclaim the Repository
 
 Status: Complete

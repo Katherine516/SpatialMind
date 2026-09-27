@@ -4,7 +4,9 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-09-21. Unit tests 499/499; legacy eval 16/16; MVP eval 13/13; real Scanpy/Squidpy backend checks passed; import-linter 6/6. (Counts derived by `scripts/check_doc_numbers.py`.)
+Last verified: 2026-09-27. Executed unit tests 548/548; import-linter 6/6; held-out annotation and brain review handoff verified in [the benchmark record](annotation_benchmark_20260927.md). Earlier same-day legacy eval 16/16, MVP eval 13/13, and workflow replay are recorded in [the correctness release](correctness_release_20260927.md), separately from discovery counts.
+
+Inventory counts: 548 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
 
 ## The one-sentence version
 
@@ -52,10 +54,12 @@ import.
 
 ### What is actually enforced
 
-Five import-linter contracts, checked by `make import-lint`. Everything else in
-that table is convention — and this codebase has twice shown what convention is
-worth. The gate held on one of four execution paths until it was made a function
-call; scaffold detection died silently the first time the app was frozen.
+Six import-linter contracts enforce the layer ordering and forbidden edges.
+Studio and the canonical pilot share an execution boundary that checks effective
+calls after dependency insertion. Group resolution and per-cell review provenance
+are shared by tools and presentation. See the
+[September 27 correctness release](correctness_release_20260927.md) for regression
+cases, real-data measurements, and the biological validation still required.
 
 ### Legacy components
 

@@ -1052,7 +1052,8 @@ class ToolRegistryTests(unittest.TestCase):
     def test_spatial_robustness_component_prefers_real_sweep(self):
         from spatialmind.methods.reliability.scoring import _spatial_robustness_component
 
-        claim = {"claim_type": "spatial_colocalization", "status": "supported"}
+        claim = {"claim_type": "spatial_colocalization", "status": "supported",
+                 "spatial_target": {"tool": "cell_neighborhood_enrichment", "pair": ["a", "b"], "direction": "enrichment"}}
         payload = {
             "spatial_robustness": {
                 "status": "computed",
@@ -1060,14 +1061,17 @@ class ToolRegistryTests(unittest.TestCase):
                 "mean_sign_agreement": 1.0,
                 "mean_topk_jaccard": 0.55,
                 "settings": [6, 10, 15],
+                "pair_stability": [{"pair": "a | b", "settings_present": 3,
+                                    "sign_agreement": 1.0, "top_k_presence": 0.55}],
             }
         }
         component = _spatial_robustness_component(claim, payload, [])
         self.assertEqual(component.status, "computed")
         self.assertEqual(component.score, 0.82)
-        # Without a sweep, it falls back to the heuristic proxy (no crash, still a score).
+        # Missing measured robustness must not be replaced by a proxy.
         fallback = _spatial_robustness_component(claim, {}, [])
-        self.assertIsNotNone(fallback.score)
+        self.assertEqual(fallback.score, 0)
+        self.assertEqual(fallback.status, "blocked")
 
     def test_pilot_report_renders_per_group_markers(self):
         from spatialmind.pilot.xenium import _marker_group_markdown, _marker_group_html
@@ -2098,7 +2102,8 @@ class ScaffoldDetectionTests(unittest.TestCase):
         from spatialmind.methods.reliability.scoring import _statistical_component
         from spatialmind.schemas import ToolResult
 
-        claim = {"claim_type": "spatial_colocalization", "status": "supported"}
+        claim = {"claim_type": "spatial_colocalization", "status": "supported",
+                 "spatial_target": {"tool": "cell_neighborhood_enrichment", "pair": ["a", "b"], "direction": "enrichment"}}
 
         def component(pair_count, top_z):
             pairs = [{"pair": "t%d | t%d" % (i, i), "zscore": 1.2} for i in range(pair_count - 1)]
@@ -4765,6 +4770,7 @@ class PerCellLabelSourceTests(unittest.TestCase):
             "status": "validated_ready", "dataset_path": "d",
             "label_report": {"method": "expert_label_table", "reviewed_labels": ["astrocyte"]},
         }
+        dataset.metadata["reviewed_cell_labels"] = {"reviewed": {"label": "astrocyte"}}
         root = Path(tempfile.mkdtemp())
         try:
             write_result_tables(payload, dataset, root, run_id="r")
