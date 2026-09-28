@@ -1,6 +1,6 @@
 # SpatialMind
 
-This repository implements SpatialMind, an agentic spatial omics analysis system that converts biological questions into validated local workflows. The current active product path is a Xenium pilot agent: it can ingest real wet-lab platform outputs after instrument processing, prepare expert-review templates, run gated MVP analyses, generate comprehensive reports, and refuse validated biological claims until expert cell labels and user region labels are supplied.
+SpatialMind turns platform-processed spatial omics data into reviewable workflows and reports. Its active path supports Xenium, H5AD, and tabular inputs, QC, expert-review packets, gated analyses, visualizations, and replayable provenance. Biological claims require reviewed cell labels and tissue regions. The current brain cohorts still lack specialist review, matched H&E/IHC, and a verified independent donor test; the rare-class adjustment has only been selected on breast validation data.
 
 1. Data ingestion
 2. Algorithm engine
@@ -27,6 +27,19 @@ The current result is an internal, buffered breast-section holdout, not independ
 Brain review packets are prepared but still require specialist decisions. This work also fixes
 legacy Xenium `Blank Codeword` controls being included in expression features; regenerate older
 breast analyses before reusing their numerical results.
+
+The [ordered brain validation workflow](docs/brain_review_execution.md) now records
+unassigned specialist roles, checks registered-image evidence and external-donor
+provenance, and exposes a readiness CLI. No reviewers are currently available.
+An opt-in training-prior adjustment improved rare-class F1 in breast **validation**
+only; it is not enabled by default and is not evidence of brain or external-test
+performance. External dataset catalog metadata is acquired, but matched histology,
+verified donor truth and completed brain review remain missing.
+
+The [September 28 layer review](docs/layer_review_20260928.md) evaluates
+parameter-aware tool dependencies, claim-level reliability, and repository status.
+The current benchmark evidence supports further expert and external-donor
+validation; it does not establish validated brain performance.
 
 [docs/spatialmind_agent_reference.html](docs/spatialmind_agent_reference.html) — one page covering the
 workflow, the architecture, every function, the reliability model, and the current
