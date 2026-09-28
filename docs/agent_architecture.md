@@ -6,7 +6,7 @@ runs when, and where the gates sit. The README is the command reference;
 
 Last verified: 2026-09-28. Executed unit tests 561/561; import-linter 6/6; held-out annotation and brain review handoff verified in [the benchmark record](annotation_benchmark_20260927.md). Earlier legacy eval 16/16, MVP eval 13/13, and workflow replay are recorded in [the correctness release](correctness_release_20260927.md), separately from discovery counts. The ordered brain review gates and breast-only rare-class experiment are documented in [the brain review execution record](brain_review_execution.md).
 
-Inventory counts: 561 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
+Inventory counts: 562 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
 
 ## The one-sentence version
 

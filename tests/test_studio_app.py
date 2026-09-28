@@ -122,6 +122,25 @@ class NumbaCacheTests(unittest.TestCase):
         os.environ["NUMBA_CACHE_DIR"] = "/somewhere/deliberate"
         self.assertEqual(config.configure_numba_cache(), "/somewhere/deliberate")
 
+    def test_the_build_workflow_installs_from_the_requirements_file(self):
+        """A second copy of the dependency list is a copy that drifts.
+
+        `build-macos.yml` hand-listed the packages it installed. By the first
+        time the workflow ever ran, that list was missing statsmodels, networkx,
+        pynndescent, python-docx, openpyxl and python-multipart, and the Test
+        step failed on "Form data requires python-multipart to be installed" --
+        a dependency `requirements-app.txt` had carried all along.
+        """
+        workflow = (Path(__file__).resolve().parents[1]
+                    / ".github" / "workflows" / "build-macos.yml").read_text(encoding="utf-8")
+        self.assertIn("requirements-app.txt", workflow,
+                      "the build workflow must install from the requirements file")
+
+        requirements = (Path(__file__).resolve().parents[1] / "requirements-app.txt").read_text(encoding="utf-8")
+        for package in ("python-multipart", "python-docx", "openpyxl"):
+            self.assertIn(package, requirements,
+                          "%s is needed by the packaged app and must stay declared" % package)
+
     def test_the_frozen_entry_point_sets_it_before_importing_anything_heavy(self):
         """numba reads this at import time, so ordering is the whole point: a
         call placed after the first `import scanpy` does nothing at all."""

@@ -37,16 +37,16 @@ jobs:
           echo "uname -m: $(uname -m)"
           python -c "import platform; assert platform.machine() == '${{ matrix.arch }}', platform.machine()"
 
+      # Install from requirements-app.txt rather than a list typed here.
+      # The hand-maintained copy had drifted by six packages -- statsmodels,
+      # networkx, pynndescent, python-docx, openpyxl and python-multipart -- and
+      # the first time this workflow ever ran, the Test step failed on
+      # "Form data requires python-multipart to be installed". Two descriptions
+      # of one dependency set is one description too many.
       - name: Install the Studio's runtime dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e .
-          python -m pip install \
-            fastapi 'uvicorn[standard]' pydantic httpx pywebview \
-            numpy scipy pandas pyarrow h5py \
-            anndata scanpy squidpy scikit-learn \
-            matplotlib igraph leidenalg tifffile pillow reportlab \
-            pyinstaller
+          python -m pip install -r requirements-app.txt
 
       - name: Test
         run: python -m unittest discover -s tests -p 'test_studio_app.py' -v
