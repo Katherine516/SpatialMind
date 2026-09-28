@@ -1440,6 +1440,9 @@ def _knn_reference_label_transfer(
     classifier.fit(reference_matrix, [record.cell_type for record in reference_records])
     probabilities = classifier.predict_proba(target_matrix)
     classes = [str(value) for value in classifier.classes_]
+    from .annotation_priors import reweight_votes
+    prior_power = float(params.get("class_prior_power", 0.0))
+    probabilities = reweight_votes(probabilities, classes, [record.cell_type for record in reference_records], prior_power)
 
     # Vote-fraction confidence is computed over the classes the reference happens
     # to contain, so it cannot express "none of these": a cell type absent from the
@@ -1526,6 +1529,7 @@ def _knn_reference_label_transfer(
             "status": "transferred",
             "labels_transferred": True,
             "method": "knn_distance_weighted",
+            "class_prior_power": prior_power,
             "n_neighbors": neighbors,
             "shared_feature_count": len(shared),
             "reference_label_classes": labels,
@@ -1551,6 +1555,8 @@ def _knn_reference_label_transfer(
             "Transferred cell-type labels are predictions from a reference, not direct measurements.",
             "Reference and target were aligned over shared features only.",
             "Predicted labels require expert review before they can support biological claims.",
+            "Training-prior correction power is %.2f; nonzero values favor underrepresented training classes. "
+            "Neither raw nor adjusted vote fractions are calibrated correctness probabilities." % prior_power,
             "Confidence is a neighbour-vote fraction over the %d reference classes (%s) and cannot express "
             "'no matching class'; any cell type absent from the reference is still assigned its nearest "
             "available label, often at high confidence. Judge coverage from the class list, not the score."

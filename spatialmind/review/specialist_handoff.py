@@ -101,10 +101,15 @@ def _accepted(row, region=False):
 def validate_handoff(packet_dir, export_to=None):
     root = Path(packet_dir)
     manifest = json.loads((root / "handoff_manifest.json").read_text())
+    assignment_path = root / "study_readiness.json"
+    assignments = json.loads(assignment_path.read_text()) if assignment_path.exists() else None
     reports, ready = {}, {}
     for key, info in manifest["datasets"].items():
         folder = root / key
         issues = []
+        if assignments is not None:
+            from .brain_readiness import assignment_issues
+            issues.extend(assignment_issues(assignments))
         for name, expected in info["immutable_files"].items():
             if not (folder / name).is_file() or digest(folder / name) != expected:
                 issues.append("Frozen artifact changed: " + name)
@@ -119,6 +124,24 @@ def validate_handoff(packet_dir, export_to=None):
                 issues.append(name + ": frozen coordinates changed")
         label_map = {row["cell_id"]: row for row in labels if _accepted(row)}
         region_map = {row["cell_id"]: row for row in regions if _accepted(row, region=True)}
+        if assignments is not None:
+            roles = assignments.get("reviewers", {})
+            specialist = roles.get("brain_single_cell_specialist", {}).get("reviewer_id", "")
+            pathologist = roles.get("neuropathologist", {}).get("reviewer_id", "")
+            if any(row["reviewer_id"] != specialist for row in label_map.values()):
+                issues.append("Cell label reviewer differs from assigned specialist")
+            if any(row["region_reviewer_id"] != pathologist for row in region_map.values()):
+                issues.append("Region reviewer differs from assigned neuropathologist")
+            if any(row.get("region_basis") in {"registered_histology", "registered_ihc"} for row in region_map.values()):
+                from .brain_readiness import validate_image_evidence
+                image_manifest = assignments.get("images", {}).get(key, {}).get("evidence_manifest", "")
+                try:
+                    image_path = Path(image_manifest)
+                    if not image_path.is_absolute():
+                        image_path = root / image_path
+                    validate_image_evidence(image_path, info["source_dataset"], pathologist)
+                except (ValueError, OSError, KeyError, TypeError) as exc:
+                    issues.append("Registered image evidence invalid: " + str(exc))
         joint = set(label_map) & set(region_map) & set(expected_rows)
         invalid_decisions = sum(row.get("review_status", "").lower() in {"approved", "reviewed"}
                                 and not _accepted(row, region=is_region)

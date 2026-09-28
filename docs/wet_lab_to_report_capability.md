@@ -1,10 +1,10 @@
 # Wet-Lab Output To Report Capability
 
-Last updated: 2026-06-27
+Last updated: 2026-09-28
 
 ## Goal
 
-SpatialMind's product goal is to ingest wet-lab platform outputs and generate a comprehensive, auditable spatial omics report. The current implementation supports this goal for platform-processed outputs, especially 10x Xenium folders, H5AD/AnnData files, and tidy CSV/manifest tables.
+SpatialMind's product goal is to ingest wet-lab platform outputs and generate a comprehensive, auditable spatial omics report. The current implementation supports QC, review preparation, gated biological analyses, visualizations, claim evidence, and local provenance for platform-processed 10x Xenium folders, H5AD/AnnData files, and tidy CSV/manifest tables. Brain validation still awaits specialist decisions, matched histology where needed, and an independent donor test.
 
 It does not process primary instrument basecalls such as FASTQ/BCL. Those should be processed by the appropriate platform pipeline first, then passed to SpatialMind as Xenium, H5AD, or table outputs.
 
@@ -31,7 +31,7 @@ wet-lab platform output
 | QC/readiness reporting | Ready | `build_readiness_report`, label intake reports, pilot scorecards, and local promotion reports are implemented. |
 | Expert review packet generation | Ready | Glioblastoma and all-dataset review packets are generated. |
 | Ontology-guided labels | Partial review support | Cell Ontology guide and astrocyte `CL:0000127` prefill are present, but expert confirmation is still required. |
-| Real analysis wrappers | Partially ready | Scanpy DE/clustering/HVG and Squidpy neighborhood enrichment pass backend validation. |
+| Real analysis wrappers | Partially ready | Scanpy DE/clustering/HVG and Squidpy neighborhood enrichment pass backend validation; strict real-engine requirements are documented in the September 28 layer review. |
 | Validated biological interpretation | Blocked by inputs | Requires reviewed `expert_cell_labels.csv` and `cell_regions.csv`. |
 | Comprehensive reporting | Ready for review/readiness reports; gated for biology | Reports are generated for blocked and validated-ready states. Biological claims remain refused until gates pass. |
 | Replay/provenance | Local ready | Run records, hashes, SQLite indexing, and replay checks exist. |
@@ -43,8 +43,15 @@ wet-lab platform output
 1. `expert_cell_labels.csv` in the selected Xenium folder.
 2. `cell_regions.csv` in the selected Xenium folder.
 3. Dataset governance manifest fields: source, license, consent class, PHI risk, and allowed use.
-4. Tissue-matched reference data for reference-assisted annotation.
-5. Frozen benchmark labels for measuring annotation/report quality.
+4. Qualified brain reviewers and registered H&E/IHC evidence where needed for anatomy.
+5. A verified independent brain donor with reviewed labels and regions for external testing.
+6. Tissue-matched reference data for reference-assisted annotation.
+
+The held-out annotation result is an internal breast-section benchmark. A separate
+breast validation experiment selected an opt-in rare-class prior; it is not enabled
+by default and does not establish brain performance. See
+[`brain_review_execution.md`](brain_review_execution.md) for the ordered review
+gates, external dataset candidate, and current status.
 
 ## Cleanup Decision
 

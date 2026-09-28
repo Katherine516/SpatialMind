@@ -1681,3 +1681,18 @@ Verification:
 
 - Full suite 484/484, import contracts 6/6, legacy eval 16/16, MVP eval 13/13, `check_doc_numbers.py --check` clean.
 - `docs/agent_architecture.md` corrected: it still described the `layers["counts"]` that the matrix-memory work removed.
+
+### Step: Ordered Brain Study Readiness and Rare-Class Development
+
+Status: Software preparation implemented; biological completion remains blocked on real reviewers and verified external inputs.
+
+- User confirmed that no reviewers are available. Added explicit unassigned specialist/neuropathologist roles, acceptance/qualification records, assignment-aware staging, and an ordered readiness CLI. No people were assigned without acceptance and no review decisions were manufactured.
+- Added a registered-image evidence validator: exact dataset and image hashes, assigned neuropathologist, documented section pairing and visual approval, explicit pixel-to-micron affine convention, and independent landmark residual checks. Local brain data still lack matched H&E/IHC.
+- Retrieved and hashed BioStudies S-BSST2273 repository metadata only. It lists GBM annotations and H&E, but donor non-overlap, panel suitability and truth quality are not yet verified; no expression/annotation archive was downloaded or declared an external benchmark.
+- Added external-test manifest checks for recorded donor independence, provenance, separate hashed expression/truth, frozen crosswalk/protocol, and custodian sealing. These checks do not independently certify biological truth or provide operating-system access control.
+- Added opt-in training-prior correction to the production KNN annotation tool; default power zero preserves predictions. On 11,263 frozen breast training and 3,737 validation cells, validation-only selection chose power 0.25. Macro-F1 increased 0.6705 -> 0.7196, rare-class macro-F1 0.4749 -> 0.5788, and accuracy 82.53% -> 82.66%; coverage at 0.6 decreased 76.91% -> 75.17%.
+- The old test truth was not opened/rescored. These are reused validation-set selection metrics, not brain training, independent test performance or a production promotion. An automatic brain external-test executor remains deferred until reviewed development data and a compatible independently labeled donor exist.
+- Output examples: `outputs/rare_class_development_20260927/report.html` and `outputs/brain_specialist_handoff_20260927/ordered_readiness_report.json`. All six new experiment artifact hashes verify.
+- Added 13 focused tests covering unassigned roles, identity mismatch, image pairing/units/hash/landmark errors, donor overlap, metadata-only acquisition, opt-in production behavior and training/validation-only selection. These and all 18 existing holdout/handoff tests pass; all six import contracts pass.
+- Final verification: full suite 561/561 passed in 274 seconds, documentation inventory check passed, and `git diff --check` passed. Existing dependency deprecation, synthetic-data, sparse-efficiency and test file-handle warnings remain non-fatal.
+- Updated README and added `docs/brain_review_execution.md` with recruitment brief, image/external manifest templates, acquisition links, metrics, commands, and explicit blockers.

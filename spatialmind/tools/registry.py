@@ -335,7 +335,12 @@ def build_full_registry() -> ToolRegistry:
                 description="Transfer labels from a scRNA/scATAC reference onto Xenium over shared features with confidence.",
                 when_to_use="Use only in integration mode when a labeled reference and Xenium target share enough features.",
                 when_not_to_use="Do not use when shared features are too few; request a matched reference.",
-                input_schema=_object_schema({"reference_features": {"type": "array", "items": {"type": "string"}}, "min_shared_features": {"type": "integer", "default": 5}}),
+                input_schema=_object_schema({
+                    "reference_features": {"type": "array", "items": {"type": "string"}},
+                    "min_shared_features": {"type": "integer", "default": 5},
+                    "class_prior_power": {"type": "number", "minimum": 0, "maximum": 1, "default": 0,
+                                          "description": "Opt-in training-prior correction; select on validation only, never on test data."},
+                }),
                 output_schema=_tool_result_schema(),
                 preconditions=["requires normalized counts"],
                 estimated_runtime="medium 1-10min",

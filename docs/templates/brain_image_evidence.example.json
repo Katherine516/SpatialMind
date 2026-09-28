@@ -1,0 +1,15 @@
+{
+  "dataset_path": "",
+  "image_file": "",
+  "files": {},
+  "modality": "H&E",
+  "reviewer_id": "",
+  "same_section_confirmed": false,
+  "pairing_evidence": "",
+  "visual_alignment_approved": false,
+  "transform_convention": "image_pixel_xy_to_xenium_micron_xy_column_vector",
+  "matrix": null,
+  "landmarks": [],
+  "max_check_error_um": null,
+  "threshold_rationale": ""
+}

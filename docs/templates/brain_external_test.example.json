@@ -1,0 +1,20 @@
+{
+  "source_url": "",
+  "license": "",
+  "label_provenance": "",
+  "independence_evidence": "",
+  "custodian_id": "",
+  "organism": "human",
+  "tissue": "brain",
+  "assay": "Xenium",
+  "development_donor_ids": [],
+  "test_donor_ids": [],
+  "donor_independence_confirmed": false,
+  "labels_independent_of_this_agent": false,
+  "test_labels_sealed": false,
+  "expression_file": "",
+  "truth_file": "",
+  "label_crosswalk": "",
+  "evaluation_protocol": "",
+  "files": {}
+}
