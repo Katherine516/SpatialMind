@@ -1,0 +1,13 @@
+{
+  "model_lock_sha256": "",
+  "confidence_threshold": 0.6,
+  "min_shared_features": 100,
+  "min_shared_fraction": 0.8,
+  "overlap_threshold_rationale": "Example only: replace with a prespecified, tissue/panel-specific rationale before sealing.",
+  "primary_metric": "macro_f1",
+  "secondary_metrics": ["accuracy", "balanced_accuracy", "per_class", "coverage", "selective_accuracy"],
+  "evaluation_unit": "independently verified donor",
+  "decision_rule": "Prespecify acceptance criteria before releasing any test truth; no test-driven tuning.",
+  "reviewer_id": "",
+  "approved_at": ""
+}

@@ -1,5 +1,30 @@
 # Calibrating claim reliability
 
+## Current Biological Boundary (2026-09-30)
+
+The experiments below are historical engineering controls, not deployed biological
+calibration. The pilot still defaults to weakest-link reliability, not a learned
+probability of truth.
+
+`train_claim_reliability_local.py --claim-truth COMPLETED.csv` now refuses fitting
+unless review provenance and donor-disjoint train/validation/test records pass
+`review.claim_calibration.evaluate_reviewed_calibration`. Required fields include
+record_id, reviewed_truth_label, use_for_calibration=yes, review_status, reviewer_id,
+ISO reviewed_at, truth_basis, source_citation, donor_id, prespecified split and all
+four finite components in [0,1]. Scope must be `biological_claim` or
+`biological_claim_candidate`; null/readiness controls do not substitute for biology.
+
+Every split requires both supported and unsupported claims, with donor IDs disjoint
+across splits. The fixed logistic model fits training only, without tuning on test.
+Outputs include held-out Brier score, ten-bin ECE, AUROC, calibration curves and
+test-per-donor metrics. Four records is a fitting floor, not adequate scientific
+sample size; sparse claims/few donors leave unstable estimates. No automatic
+deployment or production promotion follows.
+
+New drafts leave donor identity and split blank for a custodian to assign by donor,
+instead of randomizing same-section claims across splits. Brain biological truth
+remains missing; no biological calibrator was fitted in this update.
+
 `S_statistical` shipped with the caveat *"heuristic until calibrated against
 ground-truth positive/negative controls"*. This is that calibration, the bug it
 found, and what it still cannot tell you.

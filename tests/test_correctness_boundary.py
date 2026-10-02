@@ -102,7 +102,9 @@ class ReviewScopeTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.data = dataset()
         labels = Path(self.temp.name, "labels.csv")
-        labels.write_text("cell_id,expert_label,reviewer_id\n0,A,reviewer\n2,B,reviewer\n")
+        labels.write_text("cell_id,expert_label,reviewer_id,confidence,review_status,reviewed_at,evidence_ref\n"
+                          "0,A,reviewer,0.9,reviewed,2026-09-30,fixture:markers\n"
+                          "2,B,reviewer,0.9,reviewed,2026-09-30,fixture:markers\n")
         self.report = apply_external_label_table(self.data, str(labels))
 
     def test_same_spelling_does_not_confer_review(self):
@@ -126,7 +128,9 @@ class ReviewScopeTests(unittest.TestCase):
 
     def test_region_summary_uses_intersection_of_reviewed_cells(self):
         regions = Path(self.temp.name, "regions.csv")
-        regions.write_text("cell_id,region\n0,r\n1,r\n")
+        regions.write_text("cell_id,region,reviewer_id,region_confidence,review_status,reviewed_at,evidence_ref,region_basis\n"
+                           "0,r,reviewer,0.9,reviewed,2026-09-30,fixture:image,morphology\n"
+                           "1,r,reviewer,0.9,reviewed,2026-09-30,fixture:image,morphology\n")
         apply_external_region_table(self.data, str(regions))
         scoped = reviewed_view(self.data, "region_summary", {})
         self.assertEqual([r.cell_id for r in scoped.records], ["0"])

@@ -48,7 +48,7 @@ def assess_condition_replication(
                 % (condition, len(section_ids), min_sections)
             )
             required.append("Add independent sections for condition '%s'." % condition)
-        if donor_ids and len(donor_ids) < min_donors:
+        if len(donor_ids) < min_donors:
             blockers.append(
                 "Condition '%s' has %d donor(s); generalizing beyond this donor needs at least %d."
                 % (condition, len(donor_ids), min_donors)
@@ -56,6 +56,8 @@ def assess_condition_replication(
             required.append("Add independent donors for condition '%s'." % condition)
         if not donor_ids:
             required.append("Record donor_id for condition '%s' so replication can be assessed." % condition)
+        if any(not str(item.get("donor_id") or "").strip() for item in sections):
+            blockers.append("Condition '%s' has sections with unknown donor identity." % condition)
 
     if len(conditions) < 2:
         blockers.append("A condition comparison needs at least two conditions; got %d." % len(conditions))

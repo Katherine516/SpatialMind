@@ -2,12 +2,11 @@
 
 import csv
 import json
-import math
 import shutil
-from datetime import datetime
 from pathlib import Path
 
 from .annotation_benchmark import digest, write_csv, write_json
+from spatialmind.contracts.review import review_decision_issues
 
 
 def _read(path):
@@ -80,22 +79,7 @@ def prepare_handoff(existing_packet, output_dir):
 
 
 def _accepted(row, region=False):
-    fields = (("region", "region_confidence", "region_reviewer_id", "region_reviewed_at") if region else
-              ("expert_label", "confidence", "reviewer_id", "reviewed_at"))
-    if row.get("review_status", "").strip().lower() not in {"reviewed", "approved"}:
-        return False
-    if any(not row.get(field, "").strip() for field in fields + ("evidence_ref",)):
-        return False
-    if row[fields[0]].strip().lower() in {"unknown", "uncertain", "unreviewed", "unlabeled"}:
-        return False
-    try:
-        confidence = float(row[fields[1]])
-        datetime.fromisoformat(row[fields[3]].replace("Z", "+00:00"))
-        if not math.isfinite(confidence) or not 0 <= confidence <= 1:
-            return False
-    except ValueError:
-        return False
-    return not region or row.get("region_basis") in {"morphology", "registered_histology", "registered_ihc"}
+    return not review_decision_issues(row, region=region, anatomical=region)
 
 
 def validate_handoff(packet_dir, export_to=None):
@@ -192,5 +176,9 @@ def validate_handoff(packet_dir, export_to=None):
             for split in ("train", "validation", "test"):
                 write_csv(destination / (split + "_truth.csv"), [row for row in truth_rows if row["split"] == split])
         write_json(output / "staging_manifest.json", {"review_status": result, "source_packet": str(root.resolve()),
+                                                     "readiness_sha256": digest(assignment_path) if assignment_path.exists() else None,
+                                                     "source_review_hashes": {str(p.resolve()): digest(p)
+                                                       for key in ready for p in (root / key / "expert_cell_labels_for_review.csv",
+                                                                                 root / key / "cell_regions_for_review.csv")},
                                                      "files": {str(p.relative_to(output)): digest(p) for p in output.rglob("*.csv")}})
     return result

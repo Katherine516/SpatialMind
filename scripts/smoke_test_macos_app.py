@@ -28,6 +28,12 @@ N_CELLS = 300
 
 
 def make_dataset(root: Path) -> Path:
+    import h5py
+    import numpy as np
+    from scipy.sparse import csc_matrix
+    import tifffile
+    import pandas as pd
+
     bundle = root / "Smoke_Section_outs"
     bundle.mkdir(parents=True)
     (bundle / "experiment.xenium").write_text(json.dumps({"run_name": "smoke", "panel_name": "smoke_10g"}))
@@ -35,8 +41,21 @@ def make_dataset(root: Path) -> Path:
         handle.write("cell_id,x_centroid,y_centroid,transcript_counts\n")
         for i in range(N_CELLS):
             handle.write("cell-%d,%.2f,%.2f,%d\n" % (i, (i % 20) * 5.0, (i // 20) * 5.0, 40 + i % 30))
-    for asset in ("cell_feature_matrix.h5", "morphology_focus.ome.tif", "cell_boundaries.parquet"):
-        (bundle / asset).write_bytes(b"\0")
+    values = np.random.RandomState(17).poisson(2, (40, N_CELLS))
+    for i in range(N_CELLS):
+        values[(i % 3) * 10:(i % 3 + 1) * 10, i] += 10
+    matrix = csc_matrix(values)
+    with h5py.File(bundle / "cell_feature_matrix.h5", "w") as handle:
+        group = handle.create_group("matrix")
+        for key, value in (("data", matrix.data), ("indices", matrix.indices), ("indptr", matrix.indptr), ("shape", matrix.shape)):
+            group.create_dataset(key, data=value)
+        group.create_dataset("barcodes", data=np.array([("cell-%d" % i).encode() for i in range(N_CELLS)]))
+        features = group.create_group("features")
+        features.create_dataset("name", data=np.array([("SMOKE_G%d" % i).encode() for i in range(40)]))
+        features.create_dataset("feature_type", data=np.array([b"Gene Expression"] * 40))
+    tifffile.imwrite(bundle / "morphology_focus.ome.tif", np.zeros((128, 128), dtype=np.uint8))
+    pd.DataFrame({"cell_id": ["cell-0"] * 4, "vertex_x": [0., 1., 1., 0.],
+                  "vertex_y": [0., 0., 1., 1.]}).to_parquet(bundle / "cell_boundaries.parquet")
     return bundle
 
 
@@ -195,16 +214,18 @@ def _refusal(state):
 def _assign(state):
     ids = ["cell-%d" % i for i in range(N_CELLS)]
     post("/api/datasets/%s/assign" % state["dataset_id"],
-         {"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2]})
+         {"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2],
+          "reviewer_id": "synthetic-smoke-reviewer", "evidence_ref": "fixture:synthetic-labels"})
     post("/api/datasets/%s/assign" % state["dataset_id"],
-         {"kind": "labels", "value": "T cell", "cell_ids": ids[N_CELLS // 2:]})
+         {"kind": "labels", "value": "T cell", "cell_ids": ids[N_CELLS // 2:],
+          "reviewer_id": "synthetic-smoke-reviewer", "evidence_ref": "fixture:synthetic-labels"})
     bounds = get("/api/datasets/%s/cells" % state["dataset_id"])["bounds"]
     mid = (bounds["y_min"] + bounds["y_max"]) / 2.0
     post("/api/datasets/%s/assign" % state["dataset_id"],
-         {"kind": "regions", "value": "core",
+         {"kind": "regions", "value": "core", "reviewer_id": "synthetic-smoke-reviewer", "evidence_ref": "fixture:synthetic-roi",
           "bounds": {"x0": bounds["x_min"], "y0": bounds["y_min"], "x1": bounds["x_max"], "y1": mid}})
     body = post("/api/datasets/%s/assign" % state["dataset_id"],
-                {"kind": "regions", "value": "edge",
+                {"kind": "regions", "value": "edge", "reviewer_id": "synthetic-smoke-reviewer", "evidence_ref": "fixture:synthetic-roi",
                  "bounds": {"x0": bounds["x_min"], "y0": mid, "x1": bounds["x_max"], "y1": bounds["y_max"]}})
     assert body["gate"]["status"] == "validated_ready", body["gate"]["status"]
     assert (state["bundle"] / "expert_cell_labels.csv").exists(), "no label CSV was written"

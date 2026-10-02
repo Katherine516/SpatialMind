@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 from spatialmind.methods.reliability import apply_calibration_model, fit_claim_reliability_calibration, score_claim_reliability
 from spatialmind.pilot import run_pilot
 from spatialmind.review import validate_claim_truth_table
+from spatialmind.review.claim_calibration import evaluate_reviewed_calibration
 
 
 HUMAN_BRAIN_XENIUM = [
@@ -62,7 +63,14 @@ def main() -> None:
     if args.claim_truth:
         truth_validation = validate_claim_truth_table(args.claim_truth)
         reviewed_records = truth_validation.get("records", [])
-        calibration_model = fit_claim_reliability_calibration(reviewed_records)
+        calibration_evaluation = evaluate_reviewed_calibration(args.claim_truth)
+        _write_json(out / "donor_heldout_calibration.json", calibration_evaluation)
+        if calibration_evaluation["status"] == "donor_heldout_evaluated_not_production_validated":
+            calibration_model = dict(calibration_evaluation["model"],
+                                     evaluation_scope=calibration_evaluation["status"],
+                                     heldout_metrics=calibration_evaluation["metrics"]["test"])
+        else:
+            calibration_model = {"status": "not_fit", "reason": "; ".join(calibration_evaluation["blockers"])}
         records.extend(reviewed_records)
         records = apply_calibration_model(records, calibration_model)
 

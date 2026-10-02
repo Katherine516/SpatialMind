@@ -32,8 +32,8 @@ def check_execution_gate(dataset_path, plan, gate=None, dataset=None):
     )
 
 
-def execute_tool_step(dataset, spec, registry, dataset_path=None, gate=None):
-    """Policy-enforcing execution boundary shared by Studio and the pilot."""
+def effective_tool_call(spec):
+    """Resolve execution policy without mutating the proposed call."""
     params = dict(spec.params)
     if spec.tool_name in GROUPED_TOOLS | {"qc_and_cluster", "spatial_clustering", "spatial_variable_genes"}:
         if params.get("engine") == "prototype" or params.get("strict_engine") is False:
@@ -41,7 +41,13 @@ def execute_tool_step(dataset, spec, registry, dataset_path=None, gate=None):
         params["strict_engine"] = True
     if spec.tool_name in GROUPED_TOOLS:
         params["group_key"] = normalize_group_key(params)
-    effective = ToolCallSpec(spec.tool_name, params, requires=spec.dependency_keys())
+    return ToolCallSpec(spec.tool_name, params, requires=spec.dependency_keys())
+
+
+def execute_tool_step(dataset, spec, registry, dataset_path=None, gate=None):
+    """Policy-enforcing execution boundary shared by all supported entry points."""
+    effective = effective_tool_call(spec)
+    params = effective.params
     tool = registry.get(spec.tool_name)
     if tool.capability == "unavailable":
         raise ToolExecutionError("%s is unavailable." % spec.tool_name)
@@ -49,7 +55,12 @@ def execute_tool_step(dataset, spec, registry, dataset_path=None, gate=None):
     unmet = registry.check_preconditions(spec.tool_name, dataset)
     if unmet:
         raise MissingPreconditionError("%s: %s" % (spec.tool_name, "; ".join(unmet)))
-    return tool.run(dataset, params)
+    result = tool.run(dataset, params)
+    result.metrics["execution_policy"] = {
+        "boundary": "agent.runtime.execute_tool_step",
+        "effective_parameters": {key: value for key, value in params.items() if key != "reference_dataset"},
+    }
+    return result
 
 
 @dataclass

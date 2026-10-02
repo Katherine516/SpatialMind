@@ -190,6 +190,9 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
 .note.warn{background:var(--warn-soft);color:var(--warn)}
 
 /* tools */
+.review-fields{display:grid;gap:8px;margin-bottom:10px;min-width:0}
+.review-fields label{display:grid;gap:4px;font-size:12px;min-width:0}
+.review-fields input,.review-fields select{display:block;width:100%;min-width:0;box-sizing:border-box}
 .filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
 .tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:9px}
 .tool{border:1px solid var(--line);border-radius:7px;padding:11px;background:var(--surface);
@@ -1056,8 +1059,12 @@ function renderReview(){
         '<div class="covrow" style="margin-top:10px"><span>Region coverage</span><b id="covR"></b></div><div class="meter" id="meterR"><b></b></div>' +
         '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:8px">gate threshold 70.0% each</div>' +
       '</div>' +
-      '<div class="blk"><h5 id="assignTitle">Assign reviewed label</h5>' +
+      '<div class="blk"><h5 id="assignTitle">Assign label</h5>' +
         '<div style="display:flex;gap:6px;margin-bottom:8px"><input id="assignValue" placeholder="Astrocyte" style="flex:1"><button class="btn pri" id="assignGo">Apply</button></div>' +
+        '<div class="review-fields"><label>Reviewer ID<input id="reviewerId" autocomplete="off"></label>' +
+        '<label>Evidence reference<input id="reviewEvidence" placeholder="Slide / ROI / marker evidence"></label>' +
+        '<label>Confidence<input id="reviewConfidence" type="number" min="0" max="1" step="0.05" value="0.9"></label>' +
+        '<label>Region basis<select id="reviewBasis"><option value="user_roi">User-defined ROI</option><option value="morphology">Morphology</option><option value="registered_histology">Registered histology</option><option value="registered_ihc">Registered IHC</option></select></label></div>' +
         '<div class="chips" id="assignChips"></div>' +
         '<div class="mono" style="font-size:10.5px;color:var(--ink-3);margin-top:8px" id="assignNote"></div>' +
       '</div>' +
@@ -1083,7 +1090,7 @@ function renderReview(){
   $("#mapHint").textContent = S.mode === "label"
     ? "Click a cell to select its whole cluster, then apply a label. Assignment covers every cell in the cluster, not just the drawn sample."
     : "Drag a rectangle over the tissue, then name the region. Every cell inside is written, including cells not drawn.";
-  $("#assignTitle").textContent = S.mode === "label" ? "Assign reviewed label" : "Name this region";
+  $("#assignTitle").textContent = S.mode === "label" ? "Assign label" : "Name this region";
   $("#assignNote").textContent = S.mode === "label"
     ? "Writes expert_cell_labels.csv. Cluster colours are data-derived groups, never cell types."
     : "Writes cell_regions.csv. Regions are yours to define; the gate needs at least two.";
@@ -1246,7 +1253,9 @@ function onCanvasUp(){
 async function applyAssignment(){
   const value = ($("#assignValue").value || "").trim();
   if (!value){ toast("Type a name, or pick one of the suggestions.", true); return; }
-  const payload = {kind: S.mode === "label" ? "labels" : "regions", value: value, confidence: 0.9};
+  const payload = {kind: S.mode === "label" ? "labels" : "regions", value: value,
+    confidence: Number($("#reviewConfidence").value), reviewer_id: $("#reviewerId").value.trim(),
+    evidence_ref: $("#reviewEvidence").value.trim(), region_basis: $("#reviewBasis").value};
   if (S.mode === "label"){
     if (!S.selCluster){ toast("Click a cell on the map to select its cluster first.", true); return; }
     payload.cluster = S.selCluster;
@@ -1260,7 +1269,8 @@ async function applyAssignment(){
     S.detail.region_coverage = result.region_coverage;
     S.detail.gate = result.gate;
     S.gateOpen = result.gate.status === "validated_ready";
-    toast(result.assignment.cells_written.toLocaleString() + " cells written as “" + value + "” (" + result.scope + ").");
+    const reviewed = payload.reviewer_id && payload.evidence_ref;
+    toast(result.assignment.cells_written.toLocaleString() + " cells saved as " + (reviewed ? "review decisions" : "candidates") + ": " + value + ".");
     $("#assignValue").value = "";
     S.rect = null;
     await loadCells(); await loadTools(); await loadResources();

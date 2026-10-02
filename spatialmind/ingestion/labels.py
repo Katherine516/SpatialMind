@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from ..schemas import NON_EXPRESSION_FEATURE_NAMES, SpatialDataset
+from ..contracts.review import review_decision_issues
 
 
 CELL_ID_KEYS = ("cell_id", "cell", "barcode", "cell_barcode", "spot_id", "id")
@@ -99,6 +100,8 @@ class LabelApplicationReport:
     assignment_scopes: Dict[str, int] = field(default_factory=dict)
     confidence_summary: Dict[str, float] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    rejected_rows: int = 0
+    rejection_reasons: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -137,6 +140,8 @@ class RegionApplicationReport:
     assignment_scopes: Dict[str, int] = field(default_factory=dict)
     confidence_summary: Dict[str, float] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    rejected_rows: int = 0
+    rejection_reasons: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -278,7 +283,10 @@ def apply_external_label_table(
     confidence_by_cell: Dict[str, float] = {}
     scope_by_cell: Dict[str, str] = {}
     reviewer_by_cell: Dict[str, str] = {}
-    for row in rows:
+    accepted_rows, rejected = _accepted_review_rows(rows, resolved_cell_key, resolved_label_key,
+                                                   resolved_confidence_key)
+    provenance_by_cell = {_normalize_cell_id(row.get(resolved_cell_key, "")): row for row in accepted_rows}
+    for row in accepted_rows:
         cell_id = _normalize_cell_id(row.get(resolved_cell_key, ""))
         label = str(row.get(resolved_label_key, "")).strip()
         if not cell_id or not label:
@@ -313,6 +321,7 @@ def apply_external_label_table(
             "label": label, "source_path": label_path,
             "reviewer_id": reviewer_by_cell.get(cell_id, ""),
             "assignment_scope": scope_by_cell.get(cell_id, ""),
+            **_review_provenance(provenance_by_cell, cell_id),
         }
         applied_labels.add(label)
         matched += 1
@@ -337,7 +346,11 @@ def apply_external_label_table(
         assignment_scopes=dict(applied_scopes),
         reviewers=dict(applied_reviewers),
         confidence_summary=_confidence_summary(confidences),
+        rejected_rows=len(rows) - len(accepted_rows),
+        rejection_reasons=dict(rejected),
     )
+    if rejected:
+        report.warnings.append("Rejected unapproved or invalid review rows: %s." % dict(rejected))
     if matched < len(dataset.records):
         report.warnings.append("Matched labels for %d/%d loaded cells." % (matched, len(dataset.records)))
     if not matched:
@@ -374,12 +387,15 @@ def apply_external_region_table(
         return report
 
     resolved_scope_key = _choose_key(keys, SCOPE_KEYS)
-    resolved_reviewer_key = _choose_key(keys, REVIEWER_KEYS)
+    resolved_reviewer_key = _choose_key(keys, ("region_reviewer_id",) + REVIEWER_KEYS)
     region_by_cell: Dict[str, str] = {}
     confidence_by_cell: Dict[str, float] = {}
     scope_by_cell: Dict[str, str] = {}
     reviewer_by_cell: Dict[str, str] = {}
-    for row in rows:
+    accepted_rows, rejected = _accepted_review_rows(rows, resolved_cell_key, resolved_region_key,
+                                                   resolved_confidence_key, region=True)
+    provenance_by_cell = {_normalize_cell_id(row.get(resolved_cell_key, "")): row for row in accepted_rows}
+    for row in accepted_rows:
         cell_id = _normalize_cell_id(row.get(resolved_cell_key, ""))
         region = str(row.get(resolved_region_key, "")).strip()
         if not cell_id or not region:
@@ -414,6 +430,7 @@ def apply_external_region_table(
             "region": region, "source_path": region_path,
             "reviewer_id": reviewer_by_cell.get(cell_id, ""),
             "assignment_scope": scope_by_cell.get(cell_id, ""),
+            **_review_provenance(provenance_by_cell, cell_id),
         }
         applied_regions.add(region)
         matched += 1
@@ -438,7 +455,11 @@ def apply_external_region_table(
         assignment_scopes=dict(applied_scopes),
         reviewers=dict(applied_reviewers),
         confidence_summary=_confidence_summary(confidences),
+        rejected_rows=len(rows) - len(accepted_rows),
+        rejection_reasons=dict(rejected),
     )
+    if rejected:
+        report.warnings.append("Rejected unapproved or invalid review rows: %s." % dict(rejected))
     if matched < len(dataset.records):
         report.warnings.append("Matched regions for %d/%d loaded cells." % (matched, len(dataset.records)))
     if not matched:
@@ -450,6 +471,32 @@ def apply_external_region_table(
     return report
 
 
+def _accepted_review_rows(rows, cell_key, value_key, confidence_key, region=False):
+    counts = Counter(_normalize_cell_id(row.get(cell_key, "")) for row in rows)
+    accepted, reasons = [], Counter()
+    for row in rows:
+        canonical = dict(row)
+        canonical["region" if region else "expert_label"] = row.get(value_key, "")
+        canonical["region_confidence" if region else "confidence"] = row.get(confidence_key, "")
+        canonical["reviewer_id"] = row.get(_choose_key(row.keys(), REVIEWER_KEYS), "")
+        issues = review_decision_issues(canonical, region=region)
+        cell_id = _normalize_cell_id(row.get(cell_key, ""))
+        if not cell_id or counts[cell_id] != 1:
+            issues.append("missing_or_duplicate_cell_id")
+        if issues:
+            reasons.update(issues)
+        else:
+            accepted.append(row)
+    return accepted, reasons
+
+
+def _review_provenance(rows, cell_id):
+    # Called with a dictionary index by the intake path, not a per-cell file read.
+    row = rows.get(cell_id, {})
+    return {key: row.get(key, "") for key in
+            ("review_status", "reviewed_at", "region_reviewed_at", "region_basis", "evidence_ref", "cl_id")}
+
+
 def apply_best_available_regions(
     dataset: SpatialDataset,
     dataset_path: str,
@@ -457,10 +504,12 @@ def apply_best_available_regions(
 ) -> RegionApplicationReport:
     dataset.metadata["reviewed_cell_regions"] = {}
     region_tables = discover_region_label_tables(dataset_path, extra_region_paths)
+    attempted = []
     for region_table in region_tables:
         report = apply_external_region_table(dataset, region_table)
         if report.matched_cells:
             return report
+        attempted.append(report)
     report = RegionApplicationReport(
         status="missing_user_regions",
         method="none",
@@ -468,6 +517,11 @@ def apply_best_available_regions(
         region_counts=dict(Counter(record.region or "unassigned" for record in dataset.records)),
         warnings=["No user-provided region label table was found."],
     )
+    if attempted:
+        report.status = "blocked_unapproved_regions"
+        report.warnings = [warning for item in attempted for warning in item.warnings]
+        report.rejected_rows = sum(item.rejected_rows for item in attempted)
+        report.rejection_reasons = dict(sum((Counter(item.rejection_reasons) for item in attempted), Counter()))
     _store_region_report(dataset, report)
     return report
 
@@ -521,10 +575,12 @@ def apply_best_available_labels(
 ) -> LabelApplicationReport:
     dataset.metadata["reviewed_cell_labels"] = {}
     label_tables = discover_label_tables(dataset_path, extra_label_paths)
+    attempted = []
     for label_table in label_tables:
         report = apply_external_label_table(dataset, label_table)
         if report.matched_cells:
             return report
+        attempted.append(report)
     if fallback == "breast_marker_rule":
         return apply_breast_marker_rule_labels(dataset)
     report = LabelApplicationReport(
@@ -534,6 +590,11 @@ def apply_best_available_labels(
         label_counts=dict(Counter(record.cell_type for record in dataset.records)),
         warnings=["No external expert or reference-transferred label table was found."],
     )
+    if attempted:
+        report.status = "blocked_unapproved_labels"
+        report.warnings = [warning for item in attempted for warning in item.warnings]
+        report.rejected_rows = sum(item.rejected_rows for item in attempted)
+        report.rejection_reasons = dict(sum((Counter(item.rejection_reasons) for item in attempted), Counter()))
     _store_label_report(dataset, report)
     return report
 
@@ -608,11 +669,7 @@ def build_xenium_label_intake_report(
     elif not label_report.confidence_summary:
         warnings.append("Expert label confidence was not provided; pilot can run, but review confidence is recommended.")
 
-    biological_labels = {
-        record.cell_type
-        for record in dataset.records
-        if record.cell_type and record.cell_type.lower() not in {"unannotated", "unannotated cell", "unlabeled", "unknown"}
-    }
+    biological_labels = set(label_report.reviewed_labels)
     biological_label_count = len(biological_labels) if label_report.status == "expert_labels_applied" else 0
     if biological_label_count < min_biological_labels:
         blockers.append("Only %d biological label classes were validated; at least %d are required." % (biological_label_count, min_biological_labels))
@@ -627,7 +684,7 @@ def build_xenium_label_intake_report(
     elif not region_report.confidence_summary:
         warnings.append("Region confidence was not provided; pilot can run, but ROI confidence is recommended.")
 
-    user_regions = {record.region for record in dataset.records if record.region}
+    user_regions = set(region_report.reviewed_regions)
     user_region_count = len(user_regions) if region_report.status == "user_regions_applied" else 0
     if not allow_single_region and user_region_count < min_user_regions:
         blockers.append("Only %d user region classes were validated; at least %d are required." % (user_region_count, min_user_regions))

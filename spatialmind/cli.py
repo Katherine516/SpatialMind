@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report delivery format. PDF output retains an HTML source for auditability.",
     )
     parser.add_argument("--max-records", type=int, default=5000, help="Maximum cells loaded for Xenium review runs.")
+    parser.add_argument("--expression-semantics", choices=["auto", "raw_counts", "log_normalized"], default="auto",
+                        help="Declare H5AD X semantics when neither counts nor log1p metadata is present.")
     parser.add_argument("--full-section", action="store_true", help="Load all Xenium cells for final validated inference.")
     parser.add_argument("--review-max-records", type=int, default=0, help="Rows written to Xenium review templates.")
     parser.add_argument("--min-label-coverage", type=float, default=DEFAULT_MIN_LABEL_COVERAGE)
@@ -70,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    from .gatekeeper import validate_coverage_thresholds
+    try:
+        validate_coverage_thresholds(args.min_label_coverage, args.min_region_coverage)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.inspect_data:
         report_path = write_dataset_report(args.data, args.inspect_out)
         inspections = inspect_data_root(args.data)
@@ -96,7 +103,8 @@ def main() -> None:
             parser.error("stored run has no source_path in provenance")
         provider = build_llm_provider(args.llm_provider, model=args.llm_model)
         agent = SpatialMindAgent(output_root=args.out, memory_root=args.memory, llm_provider=provider)
-        run = agent.run(stored.query, data_path, report_format=args.report_format)
+        run = agent.run(stored.query, data_path, report_format=args.report_format,
+                        expression_semantics=args.expression_semantics)
         print("Replayed run: %s" % run.run_id)
         _print_reports(run)
         return
@@ -133,7 +141,8 @@ def main() -> None:
         return
     provider = build_llm_provider(args.llm_provider, model=args.llm_model)
     agent = SpatialMindAgent(output_root=args.out, memory_root=args.memory, llm_provider=provider)
-    run = agent.run(args.prompt, args.data, report_format=args.report_format)
+    run = agent.run(args.prompt, args.data, report_format=args.report_format,
+                    expression_semantics=args.expression_semantics)
     print("Run ID: %s" % run.run_id)
     _print_reports(run)
     print("Provenance: %s" % os.path.abspath(run.provenance_path))

@@ -1424,18 +1424,26 @@ def _knn_reference_label_transfer(
     neighbors = max(1, min(int(params.get("n_neighbors", 15) or 15), len(reference_records)))
     confidence_threshold = float(params.get("confidence_threshold", 0.6) or 0.6)
 
-    def matrix(records: List[Any], lookup: Dict[str, str]) -> Any:
+    def matrix(source: SpatialDataset, records: List[Any], lookup: Dict[str, str]) -> Any:
         rows = []
         for record in records:
-            values = [max(float(record.genes.get(lookup.get(name, name), 0.0)), 0.0) for name in shared]
+            # Prefer actual source counts. Already-log-normalized references
+            # have no counts; invert log1p before applying shared-panel scaling.
+            use_counts = source.metadata.get("source_value_semantics") == "raw_counts"
+            genes = record.raw_genes if use_counts and record.raw_genes else record.genes
+            values = [float(genes.get(lookup.get(name, name), 0.0)) for name in shared]
+            if source.normalized and not use_counts:
+                values = np.expm1(values).tolist()
+            if not np.isfinite(values).all() or any(value < 0 for value in values):
+                raise MissingPreconditionError("Label transfer requires finite nonnegative expression.")
             total = sum(values)
             if total > 0:
                 values = [float(np.log1p(value / total * 1e4)) for value in values]
             rows.append(values)
         return np.asarray(rows, dtype=float)
 
-    reference_matrix = matrix(reference_records, {gene.upper(): gene for gene in reference.genes})
-    target_matrix = matrix(list(dataset.records), {gene.upper(): gene for gene in dataset.genes})
+    reference_matrix = matrix(reference, reference_records, {gene.upper(): gene for gene in reference.genes})
+    target_matrix = matrix(dataset, list(dataset.records), {gene.upper(): gene for gene in dataset.genes})
     classifier = KNeighborsClassifier(n_neighbors=neighbors, weights="distance")
     classifier.fit(reference_matrix, [record.cell_type for record in reference_records])
     probabilities = classifier.predict_proba(target_matrix)

@@ -23,7 +23,7 @@ def create_app():
 
     try:
         from fastapi import FastAPI, HTTPException
-        from pydantic import BaseModel
+        from pydantic import BaseModel, Field
     except ImportError as exc:
         raise RuntimeError("Install fastapi and pydantic to enable the API layer.") from exc
 
@@ -37,11 +37,12 @@ def create_app():
         llm_model: str = ""
         qc_approved: bool = False
         report_format: Literal["html", "pdf", "both"] = "html"
+        expression_semantics: Literal["auto", "raw_counts", "log_normalized"] = "auto"
         max_records: int = 5000
         full_section: bool = False
         review_max_records: int = 0
-        min_label_coverage: float = DEFAULT_MIN_LABEL_COVERAGE
-        min_region_coverage: float = DEFAULT_MIN_REGION_COVERAGE
+        min_label_coverage: float = Field(DEFAULT_MIN_LABEL_COVERAGE, ge=0, le=1)
+        min_region_coverage: float = Field(DEFAULT_MIN_REGION_COVERAGE, ge=0, le=1)
         allow_single_region: bool = False
         allow_sampled_validation: bool = False
         acknowledge_low_coverage: bool = False
@@ -103,7 +104,8 @@ def create_app():
                 raise HTTPException(status_code=400, detail=str(exc))
         provider = build_llm_provider(request.llm_provider, model=request.llm_model)
         agent = SpatialMindAgent(output_root=request.output_root, llm_provider=provider)
-        run = agent.run(request.prompt, request.data_path, report_format=request.report_format)
+        run = agent.run(request.prompt, request.data_path, report_format=request.report_format,
+                        expression_semantics=request.expression_semantics)
         return {
             "run_id": run.run_id,
             "report_path": run.report_path,
@@ -116,7 +118,8 @@ def create_app():
     def query_session(session_id: str, request: RunRequest) -> Dict[str, object]:
         if not (request.qc_approved or qc_gate.is_approved(session_id)):
             raise HTTPException(status_code=403, detail="QC must be approved before analysis.")
-        response = SpatialAgent().run(request.prompt, request.data_path, session_id=session_id)
+        response = SpatialAgent().run(request.prompt, request.data_path, session_id=session_id,
+                                      expression_semantics=request.expression_semantics)
         return _jsonable(response)
 
     @app.post("/sessions/{session_id}/approve-qc")

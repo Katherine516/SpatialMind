@@ -4,16 +4,24 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-09-28. Executed unit tests 561/561; import-linter 6/6; held-out annotation and brain review handoff verified in [the benchmark record](annotation_benchmark_20260927.md). Earlier legacy eval 16/16, MVP eval 13/13, and workflow replay are recorded in [the correctness release](correctness_release_20260927.md), separately from discovery counts. The ordered brain review gates and breast-only rare-class experiment are documented in [the brain review execution record](brain_review_execution.md).
+Last verified: 2026-09-30. Executed unit tests 586/586, import-linter 6/6,
+legacy routing evaluation 16/16 and MVP evaluation 13/13. These are software
+checks, not brain biological accuracy. Current execution logs and the sampled
+glioblastoma example are in `outputs/reliability_boundary_20260930/`.
+Historical held-out annotation results are in [the benchmark record](annotation_benchmark_20260927.md),
+and were not rescored or promoted in this upgrade. The ordered brain review gates
+and breast-only rare-class experiment are documented in [the brain review execution record](brain_review_execution.md).
 
-Inventory counts: 561 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
+Inventory counts: 586 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
 
 ## The one-sentence version
 
 SpatialMind ingests a Xenium output bundle, prepares review artifacts, and refuses
 to make biological claims until a human supplies expert cell labels and tissue
-regions — at which point it runs a fixed, validated tool plan and reports every
-claim with a per-claim reliability score.
+regions. Accepted review evidence unlocks label-dependent tool execution; this
+is not proof of population-level biological validity. Reports attach per-claim
+reliability scores, which remain heuristic until reviewed, donor-held-out
+calibration supports interpreting them as probabilities.
 
 ## The six tiers
 
@@ -61,32 +69,24 @@ are shared by tools and presentation. See the
 [September 27 correctness release](correctness_release_20260927.md) for regression
 cases, real-data measurements, and the biological validation still required.
 
-### Legacy components
+### Shared Execution and Compatibility
 
-Two tier-2 modules are v1 survivors, now marked as such in their own docstrings:
+`agent.planning` owns typed plans and parameter-aware dependencies; `app.planner`
+re-exports its API for compatibility. Supported executors use
+`agent.runtime.execute_tool_step`, which resolves group aliases, requires real
+backends, checks capabilities/preconditions and the effective gate, and records
+effective parameters in each result.
 
-| Module | Superseded by | Still reachable from |
-| --- | --- | --- |
-| `algorithms.py` (`AlgorithmEngine`, 3 tools) | `tools` (`ToolRegistry`, 30 tools) | `SpatialMindAgent` |
-| `planner.py` (`LLMReasoningLayer`) | `agent.runtime` + `app.planner` | `SpatialMindAgent` |
+`SpatialMindAgent` retains v1 intent parsing for saved prompts, but maps intents
+to canonical annotation, neighborhood enrichment and gene-overlay tools. Repeated
+gene overlays have numbered artifacts. `AlgorithmEngine` remains a compatibility
+module, not an active backend. The local loop and legacy intent parser are not
+yet a single planning vocabulary; the shared executor prevents the remaining
+planning differences from bypassing policy.
 
-Both are reachable only through `SpatialMindAgent`, and only with **non-Xenium**
-data: the CLI and `POST /runs` each check the data type first and route a Xenium
-bundle to `run_pilot`. `--replay-run-id` adds no route of its own, since only the
-orchestrator writes the `source_path` that branch reads.
-
-So the legacy stack is confined to the demo and non-Xenium formats. It is still a
-parallel stack, and `DataIngestionLayer.load` still accepts a Xenium directory,
-which is why a direct library call had to be gated too.
-
-The tool sets are disjoint: nothing in `AlgorithmEngine` appears in
-`ToolRegistry`. That is why `gatekeeper` classifies two of them as label-gated
-*by name* — preconditions cannot do it, because these tools are not in the
-registry that carries preconditions.
-
-Neither is deleted, because removing them means deciding what `SpatialMindAgent`
-should run instead. That is the parallel-stacks question: four execution paths
-and three tool registries, alive because nothing ever forced a choice.
+Old colocalization reports are not numerically equivalent to real Squidpy
+enrichment; regenerate them before comparison. Non-Xenium biological runs still
+record `gate_not_evaluated`, never an automatic validated status.
 
 ### Three self-descriptions that disagreed
 
@@ -156,11 +156,20 @@ Two details that matter:
 
 The agent looks for two reviewer-supplied files inside the Xenium folder:
 
-- `expert_cell_labels.csv` — `cell_id,expert_label,confidence,notes`
-- `cell_regions.csv` — `cell_id,region,region_confidence,notes`
+- `expert_cell_labels.csv`: cell_id, expert_label, confidence, reviewer_id,
+  review_status, reviewed_at, evidence_ref; optional cl_id and notes.
+- `cell_regions.csv`: cell_id, region, region_confidence, reviewer_id (or
+  region_reviewer_id), review_status, reviewed_at (or region_reviewed_at),
+  evidence_ref, region_basis; optional notes.
 
 Both are matched by `cell_id`. Absent them, the loader's conservative marker-rule
 labels are used **for review display only** and are never treated as truth.
+
+Approval must be explicit (`reviewed`/`approved`), with an identified reviewer,
+valid ISO date, finite confidence in [0,1] and evidence. Duplicate IDs are refused.
+General user ROI decisions require an allowed basis; specialist brain benchmark
+regions additionally require anatomical evidence, not merely user ROI membership.
+These checks validate recorded provenance, not credentials or biological truth.
 
 ## Stage 4: The gate
 

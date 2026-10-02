@@ -431,6 +431,8 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         # the gate cannot ask who reviewed a section if nothing ever wrote it
         # down.
         reviewer_id: str = ""
+        evidence_ref: str = ""
+        region_basis: str = "user_roi"
 
     class ClearRequest(BaseModel):
         kind: str
@@ -588,6 +590,7 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
                 entry.path, request.kind, cell_ids, request.value,
                 confidence=request.confidence, notes=request.notes, scope=scope_key,
                 reviewer_id=request.reviewer_id,
+                evidence_ref=request.evidence_ref, region_basis=request.region_basis,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))

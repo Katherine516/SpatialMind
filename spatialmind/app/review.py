@@ -23,6 +23,15 @@ import csv
 import hashlib
 import os
 import tempfile
+import json
+import shutil
+from datetime import datetime, timezone
+from math import isfinite
+from threading import RLock
+from uuid import uuid4
+from functools import wraps
+
+from ..contracts.review import review_decision_issues
 
 from . import config
 from .catalog import resolve_xenium_root
@@ -45,6 +54,17 @@ REGION_FILENAME = "cell_regions.csv"
 # resolve columns by name and a table written before this existed still loads.
 LABEL_FIELDS = ["cell_id", "expert_label", "confidence", "notes", "assignment_scope", "reviewer_id"]
 REGION_FIELDS = ["cell_id", "region", "region_confidence", "notes", "assignment_scope", "reviewer_id"]
+LABEL_FIELDS += ["review_status", "reviewed_at", "evidence_ref", "cl_id"]
+REGION_FIELDS += ["review_status", "reviewed_at", "evidence_ref", "region_basis"]
+_WRITE_LOCK = RLock()
+
+
+def _serialized_write(function):
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _WRITE_LOCK:
+            return function(*args, **kwargs)
+    return locked
 
 # Used when a caller supplies nothing. Deliberately not a person's name and
 # deliberately not blank: "someone using this app, unidentified" is a true
@@ -150,10 +170,11 @@ def read_table(dataset_path: str, kind: str) -> Dict[str, Dict[str, str]]:
         for row in csv.DictReader(handle):
             cell_id = str(row.get("cell_id", "")).strip()
             if cell_id:
-                rows[cell_id] = {key: str(row.get(key, "") or "") for key in KINDS[kind][1]}
+                rows[cell_id] = {key: str(value or "") for key, value in row.items() if key is not None}
     return rows
 
 
+@_serialized_write
 def assign(
     dataset_path: str,
     kind: str,
@@ -163,6 +184,8 @@ def assign(
     notes: str = "",
     scope: str = "cells",
     reviewer_id: str = "",
+    evidence_ref: str = "",
+    region_basis: str = "user_roi",
 ) -> AssignmentResult:
     """Merge one assignment into the table and rewrite it atomically."""
     if kind not in KINDS:
@@ -172,6 +195,8 @@ def assign(
     value = str(value).strip()
     if not value:
         raise ValueError("An assignment needs a non-empty %s." % value_field)
+    if not isfinite(float(confidence)) or not 0 <= float(confidence) <= 1:
+        raise ValueError("Confidence must be finite and between zero and one.")
 
     rows = read_table(dataset_path, kind)
     written = 0
@@ -179,7 +204,8 @@ def assign(
         cell_id = str(cell_id).strip()
         if not cell_id:
             continue
-        rows[cell_id] = {
+        previous = rows.get(cell_id, {})
+        row = dict(previous, **{
             "cell_id": cell_id,
             value_field: value,
             confidence_field: "%.2f" % float(confidence),
@@ -188,7 +214,20 @@ def assign(
             # One scope string per assignment, identical across every row it
             # wrote, so the count of distinct scopes is the count of decisions.
             "assignment_scope": scope,
-        }
+            "review_status": "reviewed" if reviewer_id.strip() and evidence_ref.strip() else "candidate",
+            "reviewed_at": datetime.now(timezone.utc).isoformat() if reviewer_id.strip() and evidence_ref.strip() else "",
+            "evidence_ref": evidence_ref.strip(),
+        })
+        if kind == "regions":
+            row.update(region_basis=region_basis, region_reviewer_id=row["reviewer_id"],
+                       region_reviewed_at=row["reviewed_at"])
+        elif previous.get(value_field) != value:
+            for key in ("cl_id", "ontology_id"):
+                if key in row:
+                    row[key] = ""
+        if review_decision_issues(row, region=kind == "regions"):
+            row["review_status"] = "candidate"
+        rows[cell_id] = row
         written += 1
 
     path = table_path(dataset_path, kind)
@@ -204,6 +243,7 @@ def assign(
     )
 
 
+@_serialized_write
 def unassign(dataset_path: str, kind: str, cell_ids: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     """Drop specific cells, or delete the table when no cells are named."""
     filename, fields, _ = KINDS[kind]
@@ -211,6 +251,7 @@ def unassign(dataset_path: str, kind: str, cell_ids: Optional[Iterable[str]] = N
     if cell_ids is None:
         existed = path.exists()
         if existed:
+            _write_atomic(path, fields, {})
             path.unlink()
         return {"kind": kind, "cleared": existed, "rows_total": 0, "path": str(path)}
     rows = read_table(dataset_path, kind)
@@ -219,6 +260,7 @@ def unassign(dataset_path: str, kind: str, cell_ids: Optional[Iterable[str]] = N
     if rows:
         _write_atomic(path, fields, rows)
     elif path.exists():
+        _write_atomic(path, fields, {})
         path.unlink()
     return {"kind": kind, "cleared": False, "rows_total": len(rows), "path": str(path)}
 
@@ -233,7 +275,8 @@ def coverage(dataset_path: str, kind: str, known_cell_ids: Iterable[str]) -> Dic
     known = set(known_cell_ids)
     total = len(known)
     value_field = KINDS[kind][2]
-    matched = [row for cell_id, row in rows.items() if cell_id in known and row.get(value_field)]
+    matched = [row for cell_id, row in rows.items() if cell_id in known and row.get(value_field)
+               and not review_decision_issues(row, region=kind == "regions")]
     values: Dict[str, int] = {}
     for row in matched:
         value = row[value_field]
@@ -247,6 +290,8 @@ def coverage(dataset_path: str, kind: str, known_cell_ids: Iterable[str]) -> Dic
         "coverage": round(len(matched) / float(max(total, 1)), 4),
         "values": dict(sorted(values.items(), key=lambda kv: -kv[1])),
         "exists": table_path(dataset_path, kind).exists(),
+        "candidate_rows": sum(bool(row.get(value_field)) and bool(review_decision_issues(row, region=kind == "regions"))
+                              for cell_id, row in rows.items() if cell_id in known),
     }
 
 
@@ -275,6 +320,13 @@ def _write_atomic(path: Path, fields: List[str], rows: Dict[str, Dict[str, str]]
 
 
 def _write_atomic_unguarded(path: Path, fields: List[str], rows: Dict[str, Dict[str, str]]) -> None:
+    fields = list(dict.fromkeys(fields + [key for row in rows.values() for key in row]))
+    history = path.parent / ".spatialmind_review_history" / path.stem
+    history.mkdir(parents=True, exist_ok=True)
+    revision = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_" + uuid4().hex[:8]
+    old_hash = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+    if path.exists():
+        shutil.copy2(path, history / (revision + ".csv"))
     handle = tempfile.NamedTemporaryFile(
         "w", newline="", encoding="utf-8", dir=str(path.parent), prefix=".%s." % path.name, delete=False
     )
@@ -291,6 +343,13 @@ def _write_atomic_unguarded(path: Path, fields: List[str], rows: Dict[str, Dict[
         # bundle and get read by other tools and other accounts, so give them the
         # ordinary file mode the umask would have produced.
         os.chmod(handle.name, 0o666 & ~_umask())
+        event = {"revision": revision, "operation": "save" if rows else "clear", "table": path.name,
+                 "previous_sha256": old_hash, "sha256": hashlib.sha256(Path(handle.name).read_bytes()).hexdigest(),
+                 "state": "prepared_verify_current_table_hash_to_confirm_application",
+                 "rows": len(rows), "reviewers": sorted({row.get("reviewer_id", "") for row in rows.values()})}
+        # Persist provenance before committing the table. A failed journal write
+        # must never leave a changed table reported to the reviewer as unsaved.
+        (history / (revision + ".json")).write_text(json.dumps(event, indent=2) + "\n", encoding="utf-8")
         os.replace(handle.name, str(path))
     except Exception:
         handle.close()

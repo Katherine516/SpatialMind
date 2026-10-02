@@ -154,14 +154,14 @@ class BatchIngestionReport:
 class DataIngestionLayer:
     """Loads raw spatial omics sources into the agent's unified dataset contract."""
 
-    def load(self, path: str, sample_id: Optional[str] = None) -> SpatialDataset:
+    def load(self, path: str, sample_id: Optional[str] = None, expression_semantics: str = "auto") -> SpatialDataset:
         data_type = infer_data_type(path)
         if data_type == "manifest_json":
             return self.load_manifest(path, sample_id=sample_id)
         if data_type in TABLE_TYPES:
             return self.load_csv(path, sample_id=sample_id, data_type=data_type)
         if data_type == "h5ad_anndata":
-            return self.load_h5ad(path, sample_id=sample_id)
+            return self.load_h5ad(path, sample_id=sample_id, expression_semantics=expression_semantics)
         if data_type == "xenium_experiment_file":
             return self.load_xenium_directory(path, sample_id=sample_id)
         if data_type == "xenium_directory":
@@ -269,6 +269,7 @@ class DataIngestionLayer:
         max_features_per_record: int = 200,
         require_spatial: bool = True,
         backed: bool = True,
+        expression_semantics: str = "auto",
     ) -> SpatialDataset:
         try:
             import anndata as ad  # type: ignore
@@ -289,6 +290,7 @@ class DataIngestionLayer:
                 max_records=max_records,
                 max_features_per_record=max_features_per_record,
                 require_spatial=require_spatial,
+                expression_semantics=expression_semantics,
             )
         finally:
             if read_mode == "backed":
@@ -307,6 +309,7 @@ class DataIngestionLayer:
         max_records: int,
         max_features_per_record: int,
         require_spatial: bool,
+        expression_semantics: str = "auto",
     ) -> SpatialDataset:
         if adata.n_obs == 0:
             raise IngestionValidationError("H5AD contains no observations: %s" % path)
@@ -331,12 +334,22 @@ class DataIngestionLayer:
         inferred_sample = sample_id or _infer_sample_id_from_obs(adata.obs, selected_indices) or Path(path).stem
         # One batched read beats thousands of single-row reads, especially backed.
         counts_layer = _choose_h5ad_counts_layer(adata)
+        from .expression import resolve_expression_semantics
+        try:
+            semantics = resolve_expression_semantics(
+                expression_semantics, counts_layer, "log1p" in adata.uns,
+                (adata.uns.get("spatialmind") or {}).get("expression_semantics"),
+                (adata.uns.get("log1p") or {}).get("base"))
+        except ValueError as exc:
+            raise IngestionValidationError(str(exc)) from exc
         batch = _fetch_h5ad_rows(adata, selected_indices, layer_key=counts_layer)
         for position, index in enumerate(selected_indices):
             coord = coords[index]
             matrix = adata.layers[counts_layer] if counts_layer else adata.X
             row = matrix[index] if batch is None else batch[position]
             features = _matrix_row_to_features(row, var_names, max_features_per_record=max_features_per_record)
+            if any(not math.isfinite(value) or value < 0 for value in features.values()):
+                raise IngestionValidationError("Counts and log-normalized expression must be finite and nonnegative.")
             cell_type = "Unannotated"
             if annotation:
                 cell_type = str(adata.obs.iloc[index][annotation])
@@ -385,8 +398,8 @@ class DataIngestionLayer:
                 "h5ad_read_mode": read_mode,
                 "max_records": max_records,
                 "max_features_per_record": max_features_per_record,
-                "source_value_semantics": "raw_counts" if counts_layer else "adata_X_unspecified",
-                "raw_counts_available": bool(counts_layer),
+                "source_value_semantics": semantics,
+                "raw_counts_available": semantics == "raw_counts",
                 "raw_count_layer": counts_layer,
                 "analysis_scope": "full_section" if len(records) == int(adata.n_obs) else "sampled",
                 "sampling": {
@@ -405,7 +418,11 @@ class DataIngestionLayer:
         dataset.processing_steps.append("Loaded H5AD through anndata: %s." % path)
         self._qc(dataset)
         self._annotate_feature_metadata(dataset)
-        self._normalize_features(dataset)
+        if semantics == "raw_counts":
+            self._normalize_features(dataset)
+        else:
+            dataset.normalized = True
+            dataset.processing_steps.append("Preserved declared log-normalized H5AD expression without re-normalization.")
         return dataset
 
     def load_xenium_directory(
@@ -1227,8 +1244,10 @@ def _matrix_row_to_features(row: Any, gene_names: List[str], max_features_per_re
     for index, value in enumerate(values):
         try:
             numeric = float(value)
-        except (TypeError, ValueError):
-            continue
+        except (TypeError, ValueError) as exc:
+            raise IngestionValidationError("Expression values must be numeric.") from exc
+        if not math.isfinite(numeric) or numeric < 0:
+            raise IngestionValidationError("Counts and log-normalized expression must be finite and nonnegative.")
         if numeric > 0:
             pairs.append((index, numeric))
     pairs.sort(key=lambda item: item[1], reverse=True)
