@@ -2,16 +2,49 @@
 
 SpatialMind turns platform-processed spatial omics data into reviewable workflows and reports. Its active path supports Xenium, H5AD, and tabular inputs, QC, expert-review packets, gated analyses, visualizations, and replayable provenance. Biological claims require reviewed cell labels and tissue regions. The current brain cohorts still lack specialist review, matched H&E/IHC, and a verified independent donor test; the rare-class adjustment has only been selected on breast validation data.
 
-1. Data ingestion
-2. Algorithm engine
-3. LLM-style reasoning and planning
-4. Visualization
-5. Memory
-6. Storage and provenance
+1. Contracts and recorded review evidence
+2. Ingestion, scientific tools, storage, memory and LLM providers
+3. Validation gates
+4. Figures, statistical methods, reliability and governance
+5. Shared planning and policy-enforced execution
+6. Studio, CLI, API and specialist-review workflows
 
 The base path remains dependency-light for fast testing, while the core workstation environment in `requirements.txt` enables real H5AD/Xenium ingestion and Scanpy/Squidpy-backed wrappers. PyTorch-based scVI/cell2location packages live in `requirements-deep-learning.txt` and must be installed in a separate environment to avoid mixed OpenMP runtimes on Intel macOS.
 
+## Collaborator Downloads
+
+The [October 2 collaboration prerelease](https://github.com/Katherine516/SpatialMind/releases/tag/collaboration-2026-10-02)
+distributes the full local data snapshot as split release assets, the tested Intel
+macOS app, a glioblastoma example report and the specialist-review packet.
+These large assets are separate from Git: cloning this repository does not download
+them. See [download, checksum and restoration instructions](docs/collaborator_handoff.md).
+The app is ad-hoc signed, not Apple-notarized. This is a research snapshot with
+pending biological review, not a validated brain analysis product.
+
 ## Reference
+
+The September 30 evidence-boundary update requires explicit approval, identified
+reviewers, ISO review dates, finite confidence and evidence references before
+labels/regions count as reviewed. Regions need a declared basis; user-drawn ROIs
+are not automatically pathological anatomy. Studio preserves extra CSV columns,
+saves previous versions and journals changes before committing. Unidentified or
+evidence-free assignments remain candidates.
+
+Typed plan construction now lives in `agent.planning`; Studio re-exports it for
+compatibility. All supported executors use `agent.runtime.execute_tool_step` and
+canonical tools. Legacy intent parsing remains, but AlgorithmEngine is no longer
+an active execution backend. H5AD counts and natural-log expression are explicitly
+distinguished; ambiguous X matrices require `--expression-semantics raw_counts`
+or `--expression-semantics log_normalized`. Scaled/negative/nonfinite expression
+and non-natural log bases are refused instead of silently reprocessed.
+
+`scripts/validate_brain_model.py` now supports reviewed development selection,
+model/reference locking and one-attempt custodian-released external evaluation.
+Biological reliability calibration requires donor-disjoint train/validation/test
+records and reports held-out Brier score, ECE, AUROC and per-donor metrics. These
+are engineering-ready paths, **not completed brain training or validation**. Both
+750-cell brain cohorts still have zero accepted labels/regions. See the
+[ordered execution instructions](docs/brain_review_execution.md).
 
 The September 27 correctness update aligns Studio and pilot execution checks,
 uses per-cell review provenance, fixes descriptive cluster maps, and binds spatial
@@ -71,12 +104,12 @@ define a region. Both write `expert_cell_labels.csv` and `cell_regions.csv` into
 the bundle by merging, never overwriting.
 
 The Readiness screen ends with a live inventory of what expert labelling still
-needs, computed from what is on disk — see
-[docs/cell_label_resources.md](docs/cell_label_resources.md). The seven Human
-Brain Cell Atlas superclusters under `data/` now cover every lineage confidently
-detected in the glioblastoma section; what is still missing is a human reference
-carrying a malignant class (the only tumour reference present is mouse), the
-reviewer time, and the region drawing.
+needs, computed from what is on disk. See
+[docs/cell_label_resources.md](docs/cell_label_resources.md). Local references
+include healthy human brain superclusters and the human GBmap Core glioblastoma
+atlas. Availability does not establish tissue matching, malignant-cell identity,
+panel suitability, independent truth or permission to reuse: these still require
+curation. Specialist review and anatomical region decisions remain missing.
 
 Tools are chosen three ways -- the agent proposes a plan from a question, a
 recipe loads a saved one, or you pick from the Tool Bench -- and all three

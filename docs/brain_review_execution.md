@@ -1,6 +1,6 @@
 # Ordered Brain Validation Work
 
-Updated 2026-09-27. The user confirmed that no reviewers are currently available.
+Updated 2026-09-30. The user confirmed that no reviewers are currently available.
 The software preparation below is implemented; the biological study is **not complete**.
 No specialist names, reviewed labels, anatomical regions, registered images, or independent-donor performance have been fabricated.
 
@@ -123,9 +123,9 @@ benchmark and do not currently have the needed published expert label files.
 ## 4. Rare-Class Development, Then One External Evaluation
 
 Brain training and external scoring remain blocked. There is no honest brain model
-performance number to report until the preceding inputs exist. The readiness report
-does not implement an automatic external-test executor; the custodian release and
-brain-specific locked evaluation remain future work.
+performance number to report until the preceding inputs exist. Software now
+supports reviewed brain selection and an explicit custodian-released external
+test, but neither has been run on real reviewed brain truth.
 
 Implemented now: optional `class_prior_power` on the production
 `reference_label_transfer` tool, default **0** (unchanged behavior). It divides each
@@ -190,6 +190,71 @@ intentional, not a failed analysis. The most useful next human action is to ask 
 project leader to secure the two reviewers and a data custodian. No final brain
 CSV files or externally validated model have been generated.
 
-Verification: 561 unit tests passed, including 13 new focused tests; all six import
-contracts passed. Documentation inventory and whitespace checks passed. This is
-software verification, not evidence that the outstanding biological review is complete.
+The readiness command also writes `ordered_readiness_report.html`, listing
+accepted-review counts and ordered blockers. Only status artifacts are updated,
+not human review CSVs.
+
+## Execution After Review
+
+Use new output directories. Do not rename candidates to final truth. Old label
+tables without explicit provenance no longer unlock the gate, including published
+labels and composition-derived regions. Preserve them as evidence and obtain a
+documented review; do not bulk-add approval fields.
+
+```bash
+.venv/bin/python scripts/manage_brain_specialist_review.py validate \
+  --packet outputs/brain_specialist_handoff_20260927 \
+  --export-to outputs/brain_review_staging_NEW
+
+.venv/bin/python scripts/validate_brain_model.py select \
+  --packet outputs/brain_specialist_handoff_20260927 \
+  --staging outputs/brain_review_staging_NEW \
+  --donor-map VERIFIED_DEVELOPMENT_DONORS.json --out outputs/brain_model_NEW
+```
+
+The donor map is a JSON object mapping every section key to its verified donor ID.
+Omit it only for internal development; external scoring then stays blocked. The
+selector reads staged train/validation truth, not staged test truth. Source review
+files are hashed, not parsed. It selects k=5/15 and prior power=0/0.25/0.5/1 by
+validation macro-F1. Outputs contain the frozen training reference, parameters,
+features, source/review hashes, per-class validation metrics and predictions.
+Selection metrics are optimistic, not independent performance estimates.
+
+Give the custodian the SHA-256 of `locked_model.json`. Their hashed protocol must
+name `model_lock_sha256`, `confidence_threshold` (0.6), `min_shared_features` and
+`min_shared_fraction`. Prespecify overlap thresholds with biological justification;
+two shared genes is a code minimum, not a scientific recommendation. The crosswalk
+CSV has `source_label,target_label`. External truth needs unique cell_id,
+expert_label, donor_id, approval, reviewer/date, confidence and evidence. Truth must
+match every prediction exactly; no post-result dropping of difficult cells.
+
+A [protocol example](templates/brain_annotation_protocol.example.json) supplies
+the schema, not universal acceptance thresholds. Adapt and approve it before
+sealing. Fit/tune only on development donors; a seen external donor is no longer
+an untouched test.
+
+```bash
+.venv/bin/python scripts/validate_brain_model.py external-test \
+  --model-lock outputs/brain_model_NEW/locked_model.json \
+  --manifest VERIFIED_EXTERNAL_MANIFEST.json --custodian-id ACTUAL_CUSTODIAN_ID \
+  --expected-lock-sha256 EXACT_MODEL_HASH --out outputs/brain_external_test_NEW
+```
+
+The evaluator reserves one attempt beside the model before prediction, saves
+predictions before parsing truth, then reports all-cell/per-class metrics, coverage,
+selective accuracy and per-donor results. Errors after reservation do not permit a
+silent retry. This is procedural sealing, not secure isolation. Never delete the
+reservation to tune against the same donor; failed/completed attempts require a
+new documented custodian study/release. Cross-assay annotation tests do not
+validate Xenium segmentation, spatial neighborhoods or pathological ROI accuracy.
+
+Set `model_lock` and `external_evaluation` paths in `study_readiness.json` only
+after successful runs. Readiness checks model/manifest identity; it does not
+declare population-level validity.
+
+Verification on 2026-09-30: 586 unit tests passed, including 24 new review-boundary,
+model-lock and donor-held-out calibration regression tests; all six import
+contracts passed. Legacy routing evaluation passed 16/16 and MVP evaluation 13/13.
+This is software verification, not evidence that the outstanding biological
+review is complete. Both 750-cell specialist cohorts still have zero accepted
+labels and zero accepted anatomical regions; local brain selection remains blocked.

@@ -11,6 +11,8 @@ from ..schemas import SpatialDataset, ToolResult
 from ..tools import ToolRegistry, build_default_registry, build_mvp_registry
 from ..tools.exceptions import ToolExecutionError
 from .grounding import ClaimGroundingChecker
+from .runtime import execute_tool_step
+from ..contracts import ToolCallSpec
 
 
 TOOL_DEPS = {
@@ -74,7 +76,7 @@ class SpatialAgent:
         self.ingestion = ingestion or DataIngestionLayer()
         self.grounding = ClaimGroundingChecker()
 
-    def run(self, query: str, dataset_id: str, session_id: Optional[str] = None) -> AgentResponse:
+    def run(self, query: str, dataset_id: str, session_id: Optional[str] = None, expression_semantics: str = "auto") -> AgentResponse:
         session = session_id or str(uuid.uuid4())
         if not dataset_id:
             return AgentResponse(
@@ -99,7 +101,7 @@ class SpatialAgent:
                 warnings=[],
             )
 
-        dataset = self.ingestion.load(dataset_id)
+        dataset = self.ingestion.load(dataset_id, expression_semantics=expression_semantics)
         if self.mvp_mode:
             self._apply_mvp_query_assay_hints(query, dataset)
         planned = self._resolve_dependencies(self._plan_tools(query))
@@ -145,10 +147,11 @@ class SpatialAgent:
                 continue
             tool = self.registry.get(tool_name)
             if tool.estimated_runtime.startswith("slow"):
-                warnings.append("%s is estimated as %s; prototype ran a lightweight substitute." % (tool_name, tool.estimated_runtime))
+                warnings.append("%s is estimated as %s." % (tool_name, tool.estimated_runtime))
             started = time.monotonic()
             try:
-                result = tool.run(dataset, params)
+                result = execute_tool_step(dataset, ToolCallSpec(tool_name, params), self.registry,
+                                           dataset_id, gate_decision)
                 duration = time.monotonic() - started
                 tool_trace.append(ToolCall(tool_name, params, result, round(duration, 4)))
                 warnings.extend(result.caveats)

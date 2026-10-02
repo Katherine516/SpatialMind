@@ -8,6 +8,16 @@ Nothing here reimplements analysis. Ingestion, `pilot_gate()`, the tool
 registry, `validate_tool_plan()` and report generation are the same code the CLI
 runs. The app adds a session, a job queue, and a browser.
 
+As of 2026-09-30, assignments need reviewer identity and evidence to be recorded
+as review decisions; otherwise they remain candidates and do not count toward the
+gate. A region also needs its evidence basis. User ROIs are not specialist-certified
+anatomy. Shared checks additionally require a valid ISO review date and finite
+confidence in [0,1]. Studio preserves imported extra CSV columns and saves prior
+versions under `.spatialmind_review_history/` beside each table. Journal entries
+are persisted before table replacement; a prepared revision is confirmed by its
+current-table hash, not merely the journal's existence. This is local versioning,
+not authenticated multi-user audit storage.
+
 ## Running it
 
 Double-click `SpatialMind Studio.app`. It opens as an ordinary desktop window.

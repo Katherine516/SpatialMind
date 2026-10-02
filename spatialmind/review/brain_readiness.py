@@ -1,6 +1,7 @@
 """Ordered acquisition gates for a specialist-reviewed brain validation study."""
 
 import json
+import html
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -217,15 +218,45 @@ def readiness(packet):
     model_issues = []
     if review["status"] != "ready_for_staging":
         model_issues.append("Complete specialist-reviewed brain training/validation labels and regions")
-    # No automatic evaluation: one external test must be released by its custodian
-    # only after training/validation selection and a frozen protocol are verified.
-    model_issues.append("Brain model selection and custodian-controlled external evaluation are not yet performed")
+    lock_name = config.get("model_lock")
+    if not lock_name:
+        model_issues.append("Select brain annotation on reviewed training/validation data and freeze a model lock")
+    else:
+        try:
+            lock_path = _resolve(root, lock_name)
+            lock = json.loads(lock_path.read_text())
+            if lock.get("status") != "brain_validation_selected_not_externally_validated":
+                raise ValueError("Model lock is not a reviewed brain development selection")
+            _verify_files(lock_path.parent, {"training_reference.json": lock["training_reference_sha256"]})
+            result_name = config.get("external_evaluation")
+            if not result_name:
+                raise ValueError("Custodian-controlled external evaluation has not been performed")
+            evaluation = json.loads(_resolve(root, result_name).read_text())
+            if (evaluation.get("status") != "external_donor_tested_not_population_validated"
+                    or evaluation.get("model_lock_sha256") != digest(lock_path)
+                    or not external or evaluation.get("external_manifest_sha256") != external.get("manifest_sha256")):
+                raise ValueError("External evaluation does not match the frozen model and donor manifest")
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            model_issues.append(str(exc))
     steps.append({"step": 4, "name": "Improve rare classes, lock model, evaluate once", "blockers": model_issues})
     prior_blocked = False
     for step in steps:
         step["status"] = "blocked_by_previous_step" if prior_blocked else ("needs_input" if step["blockers"] else "ready")
         prior_blocked |= bool(step["blockers"])
-    result = {"status": "not_externally_validated", "steps": steps, "specialist_review": review,
+    result = {"status": "external_test_recorded_not_population_validated" if not prior_blocked else "not_externally_validated", "steps": steps, "specialist_review": review,
               "caveat": "Checks validate recorded evidence, not qualifications or biological truth. File sealing is procedural, not access control."}
     write_json(root / "ordered_readiness_report.json", result)
+    body = "".join('<h2>%d. %s</h2><p>Status: <strong>%s</strong></p><ul>%s</ul>' % (
+        step["step"], html.escape(step["name"]), html.escape(step["status"]),
+        "".join("<li>" + html.escape(item) + "</li>" for item in step["blockers"])) for step in steps)
+    counts = "".join("<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td></tr>" % (
+        html.escape(key), row["cohort_cells"], row["accepted_labels"], row["accepted_regions"])
+        for key, row in review["datasets"].items())
+    (root / "ordered_readiness_report.html").write_text(
+        '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Brain validation readiness</title><style>body{font:16px system-ui;max-width:1000px;margin:32px auto;padding:16px;line-height:1.5}'
+        'table{border-collapse:collapse;width:100%}td,th{padding:8px;border-bottom:1px solid #ccc;text-align:left}</style>'
+        '<h1>Brain validation readiness</h1><p>' + html.escape(result["status"]) + '</p>' + body
+        + '<h2>Specialist Review</h2><table><tr><th>Cohort</th><th>Cells</th><th>Accepted labels</th><th>Accepted regions</th></tr>'
+        + counts + '</table><p>' + html.escape(result["caveat"]) + '</p></html>', encoding="utf-8")
     return result

@@ -397,9 +397,9 @@ class IngestionTests(unittest.TestCase):
                 handle.write("S1,c2,2,3,Unannotated,4\n")
             label_path = os.path.join(tmp, "expert_cell_labels.csv")
             with open(label_path, "w", encoding="utf-8") as handle:
-                handle.write("cell_id,expert_label,confidence\n")
-                handle.write("c1,T cell,0.91\n")
-                handle.write("c2,Tumor cell,0.87\n")
+                handle.write("cell_id,expert_label,confidence,reviewer_id,review_status,reviewed_at,evidence_ref\n")
+                handle.write("c1,T cell,0.91,fixture-reviewer,reviewed,2026-09-30,fixture:markers\n")
+                handle.write("c2,Tumor cell,0.87,fixture-reviewer,reviewed,2026-09-30,fixture:markers\n")
             dataset = DataIngestionLayer().load_csv(data_path, sample_id="S1")
             report = apply_external_label_table(dataset, label_path)
             self.assertEqual(report.status, "expert_labels_applied")
@@ -416,9 +416,9 @@ class IngestionTests(unittest.TestCase):
                 handle.write("S1,c2,2,3,Tumor cell,4\n")
             region_path = os.path.join(tmp, "cell_regions.csv")
             with open(region_path, "w", encoding="utf-8") as handle:
-                handle.write("cell_id,region,region_confidence\n")
-                handle.write("c1,stroma,0.8\n")
-                handle.write("c2,tumor_core,0.9\n")
+                handle.write("cell_id,region,region_confidence,reviewer_id,review_status,reviewed_at,evidence_ref,region_basis\n")
+                handle.write("c1,stroma,0.8,fixture-reviewer,reviewed,2026-09-30,fixture:roi,user_roi\n")
+                handle.write("c2,tumor_core,0.9,fixture-reviewer,reviewed,2026-09-30,fixture:roi,user_roi\n")
             dataset = DataIngestionLayer().load_csv(data_path, sample_id="S1")
             report = apply_external_region_table(dataset, region_path)
             self.assertEqual(report.status, "user_regions_applied")
@@ -490,6 +490,7 @@ class IngestionTests(unittest.TestCase):
                 matched_cells=2,
                 total_records=2,
                 label_counts={"T cell": 1, "Tumor cell": 1},
+                reviewed_labels=["T cell", "Tumor cell"],
                 confidence_summary={"mean": 0.9},
             ),
             region_report=RegionApplicationReport(
@@ -499,6 +500,7 @@ class IngestionTests(unittest.TestCase):
                 matched_cells=2,
                 total_records=2,
                 region_counts={"stroma": 1, "tumor_core": 1},
+                reviewed_regions=["stroma", "tumor_core"],
                 confidence_summary={"mean": 0.9},
             ),
             asset_readiness=XeniumExpertReadiness(
@@ -1373,10 +1375,10 @@ class ValidatedPilotTests(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(",".join(CLAIM_TRUTH_FIELDS) + "\n")
                 rows = [
-                    "r1,healthy,pilot_claim,pipeline_readiness_control,c1,visual_pattern,supported,ready,0.75,1,0.75,0.8,1,1,1,yes,reviewer,2026-07-08,asset check,,train,",
-                    "r2,healthy,null_control,null_control,c2,spatial_colocalization,refused,null,0,0,0,0.5,0,0,0,yes,reviewer,2026-07-08,null,,train,",
-                    "r3,glioblastoma,pilot_claim,pipeline_readiness_control,c3,visual_pattern,supported,ready,0.75,1,0.75,0.8,1,1,1,yes,reviewer,2026-07-08,asset check,,validation,",
-                    "r4,glioblastoma,null_control,null_control,c4,spatial_colocalization,refused,null,0,0,0,0.5,0,0,0,yes,reviewer,2026-07-08,null,,test,",
+                    "r1,healthy,pilot_claim,pipeline_readiness_control,c1,visual_pattern,supported,ready,0.75,1,0.75,0.8,1,1,1,yes,reviewer,2026-07-08,asset check,fixture:asset,train,,d1,reviewed",
+                    "r2,healthy,null_control,null_control,c2,spatial_colocalization,refused,null,0,0,0,0.5,0,0,0,yes,reviewer,2026-07-08,null,fixture:null,train,,d1,reviewed",
+                    "r3,glioblastoma,pilot_claim,pipeline_readiness_control,c3,visual_pattern,supported,ready,0.75,1,0.75,0.8,1,1,1,yes,reviewer,2026-07-08,asset check,fixture:asset,validation,,d2,reviewed",
+                    "r4,glioblastoma,null_control,null_control,c4,spatial_colocalization,refused,null,0,0,0,0.5,0,0,0,yes,reviewer,2026-07-08,null,fixture:null,test,,d3,reviewed",
                 ]
                 handle.write("\n".join(rows) + "\n")
             ready = validate_claim_truth_table(path)
@@ -2366,6 +2368,7 @@ class H5adReferenceLoadingTests(unittest.TestCase):
                 ),
             )
             adata.uns["organism"] = "Homo sapiens"
+            adata.uns["spatialmind"] = {"expression_semantics": "raw_counts"}
             adata.write_h5ad(path)
 
             dataset = load_scrna(str(path), max_records=10)
@@ -2396,6 +2399,7 @@ class H5adReferenceLoadingTests(unittest.TestCase):
                     var=pd.DataFrame({"feature_name": ["MOG", "AQP4"]}, index=["ENSG1", "ENSG2"]),
                 )
                 adata.uns["organism"] = "Homo sapiens"
+                adata.uns["spatialmind"] = {"expression_semantics": "raw_counts"}
                 adata.write_h5ad(path)
                 paths.append(str(path))
 
@@ -2426,6 +2430,7 @@ class H5adReferenceLoadingTests(unittest.TestCase):
                     var=pd.DataFrame({"feature_name": ["AQP4", "AIF1"]}, index=["G1", "G2"]),
                 )
                 adata.uns["organism"] = organism
+                adata.uns["spatialmind"] = {"expression_semantics": "raw_counts"}
                 adata.write_h5ad(path)
                 paths.append(str(path))
             with self.assertRaises(Exception) as ctx:
@@ -2451,6 +2456,7 @@ class H5adReferenceLoadingTests(unittest.TestCase):
                 var=pd.DataFrame({"feature_name": ["G%d" % i for i in range(6)]}, index=["E%d" % i for i in range(6)]),
             )
             adata.uns["organism"] = "Homo sapiens"
+            adata.uns["spatialmind"] = {"expression_semantics": "raw_counts"}
             adata.write_h5ad(path)
 
             layer = DataIngestionLayer()
@@ -2723,6 +2729,7 @@ class BrainExpertBenchmarkTests(unittest.TestCase):
                         "secondary_state": "",
                         "confidence": "0.9",
                         "reviewer_id": "reviewer-a",
+                        "review_status": "reviewed", "reviewed_at": "2026-09-30", "evidence_ref": "fixture:markers",
                         "expression_cluster": "0",
                         "proposed_spatial_block": "block-%d" % index,
                     }
@@ -2733,6 +2740,8 @@ class BrainExpertBenchmarkTests(unittest.TestCase):
                         "region": "region-%d" % (index % 2),
                         "region_confidence": "0.9",
                         "region_reviewer_id": "reviewer-b",
+                        "review_status": "reviewed", "region_reviewed_at": "2026-09-30",
+                        "evidence_ref": "fixture:image", "region_basis": "morphology",
                     }
                 )
                 splits.append(
@@ -2777,6 +2786,8 @@ class BrainExpertBenchmarkTests(unittest.TestCase):
                         "cell_id": cell_id,
                         "expert_label": "" if index == 0 else "astrocyte",
                         "reviewer_id": "" if index == 0 else "reviewer-a",
+                        "confidence": "0.9", "review_status": "reviewed", "reviewed_at": "2026-09-30",
+                        "evidence_ref": "fixture:markers",
                     }
                 )
                 regions.append(
@@ -2784,6 +2795,8 @@ class BrainExpertBenchmarkTests(unittest.TestCase):
                         "cell_id": cell_id,
                         "region": "" if index == 1 else "tumor_core",
                         "region_reviewer_id": "" if index == 1 else "reviewer-b",
+                        "region_confidence": "0.9", "review_status": "reviewed", "region_reviewed_at": "2026-09-30",
+                        "evidence_ref": "fixture:image", "region_basis": "morphology",
                     }
                 )
                 splits.append(
@@ -2824,7 +2837,7 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(os.path.exists(run.report_path))
             self.assertTrue(os.path.exists(run.provenance_path))
             self.assertTrue(os.path.exists(os.path.join(os.path.dirname(run.report_path), "spatial_distribution_interactive.html")))
-            self.assertTrue(any(result.tool_name == "cell_type_colocalization" for result in run.results))
+            self.assertTrue(any(result.tool_name == "cell_neighborhood_enrichment" for result in run.results))
             stored = StorageLayer(root=os.path.join(tmp, "outputs")).get_run(run.run_id)
             self.assertEqual(stored.run_id, run.run_id)
             self.assertTrue(stored.provenance_hash)
@@ -5432,8 +5445,8 @@ class ReviewerProvenanceTests(unittest.TestCase):
         root = tempfile.mkdtemp()
         try:
             labels = self._write(root, "expert_cell_labels.csv",
-                                 ["cell_id", "expert_label", "reviewer_id"],
-                                 [["c%d" % i, "Tumor", "Janesick et al. 2023"] for i in range(4)])
+                                 ["cell_id", "expert_label", "reviewer_id", "confidence", "review_status", "reviewed_at", "evidence_ref"],
+                                 [["c%d" % i, "Tumor", "Janesick et al. 2023", "0.9", "reviewed", "2026-09-30", "fixture:publication"] for i in range(4)])
             regions = self._write(root, "cell_regions.csv",
                                   ["cell_id", "region", "reviewer_id"],
                                   [["c%d" % i, "tumor_rich", "composition-derived, not a pathologist call"]
@@ -5442,8 +5455,8 @@ class ReviewerProvenanceTests(unittest.TestCase):
             label_report = apply_external_label_table(dataset, labels)
             region_report = apply_external_region_table(dataset, regions)
             self.assertEqual(label_report.reviewers, {"Janesick et al. 2023": 4})
-            self.assertEqual(region_report.reviewers,
-                             {"composition-derived, not a pathologist call": 4})
+            self.assertEqual(region_report.reviewers, {})
+            self.assertEqual(region_report.rejected_rows, 4)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -5453,8 +5466,9 @@ class ReviewerProvenanceTests(unittest.TestCase):
         root = tempfile.mkdtemp()
         try:
             labels = self._write(root, "expert_cell_labels.csv",
-                                 ["cell_id", "expert_label", "reviewer_id"],
-                                 [["c0", "Tumor", "R"], ["not_in_this_section", "Tumor", "R"]])
+                                 ["cell_id", "expert_label", "reviewer_id", "confidence", "review_status", "reviewed_at", "evidence_ref"],
+                                 [[cell, "Tumor", "R", "0.9", "reviewed", "2026-09-30", "fixture:markers"]
+                                  for cell in ["c0", "not_in_this_section"]])
             report = apply_external_label_table(self._dataset(), labels)
             self.assertEqual(report.reviewers, {"R": 1})
         finally:

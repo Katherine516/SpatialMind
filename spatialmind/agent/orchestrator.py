@@ -1,35 +1,23 @@
 import os
 from typing import List, Optional
 
-from .. import gatekeeper
-from ..algorithms import AlgorithmEngine
 from ..ingestion import DataIngestionLayer, available_samples
 from ..llm import LLMProvider
 from ..memory import MemoryLayer
 from ..planner import LLMReasoningLayer
-from ..schemas import AgentRun, ToolResult
+from ..schemas import AgentRun, ToolResult, ExecutionStep
+from ..contracts import ToolCallSpec
+from ..tools import build_default_registry
+from .runtime import execute_tool_step, check_execution_gate, require_valid_tool_plan, effective_tool_call
 from ..storage import StorageLayer
 from ..viz import VisualizationLayer
 
 
 class SpatialMindAgent:
-    """LEGACY (v1) run path: LLM plan -> AlgorithmEngine -> report.
+    """Compatibility intent parser with canonical, policy-enforced execution.
 
-    The docstring here used to read "coordinates the six layers into one agent
-    run", naming ingestion, algorithms, reasoning, visualization, storage and
-    memory. That was accurate for v1 and has not been true for some time: it
-    omits `tools`, `pilot`, `gatekeeper` and `app`, and two of the six it names
-    are themselves legacy. See `docs/agent_architecture.md` for the six tiers the
-    import graph actually has.
-
-    What this class still is: the only LLM-planned path, running the three
-    `AlgorithmEngine` tools rather than the 30-tool registry. Reached from
-    `POST /runs`, the CLI's `--replay-run-id` branch, and the CLI when the data
-    is not a Xenium bundle -- a Xenium bundle goes to `run_pilot` instead.
-
-    It had no gate at all until `require_gate_open` was added to `run`, which
-    mattered because `DataIngestionLayer.load` accepts a Xenium directory and a
-    replayed run carries whatever `source_path` its provenance recorded.
+    The v1 intent vocabulary remains for saved requests; AlgorithmEngine is no
+    longer an execution backend. New plan construction belongs to agent.planning.
     """
 
     def __init__(
@@ -39,22 +27,42 @@ class SpatialMindAgent:
         llm_provider: Optional[LLMProvider] = None,
     ) -> None:
         self.ingestion = DataIngestionLayer()
-        self.algorithms = AlgorithmEngine()
+        self.registry = build_default_registry()
         self.reasoning = LLMReasoningLayer(llm_provider=llm_provider)
         self.visualization = VisualizationLayer()
         self.storage = StorageLayer(output_root)
         self.memory = MemoryLayer(memory_root)
 
-    def run(self, prompt: str, data_path: str, report_format: str = "html") -> AgentRun:
+    def run(self, prompt: str, data_path: str, report_format: str = "html", expression_semantics: str = "auto") -> AgentRun:
         plan = self.reasoning.plan(prompt)
         sample_id = plan.request.sample_id or available_samples(data_path)[0]
-        dataset = self.ingestion.load(data_path, sample_id=sample_id)
+        dataset = self.ingestion.load(data_path, sample_id=sample_id, expression_semantics=expression_semantics)
+        # Retain v1 intent parsing for callers, but execute only canonical tools.
+        effective_steps = []
+        for step in plan.steps:
+            if step.tool == "cell_type_distribution":
+                effective_steps.append(ExecutionStep(step.name, "cell_type_annotation", {"method": "existing_labels"}))
+            elif step.tool == "cell_type_colocalization":
+                effective_steps.append(ExecutionStep(step.name, "cell_neighborhood_enrichment",
+                                                    {"n_neighs": 6, "n_perms": 250, "random_state": 0},
+                                                    depends_on=["annotation"]))
+            elif step.tool == "spatial_gene_expression":
+                for gene in step.parameters.get("genes") or dataset.genes[:3]:
+                    effective_steps.append(ExecutionStep("Overlay " + gene, "feature_overlay", {"feature": gene}))
+            else:
+                raise ValueError("Unknown legacy intent: " + step.tool)
+        plan.steps = effective_steps
+        specs = [effective_tool_call(ToolCallSpec(step.tool, step.parameters,
+                              requires=["annotation"] if step.tool == "cell_neighborhood_enrichment" else ["normalized_counts"]))
+                 for step in plan.steps]
+        for step, spec in zip(plan.steps, specs):
+            step.parameters = spec.params
+        require_valid_tool_plan(specs, ["normalized_counts"] if dataset.normalized else [],
+                                [tool.name for tool in self.registry.list_plannable()])
         # `DataIngestionLayer.load` accepts a Xenium bundle, so this path could
         # run cell-type tools over a real section with no reviewed label in
         # sight. It now asks the same question every other path asks.
-        gate_decision = gatekeeper.require_gate_open(
-            data_path, [step.tool for step in plan.steps], dataset=dataset,
-        )
+        gate_decision = check_execution_gate(data_path, specs, dataset=dataset)
 
         similar_runs = self.memory.recall(prompt, sample_id)
         run_info = self.storage.start_run(dataset.sample_id)
@@ -64,10 +72,12 @@ class SpatialMindAgent:
         self.storage.write_json(run_dir, "execution_plan.json", plan)
 
         results: List[ToolResult] = []
-        for step in plan.steps:
-            result = self.algorithms.run(step.tool, dataset, step.parameters)
+        for index, (step, spec) in enumerate(zip(plan.steps, specs)):
+            result = execute_tool_step(dataset, spec, self.registry, data_path, gate_decision)
+            if gate_decision.get("caveat"):
+                result.caveats.append(gate_decision["caveat"])
             results.append(result)
-            self.storage.write_json(run_dir, "%s.json" % step.tool, result)
+            self.storage.write_json(run_dir, "%02d_%s.json" % (index + 1, step.tool), result)
 
         svg_path = self.visualization.render_distribution_svg(dataset, run_dir, plan.request.cell_types)
         report_paths = self.visualization.render_report(
@@ -94,6 +104,8 @@ class SpatialMindAgent:
                 "prompt": prompt,
                 "tools": [step.tool for step in plan.steps],
                 "gate_decision": gate_decision,
+                "execution_boundary": "agent.runtime.execute_tool_step",
+                "effective_plan": specs,
                 "artifacts": {
                     "report": report_path,
                     "reports": report_paths.to_dict(),

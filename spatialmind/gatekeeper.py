@@ -23,6 +23,7 @@ agent-layer caller would have closed a loop.
 
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 import os
+from math import isfinite
 from .tools.grouping import CLUSTER_GROUPINGS, GROUPED_TOOLS, normalize_group_key
 
 from .schemas import SpatialDataset
@@ -33,11 +34,10 @@ from .schemas import SpatialDataset
 # The registry's preconditions understate `annotation`: it reads the reviewed
 # label table but only declares "requires normalized counts". Every other gated
 # tool is detected from its preconditions rather than named here.
-ALWAYS_LABEL_GATED = {"annotation"}
+ALWAYS_LABEL_GATED = {"annotation", "cell_type_annotation"}
 
-# `AlgorithmEngine` is a separate three-tool registry used by the legacy
-# orchestrator. Its tools are not in `ToolRegistry`, so preconditions cannot
-# classify them, but two of them name cell types and are therefore gated.
+# Historical tool names remain gated for saved plans and direct compatibility
+# callers; supported orchestrators now execute canonical registry tools instead.
 LEGACY_LABEL_GATED = {"cell_type_distribution", "cell_type_colocalization"}
 
 # The reviewed-coverage thresholds the gate applies unless a caller lowers them.
@@ -81,12 +81,18 @@ def enforce_coverage_floor(
     acknowledge_low_coverage: bool = False,
 ) -> None:
     """Refuse a threshold low enough that the gate could not refuse anything."""
+    validate_coverage_thresholds(min_label_coverage, min_region_coverage)
     if acknowledge_low_coverage:
         return
     if min_label_coverage < MIN_COVERAGE_FLOOR:
         raise CoverageFloorError("label", float(min_label_coverage))
     if min_region_coverage < MIN_COVERAGE_FLOOR:
         raise CoverageFloorError("region", float(min_region_coverage))
+
+
+def validate_coverage_thresholds(*values):
+    if any(not isfinite(float(value)) or not 0 <= float(value) <= 1 for value in values):
+        raise ValueError("Coverage thresholds must be finite and between zero and one.")
 
 
 class GateBlockedError(RuntimeError):
@@ -367,6 +373,7 @@ def pilot_gate(
     allow_single_region: bool,
     min_cells_per_class: int = MIN_CELLS_PER_TESTED_CLASS,
 ) -> Dict[str, Any]:
+    validate_coverage_thresholds(min_label_coverage, min_region_coverage)
     blockers: List[str] = []
     required: List[str] = []
     for key, name in [

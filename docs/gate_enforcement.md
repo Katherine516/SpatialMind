@@ -1,5 +1,13 @@
 # The gate as an invariant
 
+September 30 update: supported executors now use canonical tools through
+`agent.runtime.execute_tool_step`. `SpatialMindAgent` retains the old intent
+parser but no longer executes AlgorithmEngine. Both `annotation` and
+`cell_type_annotation` are always label-gated; legacy names stay gated for
+compatibility. Intake requires explicit approval, reviewer/date, finite confidence
+and evidence. A filename or filled-in draft is not approval. The historical audit
+below explains why these boundaries exist.
+
 The product's central guarantee is that it refuses biological claims until a
 human supplies expert labels and reviewed regions. A review of the execution
 paths found it enforced on one of four.

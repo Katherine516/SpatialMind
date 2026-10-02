@@ -291,17 +291,19 @@ class ReadOnlyBundleTests(unittest.TestCase):
         self._freeze()
         ids = ["cell-%d" % i for i in range(N_CELLS)]
         self.client.post("/api/datasets/%s/assign" % self.dataset_id,
-                         json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2]})
+                         json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2],
+                               "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:markers"})
         self.client.post("/api/datasets/%s/assign" % self.dataset_id,
-                         json={"kind": "labels", "value": "T cell", "cell_ids": ids[N_CELLS // 2:]})
+                         json={"kind": "labels", "value": "T cell", "cell_ids": ids[N_CELLS // 2:],
+                               "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:markers"})
         bounds = self.client.get("/api/datasets/%s/cells" % self.dataset_id).json()["bounds"]
         mid = (bounds["y_min"] + bounds["y_max"]) / 2.0
         self.client.post("/api/datasets/%s/assign" % self.dataset_id,
-                         json={"kind": "regions", "value": "core",
+                         json={"kind": "regions", "value": "core", "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:roi",
                                "bounds": {"x0": bounds["x_min"], "y0": bounds["y_min"],
                                           "x1": bounds["x_max"], "y1": mid}})
         body = self.client.post("/api/datasets/%s/assign" % self.dataset_id,
-                                json={"kind": "regions", "value": "edge",
+                                json={"kind": "regions", "value": "edge", "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:roi",
                                       "bounds": {"x0": bounds["x_min"], "y0": mid,
                                                  "x1": bounds["x_max"], "y1": bounds["y_max"]}}).json()
         self.assertEqual(body["gate"]["status"], "validated_ready", body["gate"]["blocking_reasons"])
@@ -479,7 +481,8 @@ class StudioAppTests(unittest.TestCase):
 
         first = self.client.post(
             "/api/datasets/%s/assign" % self.dataset_id,
-            json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2]},
+            json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2],
+                  "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:markers"},
         ).json()
         self.assertEqual(first["assignment"]["cells_written"], N_CELLS // 2)
         # One class over half the section is not enough on either count.
@@ -487,18 +490,19 @@ class StudioAppTests(unittest.TestCase):
 
         self.client.post(
             "/api/datasets/%s/assign" % self.dataset_id,
-            json={"kind": "labels", "value": "Oligodendrocyte", "cell_ids": ids[N_CELLS // 2:]},
+            json={"kind": "labels", "value": "Oligodendrocyte", "cell_ids": ids[N_CELLS // 2:],
+                  "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:markers"},
         )
         bounds = cells["bounds"]
         mid = (bounds["y_min"] + bounds["y_max"]) / 2.0
         self.client.post(
             "/api/datasets/%s/assign" % self.dataset_id,
-            json={"kind": "regions", "value": "tumor_core",
+            json={"kind": "regions", "value": "tumor_core", "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:roi",
                   "bounds": {"x0": bounds["x_min"], "y0": bounds["y_min"], "x1": bounds["x_max"], "y1": mid}},
         )
         final = self.client.post(
             "/api/datasets/%s/assign" % self.dataset_id,
-            json={"kind": "regions", "value": "cortex_normal",
+            json={"kind": "regions", "value": "cortex_normal", "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:roi",
                   "bounds": {"x0": bounds["x_min"], "y0": mid, "x1": bounds["x_max"], "y1": bounds["y_max"]}},
         ).json()
 
@@ -546,17 +550,19 @@ class StudioAppTests(unittest.TestCase):
     def _open_the_gate(self):
         ids = ["cell-%d" % i for i in range(N_CELLS)]
         self.client.post("/api/datasets/%s/assign" % self.dataset_id,
-                         json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2]})
+                         json={"kind": "labels", "value": "Astrocyte", "cell_ids": ids[: N_CELLS // 2],
+                               "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:markers"})
         self.client.post("/api/datasets/%s/assign" % self.dataset_id,
-                         json={"kind": "labels", "value": "Oligodendrocyte", "cell_ids": ids[N_CELLS // 2:]})
+                         json={"kind": "labels", "value": "Oligodendrocyte", "cell_ids": ids[N_CELLS // 2:],
+                               "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:markers"})
         bounds = self.client.get("/api/datasets/%s/cells" % self.dataset_id).json()["bounds"]
         mid = (bounds["y_min"] + bounds["y_max"]) / 2.0
         self.client.post("/api/datasets/%s/assign" % self.dataset_id,
-                         json={"kind": "regions", "value": "core",
+                         json={"kind": "regions", "value": "core", "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:roi",
                                "bounds": {"x0": bounds["x_min"], "y0": bounds["y_min"],
                                           "x1": bounds["x_max"], "y1": mid}})
         return self.client.post("/api/datasets/%s/assign" % self.dataset_id,
-                                json={"kind": "regions", "value": "edge",
+                                json={"kind": "regions", "value": "edge", "reviewer_id": "fixture-reviewer", "evidence_ref": "fixture:roi",
                                       "bounds": {"x0": bounds["x_min"], "y0": mid,
                                                  "x1": bounds["x_max"], "y1": bounds["y_max"]}}).json()
 
@@ -808,7 +814,7 @@ class StudioAppTests(unittest.TestCase):
         self.client.post("/api/datasets/%s/assign" % self.dataset_id,
                          json={"kind": "labels", "value": "Astrocyte",
                                "cell_ids": ["cell-%d" % i for i in range(40)],
-                               "reviewer_id": "Reviewer One"})
+                               "reviewer_id": "Reviewer One", "evidence_ref": "fixture:markers"})
         dataset = load_xenium(self.bundle, max_records=0)
         report = apply_best_available_labels(dataset, self.bundle, fallback=None).to_dict()
         self.assertEqual(report["reviewers"], {"Reviewer One": 40})

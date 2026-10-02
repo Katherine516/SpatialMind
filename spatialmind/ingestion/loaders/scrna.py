@@ -12,9 +12,11 @@ def load_scrna(
     sample_id: Optional[str] = None,
     max_records: int = 5000,
     keep_features: Optional[Sequence[str]] = None,
+    expression_semantics: str = "auto",
 ) -> SpatialDataset:
     dataset = _load_matrix_like(
-        path, sample_id=sample_id, max_records=max_records, keep_features=keep_features
+        path, sample_id=sample_id, max_records=max_records, keep_features=keep_features,
+        expression_semantics=expression_semantics
     )
     dataset.modality = "scrna"
     dataset.coordinate_system = "embedding_or_index"
@@ -32,6 +34,7 @@ def load_scrna_reference_set(
     max_records_per_file: int = 5000,
     keep_features: Optional[Sequence[str]] = None,
     progress: Optional[Callable[[str], None]] = None,
+    expression_semantics: str = "auto",
 ) -> SpatialDataset:
     """Concatenate several scRNA files into one labelled reference.
 
@@ -58,7 +61,8 @@ def load_scrna_reference_set(
     for index, path in enumerate(paths, start=1):
         if progress:
             progress("reference %d/%d: reading %s" % (index, len(paths), Path(path).name))
-        item = load_scrna(path, max_records=max_records_per_file, keep_features=keep_features)
+        item = load_scrna(path, max_records=max_records_per_file, keep_features=keep_features,
+                          expression_semantics=expression_semantics)
         if progress:
             progress(
                 "reference %d/%d: %s -> %d cells, %d classes"
@@ -72,6 +76,9 @@ def load_scrna_reference_set(
             "Reference files span multiple organisms (%s); combine same-species references only."
             % ", ".join(sorted(organisms))
         )
+    semantics = {item.metadata.get("source_value_semantics") for item in datasets}
+    if len(semantics) > 1:
+        raise IngestionValidationError("Reference expression semantics differ; supply consistently processed references.")
     combined = datasets[0]
     if len(datasets) > 1:
         for extra in datasets[1:]:
@@ -98,6 +105,7 @@ def _load_matrix_like(
     sample_id: Optional[str],
     max_records: int = 5000,
     keep_features: Optional[Sequence[str]] = None,
+    expression_semantics: str = "auto",
 ) -> SpatialDataset:
     layer = DataIngestionLayer()
     suffix = Path(path).suffix.lower()
@@ -108,12 +116,14 @@ def _load_matrix_like(
         try:
             if os.path.getsize(path) >= LARGE_H5AD_BYTES:
                 return read_h5ad_subsample(
-                    path, max_records=max_records, sample_id=sample_id, keep_features=keep_features
+                    path, max_records=max_records, sample_id=sample_id, keep_features=keep_features,
+                    expression_semantics=expression_semantics
                 )
         except OSError:
             pass
         # Dissociated scRNA has no spatial coordinates; that must not block loading.
-        return layer.load_h5ad(path, sample_id=sample_id, max_records=max_records, require_spatial=False)
+        return layer.load_h5ad(path, sample_id=sample_id, max_records=max_records, require_spatial=False,
+                               expression_semantics=expression_semantics)
     return layer.load(path, sample_id=sample_id)
 
 
@@ -123,6 +133,7 @@ def read_h5ad_subsample(
     sample_id: Optional[str] = None,
     seed: int = 0,
     keep_features: Optional[Sequence[str]] = None,
+    expression_semantics: str = "auto",
 ) -> SpatialDataset:
     """Read a bounded row sample from a large `.h5ad` without materialising it.
 
@@ -132,8 +143,9 @@ def read_h5ad_subsample(
     to a full in-memory read, which is worse. The Core GBmap reference is 7.6 GB
     on disk and over 54 GB expanded; it could not be loaded at all.
 
-    Reading the rows we actually want through h5py never touches `layers` or
-    `raw`. The draw is seeded and stratified by class, so a reference contributes
+    Reading wanted rows through h5py uses a named counts layer when available,
+    otherwise X, without materialising other layers or raw. The draw is seeded
+    and stratified by class, so a reference contributes
     the same cells on every run and every class it declares is present in the
     sample -- see `_stratified_rows` for why proportional sampling is the wrong
     choice here.
@@ -169,7 +181,22 @@ def read_h5ad_subsample(
         limit = total if max_records <= 0 else min(max_records, total)
         rows = _stratified_rows(labels, total, limit, seed)
 
-        matrix = handle["X"]
+        from spatialmind.ingestion.expression import resolve_expression_semantics
+        layer_key = next((key for key in ("counts", "raw_counts") if "layers/" + key in handle), None)
+        matrix = handle["layers/" + layer_key] if layer_key else handle["X"]
+        declared = None
+        if "uns/spatialmind/expression_semantics" in handle:
+            declared = handle["uns/spatialmind/expression_semantics"][()]
+            if isinstance(declared, bytes):
+                declared = declared.decode()
+        try:
+            base_node = handle.get("uns/log1p/base")
+            base = base_node[()] if base_node is not None and base_node.attrs.get("encoding-type") not in {"null", b"null"} else None
+            semantics = resolve_expression_semantics(expression_semantics, layer_key, "uns/log1p" in handle, declared, base)
+        except ValueError as exc:
+            raise IngestionValidationError(str(exc)) from exc
+        if isinstance(matrix, h5py.Group) and matrix.attrs.get("encoding-type") not in {"csr_matrix", b"csr_matrix"}:
+            raise IngestionValidationError("Streaming H5AD requires CSR or dense expression; convert CSC explicitly.")
         records: List[SpotRecord] = []
         sample = sample_id or Path(path).stem
         if isinstance(matrix, h5py.Group):
@@ -184,6 +211,8 @@ def read_h5ad_subsample(
                 else:
                     cols = indices[start:end]
                     vals = data[start:end]
+                    if not np.isfinite(vals).all() or np.any(vals < 0):
+                        raise IngestionValidationError("Expression must be finite and nonnegative before panel filtering.")
                     if keep_mask is not None:
                         # Vectorised select, then one dict over what survives.
                         in_range = cols < len(gene_names)
@@ -215,6 +244,8 @@ def read_h5ad_subsample(
         else:
             for position, row in enumerate(rows):
                 values = np.asarray(matrix[row, :])
+                if not np.isfinite(values).all() or np.any(values < 0):
+                    raise IngestionValidationError("Expression must be finite and nonnegative before panel filtering.")
                 if keep_mask is not None:
                     columns = np.nonzero(keep_mask & (values != 0.0))[0]
                 else:
@@ -250,7 +281,13 @@ def read_h5ad_subsample(
         "organism": (organism[0] if organism else ""),
         "sampling": {"total_records": total, "scanned_records": len(rows), "method": "stratified_by_class", "seed": seed},
         "read_strategy": "h5py_subsample",
+        "source_value_semantics": semantics,
+        "raw_counts_available": semantics == "raw_counts",
+        "raw_count_layer": layer_key,
     })
+    if any(not np.isfinite(value) or value < 0 for record in records for value in record.genes.values()):
+        raise IngestionValidationError("Counts and log-normalized expression must be finite and nonnegative.")
+    dataset.normalized = semantics == "log_normalized"
     dataset.processing_steps.append(
         "Read %d of %d cells stratified by class through h5py; layers and raw were not touched."
         % (len(records), total)

@@ -2,6 +2,97 @@
 
 This log tracks implementation work against the current v2 build plan. It is updated as development proceeds so decisions, blockers, and verification steps remain visible.
 
+## 2026-10-02: GitHub Collaborator Distribution
+
+The owner explicitly confirmed all local datasets are cleared for public
+redistribution after being informed that the repository is public. Prepare the
+full approximately 42 GB data snapshot as checksum-bound split release assets,
+not Git blobs; `.gitignore` continues excluding large raw data and binaries.
+Package the September 30 tested Intel app instead of the stale September 28 DMG.
+Include the glioblastoma example and the frozen specialist-review packet so a
+collaborator can inspect actual outputs and pending work. Added a collaborator
+handoff with source-tag, download, integrity, restoration, privacy and validation
+limitations. The owner attestation does not substitute for an independent audit.
+
+Publication and asset-verification results will be recorded below after upload.
+
+## 2026-09-30: Ordered Evidence-Boundary Upgrade
+
+### 1. Correctness Boundaries
+
+Implemented explicit review approval/provenance checks shared by ingestion,
+Studio and specialist/brain benchmark validators. Candidate/anonymous/invalid
+rows and duplicate IDs cannot become reviewed truth. Studio preserves extra
+columns, versions previous CSVs and journals before atomic replacement. Missing
+donor identity now blocks condition inference even with multiple sections. H5AD
+semantics distinguish counts from natural-log expression and reject ambiguous,
+negative, scaled, nonfinite or non-natural-log input instead of double logging.
+
+### 2. Shared Execution
+
+Moved typed plan construction to agent.planning with a Studio compatibility API.
+Removed AlgorithmEngine from the active orchestrator; canonical tools use the
+shared runtime boundary across supported entry points. Real backends, group
+aliases, gates and preconditions are enforced there and effective parameters
+recorded. Legacy intent vocabulary remains for saved requests, not a separate
+execution backend. A full-suite regression caught canonical existing-label
+annotation missing from the always-gated set; fixed and directly tested.
+
+### 3. Specialist Brain Review
+
+Blocked on human input. Refreshed the ordered JSON/HTML readiness report for the
+existing two 750-cell cohorts: accepted labels/regions remain zero. No identities,
+credentials, cell labels, pathology ROIs or matched histology were fabricated;
+raw data and review CSVs were not edited.
+
+### 4. Brain Model Lock and External Evaluation
+
+Implemented validate_brain_model.py: stage provenance/hash checks, train/validation
+only k/prior selection, a frozen JSON training reference and model lock, verified
+development donor IDs, custodian/hash-bound external release, prespecified panel
+overlap, predictions before truth parsing, exact truth membership and per-donor
+metrics. One-attempt reservation prevents silent test reuse; it is procedural,
+not authenticated access control. Synthetic tests exercise this path, not real
+brain performance. The actual local selection refuses before creating model
+artifacts because specialists are unassigned.
+
+### 5. Biological Reliability Evaluation
+
+Implemented reviewed claim truth/provenance checks and donor-disjoint calibration
+with train-only fitting, held-out Brier/ECE/AUROC, curves and per-donor metrics.
+Null/readiness controls cannot train this biological calibrator; new drafts leave
+donor/split blank for custodial assignment. No reviewed biological claim table is
+available, so the pilot still uses weakest-link reliability and no biological
+calibrator was trained or deployed.
+
+Verification:
+
+- Full suite: 586/586 passed in 204.087 seconds, including 24 new regression tests.
+  An initial run passed 584/585 and exposed the migrated annotation gate gap;
+  the implementation was fixed without weakening the expected policy.
+- Import contracts: 6/6 passed; legacy routing 16/16 and MVP evaluation 13/13.
+  Compilation, documentation inventory and environment dependency checks passed.
+  These checks do not measure brain biological accuracy.
+- Real glioblastoma example: 1,500 sampled cells from a 40,887-cell section,
+  1,495 retained after QC, 9 newly computed expression clusters. Scanpy/Squidpy
+  produced descriptive maps, marker summaries and spatial statistics. Report:
+  `outputs/reliability_boundary_20260930/glioblastoma_example/validated_xenium_pilot_report.html`.
+  Status remains `blocked_missing_validation_inputs`; no validated cell-type or
+  pathology claims were unlocked. This is a sampled run, not a full-section study.
+- Studio visual inspection confirmed that reviewer/evidence/confidence/basis
+  controls fit the review panel. No real review assignments were submitted.
+  The 77 Studio tests passed again after the final CSS change.
+- Intel macOS app rebuilt successfully, 209 native libraries passed architecture
+  audit, and bundled UI SHA-256 matches source. Signature is ad-hoc, not notarized;
+  no Apple Silicon app or refreshed distribution DMG was produced.
+  Frozen-app smoke checks passed 12/12, including actual Scanpy clustering and
+  Squidpy spatial-gene analysis on a clearly synthetic 300-cell fixture, review
+  table writes, gate reopening/closing and scaffold refusal. This verifies the
+  headless bundled backend, not native-window rendering or biological validity.
+- Historical breast benchmark numbers were not rescored or promoted. Specialist
+  assignment, reviewed brain truth, independent donor testing and biological
+  calibration are still pending human evidence, not completed training.
+
 ## 2026-05-24
 
 ### Step 1: Create Development Tracking Log

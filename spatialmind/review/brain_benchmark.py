@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from spatialmind.ingestion import load_xenium
+from spatialmind.contracts.review import review_decision_issues
 from spatialmind.ingestion.labels import MARKER_EVIDENCE_FEATURES, NON_BIOLOGICAL_FEATURES
 from spatialmind.schemas import SpatialDataset, SpotRecord
 from spatialmind.tools import build_mvp_registry
@@ -53,6 +54,7 @@ LABEL_REVIEW_FIELDS = [
     "reviewed_at",
     "review_status",
     "notes",
+    "evidence_ref",
 ]
 
 REGION_REVIEW_FIELDS = [
@@ -71,6 +73,8 @@ REGION_REVIEW_FIELDS = [
     "region_reviewed_at",
     "review_status",
     "notes",
+    "evidence_ref",
+    "region_basis",
 ]
 
 SPLIT_FIELDS = [
@@ -693,8 +697,10 @@ def _validate_dataset_tables(
         for name, values in (("label", label_ids), ("region", region_ids), ("split", split_ids))
         if any(not value.strip() for value in values)
     ]
-    reviewed_labels = [row for row in labels if row.get("expert_label", "").strip()]
-    reviewed_regions = [row for row in regions if row.get("region", "").strip()]
+    if not math.isfinite(minimum_review_coverage) or not 0.9 <= minimum_review_coverage <= 1:
+        raise ValueError("Brain benchmark review coverage must be finite and at least 0.9.")
+    reviewed_labels = [row for row in labels if not review_decision_issues(row)]
+    reviewed_regions = [row for row in regions if not review_decision_issues(row, region=True, anatomical=True)]
     reviewed_label_ids = {row.get("cell_id", "") for row in reviewed_labels}
     reviewed_region_ids = {row.get("cell_id", "") for row in reviewed_regions}
     jointly_reviewed_ids = reviewed_label_ids & reviewed_region_ids
@@ -773,7 +779,7 @@ def _write_reviewed_truth_outputs(
     truth_rows = []
     for label in labels:
         region = region_by_id[label["cell_id"]]
-        if not label.get("expert_label", "").strip() or not region.get("region", "").strip():
+        if review_decision_issues(label) or review_decision_issues(region, region=True, anatomical=True):
             continue
         split = split_by_id[label["cell_id"]]
         truth_rows.append(

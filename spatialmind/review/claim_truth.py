@@ -1,5 +1,7 @@
 import csv
 import json
+import math
+from spatialmind.contracts.review import review_decision_issues
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -32,6 +34,8 @@ CLAIM_TRUTH_FIELDS = [
     "source_citation",
     "split",
     "notes",
+    "donor_id",
+    "review_status",
 ]
 
 DEFAULT_BRAIN_DATASETS = [
@@ -93,10 +97,33 @@ def prepare_claim_reliability_review_packet(
 def validate_claim_truth_table(path: str, min_reviewed_records: int = 4) -> Dict[str, Any]:
     rows = load_claim_truth_records(path)
     reviewed = [row for row in rows if row.get("reviewed_truth_label") in {0, 1}]
-    usable = [row for row in reviewed if str(row.get("use_for_calibration", "")).strip().lower() in {"yes", "true", "1"}]
+    requested = [row for row in reviewed if str(row.get("use_for_calibration", "")).strip().lower() in {"yes", "true", "1"}]
+    usable, rejected = [], []
+    for row in requested:
+        evidence = dict(row, expert_label="supported" if row["reviewed_truth_label"] else "unsupported",
+                        confidence="1", evidence_ref=row.get("source_citation", ""))
+        issues = review_decision_issues(evidence)
+        if not str(row.get("truth_basis", "")).strip():
+            issues.append("missing truth_basis")
+        for name in ("S_statistical", "A_annotation", "P_panel", "R_spatial_robustness"):
+            try:
+                value = float(row.get(name, ""))
+                if not math.isfinite(value) or not 0 <= value <= 1:
+                    raise ValueError()
+            except (TypeError, ValueError):
+                issues.append("invalid component: " + name)
+        if issues:
+            rejected.append({"record_id": row.get("record_id", ""), "issues": issues})
+        else:
+            usable.append(row)
     positives = sum(1 for row in usable if row.get("reviewed_truth_label") == 1)
     negatives = sum(1 for row in usable if row.get("reviewed_truth_label") == 0)
     blockers = []
+    ids = [row.get("record_id", "").strip() for row in usable]
+    if len(ids) != len(set(ids)) or any(not value for value in ids):
+        blockers.append("Calibration records require nonempty unique record IDs.")
+    if rejected:
+        blockers.append("%d requested records have invalid review evidence or components." % len(rejected))
     if len(usable) < min_reviewed_records:
         blockers.append("Need at least %d reviewed calibration records; found %d." % (min_reviewed_records, len(usable)))
     if positives == 0:
@@ -113,6 +140,7 @@ def validate_claim_truth_table(path: str, min_reviewed_records: int = 4) -> Dict
         "negative_count": negatives,
         "blockers": blockers,
         "records": usable,
+        "rejected_records": rejected,
     }
 
 
@@ -313,7 +341,9 @@ def _base_row(
         "reviewed_at": "",
         "truth_basis": "",
         "source_citation": "",
-        "split": _stable_split(record_id),
+        "split": "",
+        "donor_id": "",
+        "review_status": "candidate",
         "notes": notes,
     }
 
