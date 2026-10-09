@@ -39,6 +39,18 @@ without overwrite, and the maintainer publishes after upload acceptance. No
 personal token was copied into repository secrets and no broad permission
 setting was weakened.
 
+Published [the dual-native 1.0.1 test prerelease](https://github.com/Katherine516/SpatialMind/releases/tag/studio-v1.0.1-native)
+with both DMG/ZIP installers, SHA-256 inventory and verification archive. All six
+assets are uploaded and the prerelease is public. Build source is clean
+`9237f4033b4d22e5ee64d042f74d15a31900e287`; later changes are publication helpers
+and documentation, not a claim that the binaries were rebuilt from the later
+documentation commit. ARM/Intel audits checked 614/618 Mach-O files respectively,
+with zero wrong/unreadable architectures. Downloaded verification evidence
+matched its published checksum locally. The large local installer relay was
+cancelled because of low transfer speed; no local installer acceptance is claimed.
+Native CI tested the application on each architecture. Both cached interpreters
+are CPython 3.11.9; security-patch runtime refresh remains a production requirement.
+
 Remaining distribution requirements: Apple Developer ID/notarization credentials
 and manual collaborator checks of folder-consent choices, display layout and
 representative large-data workloads. Expert labels, regions and independent

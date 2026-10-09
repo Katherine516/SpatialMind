@@ -15,10 +15,24 @@ The existing primary working tree and older Intel package were preserved.
 
 ## Acceptance
 
+[Published downloads and checksums](https://github.com/Katherine516/SpatialMind/releases/tag/studio-v1.0.1-native).
+The verification ZIP was also downloaded locally and matched its published
+SHA-256 (`6c6a21f14eb352266e4e30c854270a4062a1b32053c0c1793d2a01c4f13754aa`).
+
 - Full local regression: **645/645 tests passed**, 302.327 seconds, Python 3.9.
 - End-to-end source acceptance: **13/13 checks passed** after the HTML delivery fix.
 - Apple Silicon: **13/13 packaged checks passed**; visible Cocoa/WKWebView probe passed.
 - Intel: **13/13 packaged checks passed**; visible Cocoa/WKWebView probe passed.
+- Publication guards: **9/9 focused tests passed** after the full 645-test run.
+
+| Native Package | Bundled Interpreter | App Size (MiB) | Mach-O Files Audited | Incompatible / Unreadable |
+| --- | --- | ---: | ---: | --- |
+| Apple Silicon | CPython 3.11.9 | 872.5 | 614 | 0 / 0 |
+| Intel | CPython 3.11.9 | 1001.8 | 618 | 0 / 0 |
+
+The cached native interpreter is not the newest CPython security-patch runtime.
+Upgrade and revalidate that runtime before production distribution; the current
+release is explicitly a research test package, not a security certification.
 
 CI uses native Python 3.11 and separate constrained application environments.
 Each release manifest records the actual interpreter version, source commit,
@@ -59,6 +73,12 @@ globally. See [Apple's guidance](https://support.apple.com/en-us/102445).
 Developer ID signing/notarization is implemented but remains untested without
 the owner's Apple credentials. Required Actions secrets and commands are in
 [the packaging guide](spatialmind_studio.md#signing-and-notarization).
+
+The native build run and final checksum/publication run both succeeded. GitHub
+blocked release creation by the Actions token for the workflow-changing source
+commit. The maintainer created the exact source tag and empty prerelease draft;
+CI verified both artifacts and uploaded without overwrite, then the maintainer
+published the completed draft. No personal credentials were stored in CI.
 
 ## Remaining Acceptance
 
