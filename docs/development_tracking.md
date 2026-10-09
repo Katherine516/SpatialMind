@@ -32,6 +32,12 @@ tests after that full regression) and module-help verification. The publisher
 checks both source identities, strict backend/window evidence and SHA-256
 inventories, assembling the prerelease directly on GitHub to avoid a slow local
 installer relay. See [acceptance and remaining scope](macos_release_1_0_1.md).
+GitHub's Actions token could verify artifacts but could not create release
+metadata for the workflow-changing source commit. The maintainer therefore
+creates the exact tag and empty prerelease draft; CI uploads verified assets
+without overwrite, and the maintainer publishes after upload acceptance. No
+personal token was copied into repository secrets and no broad permission
+setting was weakened.
 
 Remaining distribution requirements: Apple Developer ID/notarization credentials
 and manual collaborator checks of folder-consent choices, display layout and

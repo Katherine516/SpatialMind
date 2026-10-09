@@ -13,13 +13,23 @@ The base path remains dependency-light for fast testing, while the core workstat
 
 ## Collaborator Downloads
 
-The [October 2 collaboration prerelease](https://github.com/Katherine516/SpatialMind/releases/tag/collaboration-2026-10-02)
+The [native macOS 1.0.1 test prerelease](https://github.com/Katherine516/SpatialMind/releases/tag/studio-v1.0.1-native)
+provides separate Intel (`x86_64`) and Apple Silicon (`arm64`) DMG/ZIP downloads
+for macOS 15 or newer. Both native builds passed 13 packaged analysis/export
+checks and the real Cocoa/WKWebView probe. SHA-256 checksums and a verification
+archive accompany the installers. These are ad-hoc signed research packages,
+not Apple-notarized or biologically validated releases. See
+[acceptance and installation](docs/macos_release_1_0_1.md).
+
+The earlier [October 2 collaboration snapshot](https://github.com/Katherine516/SpatialMind/releases/tag/collaboration-2026-10-02)
 distributes the full local data snapshot as split release assets, the tested Intel
 macOS app, a glioblastoma example report and the specialist-review packet.
 These large assets are separate from Git: cloning this repository does not download
 them. See [download, checksum and restoration instructions](docs/collaborator_handoff.md).
 The app is ad-hoc signed, not Apple-notarized. This is a research snapshot with
 pending biological review, not a validated brain analysis product.
+That older snapshot is currently a draft and may require maintainer access;
+the new native-app release does not publish or embed those data archives.
 
 ## Reference
 

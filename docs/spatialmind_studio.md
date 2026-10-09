@@ -270,9 +270,16 @@ download includes its build manifest, test results and dependency inventory.
 After both jobs pass, the same workflow accepts an optional `publish_run_id`.
 It verifies that run's successful build origin, checks both clean source
 identities, strict backend/window evidence and every artifact checksum, then
-publishes an explicitly marked research test prerelease. Release assembly runs
+uploads to a maintainer-prepared research prerelease draft. Release assembly runs
 on GitHub rather than relaying large binaries through a development laptop.
 `scripts/prepare_macos_release.py` provides the same integrity check locally.
+The maintainer must create `studio-v1.0.1-native` at the verified build commit
+before publication, then create an empty draft marked as a prerelease. The
+publisher requires that tag's exact source commit and that empty draft; it never
+overwrites published assets. The Actions token does not gain workflow-writing
+credentials to create release metadata for a workflow-changing source commit.
+After the upload succeeds, the maintainer publishes the draft with their own
+account. This also keeps partial uploads private.
 
 ### Signing and notarization
 

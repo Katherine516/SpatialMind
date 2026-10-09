@@ -4,6 +4,20 @@ Prepared 2026-10-02 for Katherine516/SpatialMind. Source code is versioned in Gi
 large data and app binaries are distributed as GitHub release assets, not Git
 blobs or Git LFS pointers.
 
+## Current Native App
+
+The [1.0.1 native macOS test prerelease](https://github.com/Katherine516/SpatialMind/releases/tag/studio-v1.0.1-native)
+replaces the older Intel-only application download. Choose `arm64` for M-series
+Macs or `x86_64` for Intel, on macOS 15 or newer. It includes DMG/ZIP installers,
+`SHA256SUMS.txt` and a verification ZIP with both native manifests, dependency
+inventories, runtime tests and synthetic example reports. No Python installation
+or embedded dataset download is needed. These packages are ad-hoc signed, not
+Apple-notarized. [Acceptance and installation details](macos_release_1_0_1.md).
+
+The October 2 data snapshot below is a separate, older draft release. Access may
+require maintainer permissions; publishing the native application does not make
+that draft's data archives public.
+
 ## Release
 
 [Download the collaboration snapshot](https://github.com/Katherine516/SpatialMind/releases/tag/collaboration-2026-10-02).
