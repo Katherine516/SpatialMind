@@ -196,6 +196,7 @@ def _squidpy_runs(state):
     for tool, engine in (("qc_and_cluster", "scanpy"), ("spatial_variable_genes", "squidpy")):
         assert entries.get(tool, {}).get("metrics", {}).get("engine") == engine, entries.get(tool)
     state["analysis_job"] = job_id
+    state["analysis_result"] = get("/api/runs/%s" % job_id)
     return "qc_and_cluster + spatial_variable_genes on %d cells" % N_CELLS
 
 
@@ -310,12 +311,12 @@ def main() -> int:
                                stderr=subprocess.STDOUT, text=True)
     failures = []
     results = []
+    state = {"bundle": bundle}
     try:
         started = time.time()
         wait_for_health(process)
         print("App answered in %.1fs on port %d\n" % (time.time() - started, PORT))
 
-        state = {"bundle": bundle}
         for name, func in CHECKS:
             try:
                 detail = func(state)
@@ -340,8 +341,11 @@ def main() -> int:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps({"status": "failed" if failures else "passed",
                 "architecture": platform.machine(), "checks": results,
+                "analysis": state.get("analysis_result"),
                 "passed": sum(item["status"] == "passed" for item in results),
                 "total": len(CHECKS)}, indent=2), encoding="utf-8")
+            if (workspace / "outputs").exists():
+                shutil.copytree(workspace / "outputs", args.report.parent / "smoke_example", dirs_exist_ok=True)
         shutil.rmtree(workspace, ignore_errors=True)
 
     print("\n%d of %d checks passed." % (len(CHECKS) - len(failures), len(CHECKS)))
