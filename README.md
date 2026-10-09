@@ -144,16 +144,30 @@ produce a typed plan that the local validator checks before anything runs. The
 Build the macOS app:
 
 ```bash
-python3 -m pip install -r requirements-app.txt
+python3.11 -m venv .venv-app
+source .venv-app/bin/activate
+python -m pip install -r requirements-app.txt
 python scripts/build_macos_app.py --clean --dmg   # builds for the HOST architecture
 python scripts/smoke_test_macos_app.py            # launches it and drives the API
+python scripts/smoke_test_macos_window.py --app "dist/SpatialMind Studio.app" --report dist/native_smoke.json
 ```
 
 PyInstaller freezes installed wheels, and the scientific stack ships
 single-architecture wheels, so **each macOS architecture must be built on that
 architecture**; a universal2 bundle is not achievable with this dependency set.
-`.github/workflows/build-macos.yml` runs the same script on `macos-13` (Intel)
-and `macos-14` (Apple Silicon) and uploads a `.dmg` for each.
+`.github/workflows/build-macos.yml` runs the same script on `macos-15-intel`
+(Intel) and `macos-15` (Apple Silicon). Version 1.0.1 targets macOS 15 or newer;
+choose `x86_64` for an Intel Mac and `arm64` for M-series Macs. The scientific
+stack is constrained in `packaging/constraints-macos.txt`; each build records the
+complete installed dependency set. The release checks every native binary and
+requires both packaged analysis/export tests and a visible Cocoa/WKWebView test
+before producing ZIP downloads and checksums alongside the DMG.
+
+Current builds are **ad-hoc signed test packages**, not notarized distribution
+releases. Native architecture support does not bypass Gatekeeper. Developer ID
+signing and Apple notarization require the project owner's Apple credentials.
+See [macOS packaging and acceptance](docs/spatialmind_studio.md#packaging-for-macos)
+for the build, testing and signing procedure.
 
 ## Architecture
 

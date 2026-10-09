@@ -1,6 +1,7 @@
 """Release guards must not certify incomplete or wrong-architecture bundles."""
 
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ def load_script(name):
 
 build = load_script("build_macos_app")
 release = load_script("finalize_macos_release")
+signing = load_script("configure_macos_signing")
 
 
 class PackagingTests(unittest.TestCase):
@@ -51,6 +53,16 @@ class PackagingTests(unittest.TestCase):
     def test_bundle_problems_block_release(self):
         with self.assertRaises(ValueError):
             release.validate_reports({"architecture": "arm64", "bundle": {"problems": ["missing UI"]}}, [])
+
+    def test_absent_credentials_use_explicit_test_mode(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(signing, "quiet") as quiet:
+            signing.prepare()
+            quiet.assert_not_called()
+
+    def test_partial_signing_identity_is_not_silently_downgraded(self):
+        with patch.dict(os.environ, {"SPATIALMIND_CODESIGN_IDENTITY": "Developer ID Application: Example"}, clear=True):
+            with self.assertRaises(ValueError):
+                signing.prepare()
 
 
 if __name__ == "__main__":

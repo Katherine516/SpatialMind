@@ -9,6 +9,8 @@ import subprocess
 
 
 def validate_reports(manifest, reports):
+    if len(reports) != 2:
+        raise ValueError("Both headless analysis and native window reports are required")
     for report in reports:
         if report.get("status") != "passed" or report.get("architecture") != manifest["architecture"]:
             raise ValueError("Runtime verification failed or ran on the wrong architecture")

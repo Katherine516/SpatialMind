@@ -338,15 +338,17 @@ def main() -> int:
     if args.dmg:
         dmg = make_dmg(app_path, arch, args.version)
         if args.notarize_profile:
+            keychain_args = (["--keychain", os.environ["SPATIALMIND_NOTARY_KEYCHAIN"]]
+                             if os.environ.get("SPATIALMIND_NOTARY_KEYCHAIN") else [])
             submission = run(["xcrun", "notarytool", "submit", str(dmg), "--keychain-profile",
-                              args.notarize_profile, "--wait", "--output-format", "json"], capture_output=True, text=True)
+                              args.notarize_profile, "--wait", "--output-format", "json"] + keychain_args, capture_output=True, text=True)
             status = json.loads(submission.stdout)
             if status.get("status") != "Accepted":
                 raise RuntimeError("Notarization failed: " + str(status.get("status")))
             run(["xcrun", "stapler", "staple", str(app_path)])
             dmg = make_dmg(app_path, arch, args.version)
             submission = run(["xcrun", "notarytool", "submit", str(dmg), "--keychain-profile",
-                              args.notarize_profile, "--wait", "--output-format", "json"], capture_output=True, text=True)
+                              args.notarize_profile, "--wait", "--output-format", "json"] + keychain_args, capture_output=True, text=True)
             if json.loads(submission.stdout).get("status") != "Accepted":
                 raise RuntimeError("Final DMG notarization failed.")
             run(["xcrun", "stapler", "staple", str(dmg)])

@@ -207,8 +207,7 @@ gate are computed on the whole section, not on what was drawn.
 ### The constraint, stated plainly
 
 PyInstaller freezes the *installed wheels*, and the scientific stack ships thin
-(single-architecture) wheels. On the development machine here, 400 of 414
-bundled native extensions are `x86_64`-only. So:
+(single-architecture) wheels. The existing development bundle is Intel-only. So:
 
 - **A universal2 app cannot be produced from one machine** with this dependency
   set. It would need universal2 wheels for numpy, scipy, numba, llvmlite, h5py,
@@ -222,9 +221,14 @@ that would die on launch.
 ### Building
 
 ```bash
+python3.11 -m venv .venv-app
+source .venv-app/bin/activate
+python -m pip install -r requirements-app.txt
+python -m pip check
 python scripts/build_macos_app.py --check       # audit only
 python scripts/build_macos_app.py --clean --dmg # build + verify + package
 python scripts/smoke_test_macos_app.py          # launch it and drive the API
+python scripts/smoke_test_macos_window.py --app "dist/SpatialMind Studio.app" --report dist/native_smoke.json
 ```
 
 The build produces `dist/SpatialMind Studio.app` and, with `--dmg`, a
@@ -233,9 +237,64 @@ The build produces `dist/SpatialMind Studio.app` and, with `--dmg`, a
 ### Both architectures
 
 `.github/workflows/build-macos.yml` runs the same script on a matrix:
-`macos-13` (Intel) and `macos-14` (Apple Silicon), each testing, auditing,
+`macos-15-intel` (Intel) and `macos-15` (Apple Silicon), each testing, auditing,
 building and smoke-testing on real hardware of that architecture, then uploading
-the `.dmg`. That is the supported way to produce both.
+the `.dmg` and a ZIP. That is the supported way to produce both. Version 1.0.1
+declares macOS 15 as its minimum; older systems are not certified by these runs.
+This is two native applications, not a universal2 executable and not an ARM app
+running through Rosetta.
+
+### Acceptance evidence
+
+The architecture audit inspects every Mach-O file, including extensionless
+framework executables, and fails on unreadable or incompatible architectures.
+It no longer samples the first 40 or 250 libraries. Build runners install the
+shared scientific constraints and archive their full `pip freeze` results.
+
+The headless packaged test uses a generated 300-cell fixture, runs real Scanpy
+clustering and Squidpy spatial statistics, and checks HTML, figures, PDF, Word
+and Excel delivery, plus review-gate behavior. These synthetic decisions are
+test fixtures, not expert labels or biological validation.
+
+The native probe opens the actual bundled Cocoa window, checks a visible
+NSWindow, loaded WKWebView DOM and Python bridge, and constructs a directory-only
+NSOpenPanel. It does not simulate a person's folder-consent choices. The probe
+is enabled only through `SPATIALMIND_NATIVE_SMOKE_REPORT`; normal sessions never
+run it. Manual release acceptance still needs folder permissions, display/layout
+inspection and a representative large-data run on a collaborator's Mac.
+
+`scripts/finalize_macos_release.py` refuses failed/wrong-architecture test
+reports, archives the app, and records SHA-256 checksums. Each architecture's
+download includes its build manifest, test results and dependency inventory.
+
+### Signing and notarization
+
+Without a Developer ID certificate the builder produces an ad-hoc signed test
+bundle and verifies its signature integrity. This is not Apple approval;
+Gatekeeper may block downloaded copies. Do not disable Gatekeeper globally.
+
+With an imported Developer ID Application identity and a preconfigured
+`notarytool` keychain profile:
+
+```bash
+export SPATIALMIND_CODESIGN_IDENTITY="Developer ID Application: Your Organization (TEAMID)"
+python scripts/build_macos_app.py --dmg --notarize-profile spatialmind-notary
+```
+
+PyInstaller signs the nested binaries; the outer app is signed with hardened
+runtime, timestamp and LLVM/Numba JIT entitlements. Signature verification is
+mandatory. Notarization must return `Accepted`; the app and final DMG are
+stapled, and the final DMG ticket is validated. Release manifests distinguish
+`ad_hoc` from `developer_id` and separately record notarization. Credentials and
+private certificates must never be committed to this repository.
+
+For CI, configure repository Actions secrets `MACOS_CERTIFICATE_P12` (base64 P12),
+`MACOS_CERTIFICATE_PASSWORD` and `MACOS_CODESIGN_IDENTITY`. To enable notarization
+also provide `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD`. CI imports the
+certificate into an ephemeral keychain and removes it in an always-run cleanup
+step. Secret command output is suppressed. With no certificate the same workflow
+builds explicitly identified ad-hoc test packages; partial signing configuration
+fails instead of silently downgrading the release.
 
 ### The icon
 

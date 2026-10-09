@@ -178,7 +178,9 @@ def _squidpy_runs(state):
         "dataset_id": state["dataset_id"], "kind": "plan",
         "label": "smoke: spatial statistics",
         "tools": ["qc_and_cluster", "spatial_variable_genes"],
-        "overrides": {"spatial_variable_genes": {"n_perms": 20, "n_top": 5}},
+        "overrides": {"qc_and_cluster": {"engine": "scanpy", "strict_engine": True},
+                      "spatial_variable_genes": {"engine": "squidpy", "strict_engine": True,
+                                                  "n_perms": 20, "n_top": 5}},
     })
     job_id = job["job_id"]
     deadline = time.time() + 420
@@ -190,8 +192,9 @@ def _squidpy_runs(state):
             break
         time.sleep(2.0)
     assert state_name == "succeeded", "%s: %s" % (state_name, error[:400])
-    tools = [entry["tool"] for entry in (get("/api/runs/%s" % job_id)["result"] or {}).get("results", [])]
-    assert "spatial_variable_genes" in tools, tools
+    entries = {entry["tool"]: entry for entry in (get("/api/runs/%s" % job_id)["result"] or {}).get("results", [])}
+    for tool, engine in (("qc_and_cluster", "scanpy"), ("spatial_variable_genes", "squidpy")):
+        assert entries.get(tool, {}).get("metrics", {}).get("engine") == engine, entries.get(tool)
     state["analysis_job"] = job_id
     return "qc_and_cluster + spatial_variable_genes on %d cells" % N_CELLS
 
