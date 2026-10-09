@@ -13,10 +13,13 @@ def load_scrna(
     max_records: int = 5000,
     keep_features: Optional[Sequence[str]] = None,
     expression_semantics: str = "auto",
+    expression_layer: str = "auto",
+    allowed_donors: Optional[Sequence[str]] = None,
 ) -> SpatialDataset:
     dataset = _load_matrix_like(
         path, sample_id=sample_id, max_records=max_records, keep_features=keep_features,
-        expression_semantics=expression_semantics
+        expression_semantics=expression_semantics, expression_layer=expression_layer,
+        allowed_donors=allowed_donors,
     )
     dataset.modality = "scrna"
     dataset.coordinate_system = "embedding_or_index"
@@ -35,6 +38,8 @@ def load_scrna_reference_set(
     keep_features: Optional[Sequence[str]] = None,
     progress: Optional[Callable[[str], None]] = None,
     expression_semantics: str = "auto",
+    expression_layer: str = "auto",
+    allowed_donors: Optional[Sequence[str]] = None,
 ) -> SpatialDataset:
     """Concatenate several scRNA files into one labelled reference.
 
@@ -57,12 +62,15 @@ def load_scrna_reference_set(
     """
     if not paths:
         raise IngestionValidationError("load_scrna_reference_set requires at least one reference path.")
+    if len({str(Path(path).resolve()) for path in paths}) != len(paths):
+        raise IngestionValidationError("The same reference file cannot be included more than once.")
     datasets = []
     for index, path in enumerate(paths, start=1):
         if progress:
             progress("reference %d/%d: reading %s" % (index, len(paths), Path(path).name))
         item = load_scrna(path, max_records=max_records_per_file, keep_features=keep_features,
-                          expression_semantics=expression_semantics)
+                          expression_semantics=expression_semantics, expression_layer=expression_layer,
+                          allowed_donors=allowed_donors)
         if progress:
             progress(
                 "reference %d/%d: %s -> %d cells, %d classes"
@@ -81,9 +89,26 @@ def load_scrna_reference_set(
         raise IngestionValidationError("Reference expression semantics differ; supply consistently processed references.")
     combined = datasets[0]
     if len(datasets) > 1:
+        provenance = {}
+        for path, item in zip(paths, datasets):
+            from spatialmind.ingestion.identity import file_sha256, observation_id
+            cached = item.metadata.get("identity_scheme") == "source_sha256_and_original_cell_id_v1"
+            source_sha = item.metadata.get("source_content_sha256") if cached else file_sha256(path)
+            old_provenance = item.metadata.get("observation_provenance") or {}
+            for record in item.records:
+                original = record.cell_id
+                record.cell_id = original if cached else observation_id(source_sha, original)
+                if record.cell_id in provenance:
+                    raise IngestionValidationError("Reference source observations overlap, including copied files or overlapping caches.")
+                origin = old_provenance.get(original) or {"source_cell_id": original}
+                provenance[record.cell_id] = dict(origin, source_path=str(Path(path).resolve()),
+                                                 source_content_sha256=source_sha)
         for extra in datasets[1:]:
             combined.records.extend(extra.records)
         combined.sources = [source for item in datasets for source in item.sources]
+        combined.metadata["observation_provenance"] = provenance
+        combined.metadata["identity_namespace"] = "source_sha256_and_original_cell_id_v1; portable, byte-version bound"
+        combined.metadata["donor_ids"] = sorted({donor for item in datasets for donor in item.metadata.get("donor_ids", [])})
     combined.sample_id = sample_id or combined.sample_id
     combined.metadata["reference_file_count"] = len(datasets)
     combined.metadata["reference_paths"] = [str(path) for path in paths]
@@ -106,6 +131,8 @@ def _load_matrix_like(
     max_records: int = 5000,
     keep_features: Optional[Sequence[str]] = None,
     expression_semantics: str = "auto",
+    expression_layer: str = "auto",
+    allowed_donors: Optional[Sequence[str]] = None,
 ) -> SpatialDataset:
     layer = DataIngestionLayer()
     suffix = Path(path).suffix.lower()
@@ -113,17 +140,24 @@ def _load_matrix_like(
         # A large atlas has to be streamed. anndata's backed mode covers X only,
         # so opening one whose layers dwarf X kills the process, and the fallback
         # is a full in-memory read -- worse. Read the wanted rows through h5py.
-        try:
-            if os.path.getsize(path) >= LARGE_H5AD_BYTES:
-                return read_h5ad_subsample(
-                    path, max_records=max_records, sample_id=sample_id, keep_features=keep_features,
-                    expression_semantics=expression_semantics
-                )
-        except OSError:
-            pass
+        stream = (expression_layer != "auto" or allowed_donors is not None or keep_features is not None
+                  or os.path.getsize(path) >= LARGE_H5AD_BYTES)
+        if not stream:
+            import h5py
+            from spatialmind.ingestion.h5ad_access import scalar
+            with h5py.File(path, "r") as handle:
+                stream = scalar(handle, "uns/spatialmind/identity_scheme") == "source_sha256_and_original_cell_id_v1"
+        if stream:
+            return read_h5ad_subsample(
+                path, max_records=max_records, sample_id=sample_id, keep_features=keep_features,
+                expression_semantics=expression_semantics, expression_layer=expression_layer,
+                allowed_donors=allowed_donors,
+            )
         # Dissociated scRNA has no spatial coordinates; that must not block loading.
         return layer.load_h5ad(path, sample_id=sample_id, max_records=max_records, require_spatial=False,
                                expression_semantics=expression_semantics)
+    if expression_layer != "auto" or allowed_donors is not None:
+        raise IngestionValidationError("Explicit layer/donor selection requires H5AD input.")
     return layer.load(path, sample_id=sample_id)
 
 
@@ -134,6 +168,8 @@ def read_h5ad_subsample(
     seed: int = 0,
     keep_features: Optional[Sequence[str]] = None,
     expression_semantics: str = "auto",
+    expression_layer: str = "auto",
+    allowed_donors: Optional[Sequence[str]] = None,
 ) -> SpatialDataset:
     """Read a bounded row sample from a large `.h5ad` without materialising it.
 
@@ -143,12 +179,11 @@ def read_h5ad_subsample(
     to a full in-memory read, which is worse. The Core GBmap reference is 7.6 GB
     on disk and over 54 GB expanded; it could not be loaded at all.
 
-    Reading wanted rows through h5py uses a named counts layer when available,
-    otherwise X, without materialising other layers or raw. The draw is seeded
-    and stratified by class, so a reference contributes
-    the same cells on every run and every class it declares is present in the
-    sample -- see `_stratified_rows` for why proportional sampling is the wrong
-    choice here.
+    Reading wanted rows through h5py supports explicit X, raw.X (with its own
+    var), or named layers without materialising unused matrices. Auto selection
+    prefers a named counts layer, then X. Donor selection precedes label reads
+    and seeded class-stratified sampling; class coverage remains bounded by the
+    sample size, and this is not a donor-balanced sampling strategy.
 
     `keep_features` restricts each row to the genes the caller can actually use.
     Label transfer intersects the reference against a ~320-gene Xenium panel and
@@ -160,41 +195,75 @@ def read_h5ad_subsample(
     """
     import h5py
     import numpy as np
+    from spatialmind.ingestion.h5ad_access import select_matrix, scalar, column_values
 
     with h5py.File(path, "r") as handle:
-        gene_names = _h5_gene_names(handle["var"])
+        try:
+            matrix, var, matrix_path, semantics = select_matrix(handle, expression_layer, expression_semantics)
+        except ValueError as exc:
+            raise IngestionValidationError(str(exc)) from exc
+        gene_names = _h5_gene_names(var)
         # Column mask for the wanted genes, matched case-insensitively because
         # panel and atlas symbols differ only in case often enough to matter.
         keep_mask = None
-        if keep_features:
+        if keep_features is not None:
             wanted = {str(name).strip().upper() for name in keep_features if str(name).strip()}
             keep_mask = np.array([str(name).upper() in wanted for name in gene_names], dtype=bool)
             if not keep_mask.any():
-                # No overlap at all: keep everything rather than silently return
-                # empty cells. The caller's own panel-overlap check reports it.
-                keep_mask = None
-        cell_ids = _h5_string_index(handle["obs"])
-        labels = _h5_categorical(handle["obs"], ("cell_type", "celltype", "cell_type_ontology_term_id"))
-        organism = _h5_categorical(handle["obs"], ("organism",))
-
-        total = len(cell_ids)
-        limit = total if max_records <= 0 else min(max_records, total)
-        rows = _stratified_rows(labels, total, limit, seed)
-
-        from spatialmind.ingestion.expression import resolve_expression_semantics
-        layer_key = next((key for key in ("counts", "raw_counts") if "layers/" + key in handle), None)
-        matrix = handle["layers/" + layer_key] if layer_key else handle["X"]
-        declared = None
-        if "uns/spatialmind/expression_semantics" in handle:
-            declared = handle["uns/spatialmind/expression_semantics"][()]
-            if isinstance(declared, bytes):
-                declared = declared.decode()
-        try:
-            base_node = handle.get("uns/log1p/base")
-            base = base_node[()] if base_node is not None and base_node.attrs.get("encoding-type") not in {"null", b"null"} else None
-            semantics = resolve_expression_semantics(expression_semantics, layer_key, "uns/log1p" in handle, declared, base)
-        except ValueError as exc:
-            raise IngestionValidationError(str(exc)) from exc
+                raise IngestionValidationError("Requested feature panel has no overlap with the selected reference layer.")
+        selected_names = [name for i, name in enumerate(gene_names) if keep_mask is None or keep_mask[i]]
+        if len({name.upper() for name in selected_names}) != len(selected_names):
+            raise IngestionValidationError("Selected reference feature symbols collide; supply a curated unique mapping.")
+        obs = handle["obs"]
+        index_key = obs.attrs.get("_index", "_index")
+        if isinstance(index_key, bytes):
+            index_key = index_key.decode()
+        if index_key not in obs:
+            raise IngestionValidationError("Reference requires observation identifiers.")
+        total = len(obs[index_key])
+        shape = matrix.attrs.get("shape") if isinstance(matrix, h5py.Group) else matrix.shape
+        if tuple(shape) != (total, len(gene_names)):
+            raise IngestionValidationError("Selected expression layer does not match obs and its own var.")
+        donors = column_values(obs, "donor_id")
+        eligible = list(range(total))
+        if allowed_donors is not None:
+            wanted_donors = {str(value).strip() for value in allowed_donors}
+            if not wanted_donors or "" in wanted_donors or not donors:
+                raise IngestionValidationError("Donor selection requires nonempty donor IDs and obs/donor_id.")
+            absent = wanted_donors - set(donors)
+            if absent:
+                raise IngestionValidationError("Requested donors absent from reference: %s" % sorted(absent))
+            eligible = [i for i, donor in enumerate(donors) if donor in wanted_donors]
+        label_key = next((k for k in ("cell_type", "celltype", "cell_type_ontology_term_id") if k in obs), None)
+        # Read no labels from excluded donors, including before stratification.
+        eligible_labels = column_values(obs, label_key, eligible) if label_key else []
+        limit = len(eligible) if max_records <= 0 else min(max_records, len(eligible))
+        local_rows = _stratified_rows(eligible_labels, len(eligible), limit, seed)
+        rows = [eligible[i] for i in local_rows]
+        labels = [eligible_labels[i] for i in local_rows] if eligible_labels else [""] * len(rows)
+        cell_ids = column_values(obs, index_key, rows)
+        if len(set(cell_ids)) != len(cell_ids) or any(not value.strip() for value in cell_ids):
+            raise IngestionValidationError("Selected reference observation IDs must be unique and nonempty.")
+        organism = str(scalar(handle, "uns/organism", ""))
+        obs_organisms = column_values(obs, "organism", rows)
+        declared_species = {value for value in obs_organisms if value}
+        if organism:
+            declared_species.add(organism)
+        if len(declared_species) > 1:
+            raise IngestionValidationError("Reference contains conflicting organism declarations.")
+        organism = next(iter(declared_species), "")
+        selected_donors = [donors[row] if donors else "" for row in rows]
+        source_sha = scalar(handle, "uns/spatialmind/source_content_sha256", "")
+        identity_scheme = scalar(handle, "uns/spatialmind/identity_scheme", "")
+        original_ids = column_values(obs, "source_cell_id", rows) if source_sha else cell_ids
+        source_rows = [int(value) for value in column_values(obs, "source_row", rows)] if source_sha and "source_row" in obs else rows
+        if source_sha and identity_scheme == "source_sha256_and_original_cell_id_v1":
+            from spatialmind.ingestion.identity import observation_id, verified_cache_manifest
+            cache_manifest = verified_cache_manifest(path)
+            if cache_manifest["source_content_sha256"] != source_sha:
+                raise IngestionValidationError("Cache source provenance differs from its manifest.")
+            if len(original_ids) != len(cell_ids) or cell_ids != [observation_id(source_sha, value) for value in original_ids]:
+                raise IngestionValidationError("Portable cache observation identity does not match its source provenance.")
         if isinstance(matrix, h5py.Group) and matrix.attrs.get("encoding-type") not in {"csr_matrix", b"csr_matrix"}:
             raise IngestionValidationError("Streaming H5AD requires CSR or dense expression; convert CSC explicitly.")
         records: List[SpotRecord] = []
@@ -213,6 +282,10 @@ def read_h5ad_subsample(
                     vals = data[start:end]
                     if not np.isfinite(vals).all() or np.any(vals < 0):
                         raise IngestionValidationError("Expression must be finite and nonnegative before panel filtering.")
+                    if semantics == "raw_counts" and not np.allclose(vals, np.round(vals), rtol=0, atol=1e-6):
+                        raise IngestionValidationError("Declared raw counts contain fractional values.")
+                    if np.any(cols < 0) or np.any(cols >= len(gene_names)) or len(set(cols)) != len(cols):
+                        raise IngestionValidationError("CSR row requires unique, in-range feature indices.")
                     if keep_mask is not None:
                         # Vectorised select, then one dict over what survives.
                         in_range = cols < len(gene_names)
@@ -235,10 +308,10 @@ def read_h5ad_subsample(
                         sample_id=sample,
                         x=float(position),
                         y=0.0,
-                        cell_type=labels[row] if row < len(labels) else "",
+                        cell_type=labels[position],
                         genes=genes,
                         raw_genes=dict(genes),
-                        cell_id=cell_ids[row] if row < len(cell_ids) else "cell_%d" % row,
+                        cell_id=cell_ids[position],
                     )
                 )
         else:
@@ -246,6 +319,8 @@ def read_h5ad_subsample(
                 values = np.asarray(matrix[row, :])
                 if not np.isfinite(values).all() or np.any(values < 0):
                     raise IngestionValidationError("Expression must be finite and nonnegative before panel filtering.")
+                if semantics == "raw_counts" and not np.allclose(values, np.round(values), rtol=0, atol=1e-6):
+                    raise IngestionValidationError("Declared raw counts contain fractional values.")
                 if keep_mask is not None:
                     columns = np.nonzero(keep_mask & (values != 0.0))[0]
                 else:
@@ -260,10 +335,10 @@ def read_h5ad_subsample(
                         sample_id=sample,
                         x=float(position),
                         y=0.0,
-                        cell_type=labels[row] if row < len(labels) else "",
+                        cell_type=labels[position],
                         genes=genes,
                         raw_genes=dict(genes),
-                        cell_id=cell_ids[row] if row < len(cell_ids) else "cell_%d" % row,
+                        cell_id=cell_ids[position],
                     )
                 )
 
@@ -278,19 +353,30 @@ def read_h5ad_subsample(
         "assay_subtype": "scrna",
         "feature_type": "gene_counts",
         "is_targeted_panel": False,
-        "organism": (organism[0] if organism else ""),
-        "sampling": {"total_records": total, "scanned_records": len(rows), "method": "stratified_by_class", "seed": seed},
+        "organism": organism,
+        "sampling": {"total_records": total, "eligible_records": len(eligible), "scanned_records": len(rows),
+                     "method": "donor_filtered_then_stratified_by_class", "seed": seed},
         "read_strategy": "h5py_subsample",
         "source_value_semantics": semantics,
         "raw_counts_available": semantics == "raw_counts",
-        "raw_count_layer": layer_key,
+        "raw_count_layer": matrix_path if semantics == "raw_counts" else None,
+        "expression_layer": matrix_path,
+        "measured_feature_names": gene_names,
+        "selected_feature_names": selected_names,
+        "feature_projection": "requested panel; source remains unchanged on disk" if keep_mask is not None else "all features",
+        "allowed_donors": list(allowed_donors) if allowed_donors is not None else None,
+        "source_content_sha256": source_sha,
+        "identity_scheme": identity_scheme,
+        "donor_ids": sorted(set(selected_donors) - {""}),
+        "observation_provenance": {cell: {"source_cell_id": original, "donor_id": donor, "source_row": source_row, "loaded_row": row}
+                                   for cell, original, donor, source_row, row in zip(cell_ids, original_ids, selected_donors, source_rows, rows)},
     })
     if any(not np.isfinite(value) or value < 0 for record in records for value in record.genes.values()):
         raise IngestionValidationError("Counts and log-normalized expression must be finite and nonnegative.")
     dataset.normalized = semantics == "log_normalized"
     dataset.processing_steps.append(
-        "Read %d of %d cells stratified by class through h5py; layers and raw were not touched."
-        % (len(records), total)
+        "Read %d of %d cells through h5py from %s; excluded donor labels and other matrices were not read."
+        % (len(records), total, matrix_path)
     )
     return dataset
 

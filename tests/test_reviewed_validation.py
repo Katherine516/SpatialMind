@@ -90,12 +90,19 @@ class ReviewedValidationTests(unittest.TestCase):
                     "G2": 1 if i % 2 else 100}, cell_id=str(i)) for i in range(60)], str(source))
         return packet, staging, data
 
-    def select(self, root):
+    def select(self, root, minimum_macro_f1=.1):
         packet, staging, data = self.packet(root)
         # The selection needs no internal test-truth file.
         (staging / "brain" / "test_truth.csv").unlink()
-        with patch("spatialmind.review.brain_validation.load_xenium", return_value=data):
-            return select_brain_annotation(packet, staging, root / "model", {"brain": "synthetic-development"})
+        protocol = {"candidate_neighbors": [5, 15], "candidate_prior_powers": [0.0, 0.25, 0.5, 1.0],
+                    "confidence_threshold": .6, "minimum_validation_macro_f1": minimum_macro_f1, "minimum_validation_coverage": .1,
+                    "development_donors": {"brain": {"donor_id": "synthetic-development"}},
+                    "reference_decision_sha256": "synthetic", "reference_snapshot_sha256": "synthetic"}
+        protocol_path = root / "protocol.json"; write_json(protocol_path, protocol)
+        # This unit fixture isolates selection; real protocol validation has its own suite.
+        with patch("spatialmind.review.brain_validation.load_xenium", return_value=data), \
+                patch("spatialmind.review.brain_validation.validate_protocol", return_value=protocol):
+            return select_brain_annotation(packet, staging, root / "model", {"brain": "synthetic-development"}, protocol_path)
 
     def test_model_selection_uses_only_development_and_freezes_reference(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,6 +112,15 @@ class ReviewedValidationTests(unittest.TestCase):
             self.assertEqual(result["validation"]["n_cells"], 20)
             self.assertEqual(len(json.loads((root / "model" / "training_reference.json").read_text())), 20)
             self.assertEqual(result["model_lock_sha256"], digest(result["model_lock"]))
+
+    def test_failed_development_acceptance_never_creates_a_model_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("spatialmind.review.brain_validation.metrics", return_value={"macro_f1": .2, "coverage": .8}):
+                result = self.select(root, minimum_macro_f1=.5)
+            self.assertEqual(result["status"], "blocked_development_acceptance_thresholds")
+            self.assertFalse((root / "model" / "locked_model.json").exists())
+            self.assertFalse(result["test_scored"])
 
     def test_unassigned_specialists_do_not_create_training_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

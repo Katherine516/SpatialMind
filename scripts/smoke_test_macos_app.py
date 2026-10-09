@@ -8,9 +8,11 @@ HTTP API against a synthetic dataset, and fails loudly if anything is missing.
 """
 
 from pathlib import Path
+import argparse
 import gzip
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -190,7 +192,25 @@ def _squidpy_runs(state):
     assert state_name == "succeeded", "%s: %s" % (state_name, error[:400])
     tools = [entry["tool"] for entry in (get("/api/runs/%s" % job_id)["result"] or {}).get("results", [])]
     assert "spatial_variable_genes" in tools, tools
+    state["analysis_job"] = job_id
     return "qc_and_cluster + spatial_variable_genes on %d cells" % N_CELLS
+
+
+@check("analysis delivers HTML, figures, PDF, Word and Excel exports")
+def _exports(state):
+    with urllib.request.urlopen(BASE + "/api/runs/%s/report" % state["analysis_job"], timeout=30) as response:
+        assert b"<html" in response.read().lower(), "No HTML report"
+    reports = get("/api/reports")["reports"]
+    assert reports, "Report library is empty"
+    report_id = reports[0]["report_id"]
+    for format, magic in (("pdf", b"%PDF"), ("docx", b"PK")):
+        with urllib.request.urlopen(BASE + "/api/reports/%s/export?format=%s" % (report_id, format), timeout=60) as response:
+            assert response.read().startswith(magic), "Invalid %s export" % format
+    with urllib.request.urlopen(BASE + "/api/reports/%s/results?format=xlsx" % report_id, timeout=60) as response:
+        assert response.read().startswith(b"PK"), "Invalid Excel export"
+    result = get("/api/runs/%s" % state["analysis_job"])["result"]
+    assert result.get("figures"), "No analysis figures"
+    return "HTML + figures + PDF + DOCX + XLSX"
 
 
 @check("planning inserts dependencies and validates")
@@ -250,6 +270,13 @@ def _clear(state):
 
 
 def main() -> int:
+    global APP, BINARY
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--app", type=Path, default=APP)
+    parser.add_argument("--report", type=Path)
+    args = parser.parse_args()
+    APP = args.app.resolve()
+    BINARY = APP / "Contents" / "MacOS" / "SpatialMindStudio"
     if not BINARY.exists():
         print("No built app at %s\nRun: python scripts/build_macos_app.py" % BINARY)
         return 2
@@ -269,12 +296,17 @@ def main() -> int:
         # thing for a person's session and pure noise for a timed check that
         # never runs a real analysis.
         "SPATIALMIND_NO_WARMUP": "1",
+        "SPATIALMIND_SUPPORT_DIR": str(workspace / "support"),
     })
 
     print("Launching %s" % BINARY)
-    process = subprocess.Popen([str(BINARY)], env=env, stdout=subprocess.PIPE,
+    log_path = args.report.with_suffix(".log") if args.report else workspace / "app.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = log_path.open("w", encoding="utf-8")
+    process = subprocess.Popen([str(BINARY)], env=env, stdout=log_handle,
                                stderr=subprocess.STDOUT, text=True)
     failures = []
+    results = []
     try:
         started = time.time()
         wait_for_health(process)
@@ -284,16 +316,29 @@ def main() -> int:
         for name, func in CHECKS:
             try:
                 detail = func(state)
+                results.append({"check": name, "status": "passed", "detail": str(detail or "")})
                 print("  PASS  %-52s %s" % (name, detail or ""))
             except Exception as exc:
                 failures.append((name, exc))
+                results.append({"check": name, "status": "failed", "error": str(exc)})
                 print("  FAIL  %-52s %s" % (name, exc))
+    except BaseException as exc:
+        failures.append(("startup", exc))
+        results.append({"check": "startup", "status": "failed", "error": str(exc)})
     finally:
         process.terminate()
         try:
             process.wait(timeout=15)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait(timeout=15)
+        log_handle.close()
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps({"status": "failed" if failures else "passed",
+                "architecture": platform.machine(), "checks": results,
+                "passed": sum(item["status"] == "passed" for item in results),
+                "total": len(CHECKS)}, indent=2), encoding="utf-8")
         shutil.rmtree(workspace, ignore_errors=True)
 
     print("\n%d of %d checks passed." % (len(CHECKS) - len(failures), len(CHECKS)))

@@ -1,18 +1,35 @@
 # How the SpatialMind Agent Works
 
+Current assessment: the [October 3 correctness upgrade](correctness_upgrade_20261003.md)
+repairs the eight findings from the [layer evaluation](layer_evaluation_20261003.md)
+and starts the [data-expansion roadmap](multimodal_roadmap_20261003.md).
+Passing software tests does not establish assay or biological validation.
+
+The [P1 reference-readiness increment](reference_readiness_20261003.md) adds
+explicit matrix/feature pairing, donor filtering before label reads, measured
+panel metadata and source-observation provenance. Collection-level donor plans
+remain unapproved. The [ordered P1 follow-up](brain_p1_implementation_20261003.md)
+replaces path-based merged IDs with content-bound source/observation identities,
+adds chunked CSR H5AD storage and verifies adjacent cache manifests during loading.
+Legacy downstream adapters still use bounded SpotRecord objects; this is not an
+end-to-end out-of-core backend. Reference curation and a human-approved prespecified
+development protocol now gate reviewed brain model selection.
+
 This is the single end-to-end explanation of the agent: what each layer does, what
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-09-30. Executed unit tests 586/586, import-linter 6/6,
-legacy routing evaluation 16/16 and MVP evaluation 13/13. These are software
-checks, not brain biological accuracy. Current execution logs and the sampled
-glioblastoma example are in `outputs/reliability_boundary_20260930/`.
+Last verified: 2026-10-03. Full suite 637/637 in 191.843 s.
+Import-linter 6/6, legacy routing 16/16
+and MVP routing 13/13 passed. These are software checks, not brain biological
+accuracy. Current verification is in `outputs/brain_p1_implementation_20261003/`;
+sampled brain reports from the preceding increment are under
+`outputs/correctness_upgrade_20261003/final/`.
 Historical held-out annotation results are in [the benchmark record](annotation_benchmark_20260927.md),
 and were not rescored or promoted in this upgrade. The ordered brain review gates
 and breast-only rare-class experiment are documented in [the brain review execution record](brain_review_execution.md).
 
-Inventory counts: 586 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
+Inventory counts: 637 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
 
 ## The one-sentence version
 
@@ -217,40 +234,31 @@ reports a valid plan instead of duplicating the gate's blockers as fake plan err
 | `qc_and_cluster` | Scanpy | Per-cell QC, then normalize → log1p → PCA → neighbours → Leiden on **expression**. Uses scanpy's exact sklearn kNN backend, falling back to the default when unsupported. `cluster_on="spatial"` opts into spatial-domain clustering. |
 | `annotation` | — | Summarises applied expert labels |
 | `marker_detection` | Scanpy | **One-vs-rest** markers for every cell type by default; explicit `group1`+`group2` gives a pairwise contrast |
-| `spatial_variable_genes` | Squidpy | Moran's I over a spatial kNN graph. Genes are **screened before permutation testing** (see below), so FDR is corrected over the tested subset, not the whole panel; Scanpy HVG is an explicit development fallback only |
+| `spatial_variable_genes` | Squidpy | Moran's I over a tissue kNN graph. Coordinate-independent detection filter, followed by testing and BH correction over every eligible gene. Display top-N does not affect inference; Scanpy HVG is an explicit development fallback only |
 | `region_summary` | — | Cell-type composition and feature means per user region |
 | `cell_neighborhood_enrichment` | Squidpy | Permutation z-scores for cell-type adjacency |
 | `feature_overlay` | — | Single-feature spatial values, with panel-absence guarding |
 
 `qc_and_cluster`, cluster-group marker detection, `spatial_variable_genes`, and cluster-group neighborhood enrichment can run in the descriptive lane before expert labels exist. Annotation, reviewed-region summaries, and cell-type relationship claims remain validation-gated.
 
-### Gene screening before permutation testing
+### Complete spatial gene testing family
 
-Permutation testing dominates `spatial_variable_genes`: measured at 43s for
-`n_perms=100` across 491 genes, against 0.5s for the analytic Moran's I. Running
-`n_jobs=4` measured *slower* than `n_jobs=1`, so the lever is testing fewer genes
-rather than testing them faster. Two screens run first, and both are recorded:
+Only a prespecified detection filter precedes inference. It is invariant to
+spatial permutation; the previous same-data analytic Moran ranking was removed
+because selected-set BH did not account for that selection. Every eligible gene
+is tested using `n_perms`, with BH correction over the complete eligible family.
+The filter is not relaxed when no genes survive.
 
-1. **Detection filter.** Genes detected in too few cells are dropped. They cannot
-   support a spatial claim and only enlarge the multiple-testing burden.
-2. **Analytic pre-rank.** Survivors are ranked by the near-free analytic Moran's I,
-   and only the strongest candidates are permuted.
+`all_tested_genes` retains every tested row; `top_genes` is a separate display
+slice. Tables include tested rows and explicit detection-filter exclusions.
+Legacy `screen_candidates` and `screened_n_perms` do not cap the testing family
+or raise its budget; use `n_perms` explicitly. Finite permutation resolution,
+spatial dependence and tissue-specific null calibration remain limitations.
 
-On a 24,406-cell section this took the stage from 60.6s to 17.1s and the whole
-descriptive lane from 114.8s to 72.0s, with the top genes and their order
-unchanged.
-
-**This changes what the p-values mean, so the report says so.** Every run states
-the screening rule, the panel/detected/tested gene counts, and that FDR is
-corrected over the tested set. Reporting "50 significant" without that context
-would read as 50 of 491 rather than 50 of 50 tested.
-
-The permutation budget stays at `n_perms` *per gene*. Raising it to spend the
-saving back is a measured mistake: 50 genes at 999 permutations is the same total
-work as 491 at 100, and it ran no faster. `screened_n_perms` raises it explicitly
-at proportional cost. Note also that the strongest genes tie at the p-value floor
-regardless of budget — they sit at p ≈ 0, and effect size is what separates them,
-which is already the ranking used.
+Index/embedding positions are not exposed as tissue coordinates. Wide matrices
+use CSR and source-value QC uses sparse reductions, while small targeted panels
+retain the existing dense path. See the correctness upgrade for measured scope
+and remaining storage/registration work.
 
 All statistical tools in the validated plan carry `strict_engine=True`. If Scanpy,
 Leiden, or Squidpy is absent or fails, the run records a backend blocker; it cannot

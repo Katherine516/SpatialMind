@@ -131,7 +131,7 @@ def verify_run_record(record_path: str) -> ReplayVerificationReport:
         warnings.append("Run record contains no path-backed hash fields to verify.")
         return ReplayVerificationReport(run_id=run_id, record_path=record_path, status="unverifiable", warnings=warnings)
     failed = [item for item in checks if item.status != "ok"]
-    status = "verified" if not failed else "failed"
+    status = "failed" if failed else ("partial" if warnings else "verified")
     return ReplayVerificationReport(run_id=run_id, record_path=record_path, status=status, checks=checks, warnings=warnings)
 
 

@@ -209,19 +209,24 @@ documented review; do not bulk-add approval fields.
 .venv/bin/python scripts/validate_brain_model.py select \
   --packet outputs/brain_specialist_handoff_20260927 \
   --staging outputs/brain_review_staging_NEW \
+  --protocol APPROVED_DEVELOPMENT_PROTOCOL.json \
   --donor-map VERIFIED_DEVELOPMENT_DONORS.json --out outputs/brain_model_NEW
 ```
 
-The donor map is a JSON object mapping every section key to its verified donor ID.
-Omit it only for internal development; external scoring then stays blocked. The
-selector reads staged train/validation truth, not staged test truth. Source review
-files are hashed, not parsed. It selects k=5/15 and prior power=0/0.25/0.5/1 by
-validation macro-F1. Outputs contain the frozen training reference, parameters,
+As of October 3, selection requires an approved prespecified development protocol
+and complete reference curation. See the [ordered P1 implementation](brain_p1_implementation_20261003.md)
+for packet preparation. The protocol records source-verified development donors;
+an optional donor-map JSON must exactly agree with them. Unknown donors cannot
+be bypassed for internal selection. The selector reads staged train/validation
+truth, not staged test truth. Source review files are hashed, not parsed. It
+evaluates the approved candidate grid by validation macro-F1; draft defaults are
+k=5/15 and prior power=0/0.25/0.5/1. Missing or unmet approved macro-F1/coverage
+thresholds prevent a model lock. Outputs contain the frozen protocol, training reference, parameters,
 features, source/review hashes, per-class validation metrics and predictions.
 Selection metrics are optimistic, not independent performance estimates.
 
 Give the custodian the SHA-256 of `locked_model.json`. Their hashed protocol must
-name `model_lock_sha256`, `confidence_threshold` (0.6), `min_shared_features` and
+name `model_lock_sha256`, the exact locked `confidence_threshold`, `min_shared_features` and
 `min_shared_fraction`. Prespecify overlap thresholds with biological justification;
 two shared genes is a code minimum, not a scientific recommendation. The crosswalk
 CSV has `source_label,target_label`. External truth needs unique cell_id,

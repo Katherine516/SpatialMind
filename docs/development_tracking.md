@@ -2,6 +2,157 @@
 
 This log tracks implementation work against the current v2 build plan. It is updated as development proceeds so decisions, blockers, and verification steps remain visible.
 
+## 2026-10-03: Ordered P1 Review Contracts, Portable Sparse Storage and Training Protocol
+
+Implemented the engineering portions of the requested three-step sequence. The
+owner confirmed no reviewers or completed files are available. Full implementation
+and commands: [ordered P1 report](brain_p1_implementation_20261003.md).
+
+- Prepared frozen source membership and pending decisions for eight human
+  references, 28 label mappings and 114 collection/donor entries. Kept lineage,
+  ontology, malignant state and evidence separate. Added canonical donor aliases,
+  partition-overlap checks, source-provenance checks and explicit human-review gates.
+- Added content-bound observation identities and chunked CSR H5AD caches with
+  exact source row/feature identities, selected-value readback, content manifests
+  and exclusive publication. Auto reference loading checks cache integrity.
+  Merging identical copied sources or overlapping caches is refused.
+- Exported two full-feature 256-cell caches: GBmap 27,632 features, 201,293 nonzeros,
+  575,903 selected counts; Siletti 58,232 features, 395,417 nonzeros, 669,740 counts.
+  Independent AnnData/source comparison confirmed exact sparse parity. Panel-based
+  agent reloads preserved IDs and measured 316/318 shared features respectively.
+- GBmap export took 25.46 s with 137,973,760-byte maximum RSS; Siletti took 5.99 s
+  with 169,406,464-byte maximum RSS. These include full source hashing and are
+  sampled technical checks, not whole-atlas scaling evidence or biological metrics.
+- Added mandatory approved development protocols binding curation hashes and
+  source-backed section donors. Candidate grids, confidence and acceptance
+  thresholds are prespecified. Failure produces development results without a
+  model lock. Successful locks include the exact protocol; external release
+  checks its integrity. Existing custodian-controlled testing was not executed.
+- Generated HTML/JSON ordered readiness. Both 750-cell brain packets retain zero
+  accepted labels and regions. No final CSVs, training or external scores created.
+
+Final verification: 637/637 tests passed in 191.843 s; routing 16/16 and 13/13,
+four registry invariants per routing suite, six import contracts, compilation,
+documentation counts and diff whitespace checks passed. Sixteen tests were added
+in this increment. Synthetic reviewed fixtures test the success path but do not
+represent human or biological validation. Evidence is under
+`outputs/brain_p1_implementation_20261003/`.
+
+Remaining: actual specialist review, matched histology where needed, approved
+reference/donor mappings and scientific thresholds, an independent external donor,
+cross-version biological duplicate checks and full-study downstream scaling.
+No raw data edits, GitHub push, app rebuild or model training occurred.
+
+## 2026-10-03: P1 Reference Curation and Donor-Safe Ingestion
+
+Continued the priority order with [reference readiness](reference_readiness_20261003.md),
+not another assay adapter or unreviewed biological training.
+
+- Audited nine local H5AD references: eight human candidates, one mouse atlas.
+  Recovered version/collection/schema metadata and bounded layer evidence. All
+  candidates remain pending curation; no expert or licensing approvals inferred.
+- Found that all seven Siletti files share four donors (21 overlapping file pairs).
+  Drafted collection-level 2/1/1 donor roles for Siletti and 66/22/22 for GBmap.
+  These are internal, unapproved proposals, not untouched external tests.
+- Added explicit X/raw.X/named-layer selection with matching feature metadata;
+  donor filtering before label reads; species and source-observation provenance;
+  panel-overlap, symbol-collision and integer-count checks; source namespaces.
+- Prevented I/O fallback and non-H5AD directory paths from silently ignoring
+  explicit donor/layer constraints. Exposed selectors on reference-assist CLI.
+- Read 64 training-donor cells from each human file: 512 cells across eight files.
+  Shared measured panel coverage was 318/319 per Siletti file and 316/319 for
+  GBmap. Loading time totals were 13.099 s and 1.470 s respectively, single local
+  smoke measurements, not full-study scaling or accuracy benchmarks.
+- Exercised the real reference-assist CLI with the mouse atlas: returned
+  blocked_unusable_reference rather than fitting a human transfer model.
+
+Verification: the full suite passed 619/619 in 547.558 s. Two safety tests added
+after that suite started passed in the final 19/19 reference-focused run
+(3.366 s); current inventory is 621 tests, not a single 621-test execution.
+Legacy/MVP routing passed 16/16 and 13/13, with four invariants each. All six
+import contracts, compilation, diff whitespace and refreshed documentation counts
+passed. Logs and JSON evidence are in `outputs/reference_readiness_20261003/`.
+
+No training, specialist approval, independent test scoring, raw-data change,
+packaged rebuild or GitHub push occurred. Remaining P1 work: curator crosswalks,
+source/donor verification, portable identities, sparse-native storage, real brain
+review and independent testing. The metadata audit inspected all-donor label
+summaries; its later donor plan must not be described as a sealed benchmark.
+
+## 2026-10-03: P0 Correctness Repairs and Initial P1 Foundation
+
+Implemented all eight software findings from the preceding audit. Full details
+and remaining scope are in [the upgrade report](correctness_upgrade_20261003.md).
+
+- Replaced same-statistic Moran screening with a coordinate-independent detection
+  filter and complete-family BH correction. Kept full tested results separate
+  from display top-N and exported every tested/excluded gene.
+- Rejected index/embedding coordinates in spatial execution and AnnData spatial
+  fields; expanded cache invalidation for coordinate/source-semantic changes.
+- Preserved complete H5AD/Xenium source features; rejected scientific per-cell
+  feature caps and ambiguous duplicate mapped H5AD identifiers.
+- Preserved protein intensities, added proteomics contract semantics, skipped RNA
+  count/gene thresholds for protein and refused unsupported protein analysis.
+- Removed control-feature fallback, marked incomplete replay verification partial,
+  and made unimplemented fusion measurements null.
+- Added CSR construction for wide matrices and sparse source-value QC. Added a
+  bounded HDF5 reference-curation inventory, without inferring biological approval.
+
+Verification: 602/602 tests passed in 192.827 s; 16 new boundary regressions,
+9/9 original audit checks, 16/16 legacy and 13/13 MVP routing, 6/6 import contracts,
+compilation and documentation-count checks. Two older test expectations were
+updated because they encoded the unsafe control/filter fallbacks.
+
+Both sampled brain reports reran successfully with unchanged clustering:
+1,495 GBM cells / 9 clusters and 1,497 healthy cells / 8 clusters. Each exports
+318 gene rows: 309 tested + 9 excluded for GBM, 298 + 20 for healthy brain.
+Each run verifies 17/17 provenance entries and retains the missing-review gate.
+Fifty prespecified exchangeable all-null simulations produced a family rejection
+rate of 0.04 (Wilson 95% interval 0.0110-0.1346); this is not real-tissue validation.
+
+All nine local H5AD candidates have a pending-curation entry. Candidate donor/label
+columns exist, but expression semantics, source evidence and donor independence
+still need confirmation. No expert decisions, training, external-test tuning,
+new assay adapter, dependency installation, packaged build or GitHub push occurred.
+P1 curation/storage work and P2-P4 platform milestones remain open.
+
+## 2026-10-03: Layer Review and Data Expansion Evaluation
+
+Reviewed all six architectural tiers and their functional boundaries at source
+commit `2d0a00acc2d4bc0c5119a0e85cc9584301cf514c`. Added an English
+[evaluation](layer_evaluation_20261003.md), an English
+[prioritized expansion roadmap](multimodal_roadmap_20261003.md), and the repeatable
+`scripts/audit_modality_boundaries.py` audit. Updated the README reference index.
+No scientific implementation, raw data, review decision or model was changed.
+
+Fresh verification: 586/586 tests in 220.823 s, legacy routing 16/16, MVP routing
+13/13, four registry invariants in each routing evaluation, import contracts 6/6,
+dependency consistency, compilation and documentation counts all passed.
+The adversarial boundary audit nevertheless reproduced eight observations across
+nine checks; these are documented findings, not newly fixed capabilities.
+
+Ran 500-cell readiness scans on all five local Xenium bundles and inspected
+metadata of nine H5AD references. Generated new healthy-brain and GBM reports
+using 1,500 requested cells each: 1,497/1,495 after QC, 8/9 clusters, 318 detected
+biological genes each, 43.20/33.71 s total CLI time. Both reports verified 17/17
+provenance entries and retained the missing-review block. Three-seed clustering
+ARI ranges were 0.9702-0.9852 (healthy) and 0.9491-0.9646 (GBM), measuring seed
+stability rather than annotation accuracy. Report PNGs were visually inspected;
+browser layout inspection was unavailable because file-URL navigation was blocked.
+
+Priority findings: same-statistic spatial-gene screening before selected-set FDR;
+nonspatial index coordinates accepted by spatial tools; per-cell H5AD top-200
+truncation; RNA normalization/contract assignment for protein tables; 35 tested
+gene rows missing from each brain export; technical features reintroduced in
+one-gene subsets; partial provenance reported verified; unimplemented fusion
+returning numeric quality/shared-cell metrics. Fixes remain next-step work, with
+reproducible evidence under `outputs/layer_evaluation_20261003/`.
+
+Both 750-cell brain packets still have zero accepted labels/regions. The 11-row
+claim-truth draft has zero reviewed/usable rows; donor-heldout calibration remains
+blocked. No biological training or external-test rescoring was performed. All new
+files and documentation are English.
+
 ## 2026-10-02: GitHub Collaborator Distribution
 
 The owner explicitly confirmed all local datasets are cleared for public

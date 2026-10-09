@@ -15,6 +15,7 @@ matrix in .github/workflows/build-macos.yml do it.
 
 from pathlib import Path
 import argparse
+import json
 import os
 import platform
 import plistlib
@@ -33,7 +34,7 @@ ICNS = PACKAGING / "SpatialMindStudio.icns"
 REQUIRED_MODULES = [
     "fastapi", "uvicorn", "pydantic", "numpy", "scipy", "pandas", "pyarrow",
     "h5py", "anndata", "scanpy", "squidpy", "sklearn", "matplotlib", "igraph",
-    "tifffile", "PIL", "reportlab",
+    "tifffile", "PIL", "reportlab", "numba", "llvmlite", "leidenalg", "umap",
     # Export formats and upload parsing. Verified here because each one is a
     # feature that fails only when a user clicks it, not at launch.
     "docx", "openpyxl", "multipart",
@@ -64,11 +65,47 @@ def file_archs(path: Path):
         return set()
 
 
+MACHO_MAGICS = {
+    b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",
+}
+
+
+def native_files(roots):
+    """Find every Mach-O file, including extensionless Python/framework binaries."""
+    seen = set()
+    for root in roots:
+        paths = root.rglob("*") if root.is_dir() else [root]
+        for path in paths:
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            with path.open("rb") as stream:
+                if stream.read(4) in MACHO_MAGICS:
+                    yield path
+
+
+def audit_native_files(roots, arch):
+    checked, wrong, unreadable = 0, [], []
+    for path in native_files(roots):
+        archs = file_archs(path)
+        checked += 1
+        if not archs:
+            unreadable.append(str(path))
+        elif arch not in archs:
+            wrong.append("%s (%s)" % (path, ",".join(sorted(archs))))
+    return {"checked": checked, "thin_other_arch": wrong, "unreadable_arch": unreadable}
+
+
 def audit_environment():
     """Which installed native extensions can run on which architecture."""
     import importlib.util
 
-    report = {"host": host_arch(), "missing": [], "thin_other_arch": [], "checked": 0}
+    report = {"host": host_arch(), "missing": []}
+    roots = [Path(sys.executable).resolve()]
     for name in REQUIRED_MODULES:
         try:
             spec = importlib.util.find_spec(name)
@@ -78,12 +115,10 @@ def audit_environment():
             report["missing"].append(name)
             continue
         locations = list(getattr(spec, "submodule_search_locations", None) or [])
-        root = Path(locations[0]) if locations else Path(str(spec.origin)).parent
-        for so in list(root.rglob("*.so"))[:40]:
-            archs = file_archs(so)
-            report["checked"] += 1
-            if archs and host_arch() not in archs:
-                report["thin_other_arch"].append("%s: %s (%s)" % (name, so.name, ",".join(sorted(archs))))
+        roots.extend(Path(path) for path in locations)
+        if not locations and spec.origin:
+            roots.append(Path(spec.origin))
+    report.update(audit_native_files(roots, host_arch()))
     return report
 
 
@@ -101,8 +136,9 @@ def build_icns() -> bool:
     return ICNS.exists()
 
 
-def verify_app(app_path: Path) -> dict:
+def verify_app(app_path: Path, expected_arch=None) -> dict:
     """Check the built bundle before anyone tries to open it."""
+    arch = expected_arch or host_arch()
     results = {"exists": app_path.exists(), "problems": [], "binary_archs": set(), "size_mb": 0}
     if not results["exists"]:
         results["problems"].append("No .app was produced at %s" % app_path)
@@ -113,9 +149,9 @@ def verify_app(app_path: Path) -> dict:
         results["problems"].append("Missing executable at Contents/MacOS/SpatialMindStudio")
     else:
         results["binary_archs"] = file_archs(binary)
-        if host_arch() not in results["binary_archs"]:
+        if arch not in results["binary_archs"]:
             results["problems"].append(
-                "Executable is %s but this machine is %s" % (",".join(results["binary_archs"]), host_arch()))
+                "Executable is %s but the requested architecture is %s" % (",".join(results["binary_archs"]), arch))
 
     plist_path = app_path / "Contents" / "Info.plist"
     if not plist_path.exists():
@@ -125,6 +161,7 @@ def verify_app(app_path: Path) -> dict:
             plist = plistlib.load(handle)
         results["bundle_id"] = plist.get("CFBundleIdentifier", "")
         results["version"] = plist.get("CFBundleShortVersionString", "")
+        results["minimum_macos"] = plist.get("LSMinimumSystemVersion", "")
 
         results["ats_local"] = bool(
             (plist.get("NSAppTransportSecurity") or {}).get("NSAllowsLocalNetworking"))
@@ -160,19 +197,18 @@ def verify_app(app_path: Path) -> dict:
     results["size_mb"] = round(total / (1024 * 1024), 1)
 
     # Mixed architectures inside one bundle mean it will fail on some machine.
-    wrong = []
-    for path in list(app_path.rglob("*.so"))[:250] + list(app_path.rglob("*.dylib"))[:250]:
-        archs = file_archs(path)
-        if archs and host_arch() not in archs:
-            wrong.append("%s (%s)" % (path.name, ",".join(sorted(archs))))
-    if wrong:
+    native = audit_native_files([app_path], arch)
+    results["native_audit"] = native
+    if native["thin_other_arch"]:
         results["problems"].append("%d bundled libraries cannot run on %s: %s"
-                                   % (len(wrong), host_arch(), ", ".join(wrong[:5])))
+                                   % (len(native["thin_other_arch"]), arch, ", ".join(native["thin_other_arch"][:5])))
+    if native["unreadable_arch"]:
+        results["problems"].append("Could not verify %d native binary architectures" % len(native["unreadable_arch"]))
     return results
 
 
-def make_dmg(app_path: Path, arch: str) -> Path:
-    dmg = DIST / ("SpatialMind-Studio-1.0.0-macos-%s.dmg" % arch)
+def make_dmg(app_path: Path, arch: str, version="1.0.1") -> Path:
+    dmg = DIST / ("SpatialMind-Studio-%s-macos-%s.dmg" % (version, arch))
     if dmg.exists():
         dmg.unlink()
     staging = DIST / "dmg-staging"
@@ -188,17 +224,34 @@ def make_dmg(app_path: Path, arch: str) -> Path:
 
 
 def main() -> int:
+    global DIST, BUILD
     parser = argparse.ArgumentParser(description="Build the SpatialMind Studio macOS app.")
     parser.add_argument("--dmg", action="store_true", help="Also produce a .dmg for distribution.")
     parser.add_argument("--check", action="store_true", help="Audit the environment and exit.")
     parser.add_argument("--clean", action="store_true", help="Remove build/ and dist/ first.")
+    parser.add_argument("--expected-arch", choices=["x86_64", "arm64"])
+    parser.add_argument("--version", default="1.0.1")
+    parser.add_argument("--dist-dir", type=Path, default=DIST)
+    parser.add_argument("--build-dir", type=Path, default=BUILD)
+    parser.add_argument("--notarize-profile", help="Existing notarytool keychain profile; requires Developer ID signing.")
     args = parser.parse_args()
+
+    DIST, BUILD = args.dist_dir.resolve(), args.build_dir.resolve()
 
     if sys.platform != "darwin":
         print("This builds a macOS .app and must run on macOS. Host: %s" % sys.platform)
         return 2
 
     arch = host_arch()
+    if args.expected_arch and arch != args.expected_arch:
+        print("Native %s Python required; current interpreter is %s." % (args.expected_arch, arch))
+        return 2
+    if arch not in {"x86_64", "arm64"}:
+        print("Unsupported architecture: " + arch)
+        return 2
+    identity = os.environ.get("SPATIALMIND_CODESIGN_IDENTITY", "").strip()
+    if args.notarize_profile and (not identity or not args.dmg):
+        parser.error("Notarization requires a Developer ID identity and --dmg.")
     print("=" * 68)
     print("SpatialMind Studio -- macOS build")
     print("  host architecture : %s" % arch_label(arch))
@@ -210,9 +263,9 @@ def main() -> int:
         print("\nMissing modules the Studio needs: %s" % ", ".join(audit["missing"]))
         print("Install them into this interpreter before building.")
         return 1
-    if audit["thin_other_arch"]:
+    if audit["thin_other_arch"] or audit["unreadable_arch"]:
         print("\n%d installed libraries cannot run on %s:" % (len(audit["thin_other_arch"]), arch))
-        for line in audit["thin_other_arch"][:10]:
+        for line in (audit["thin_other_arch"] + audit["unreadable_arch"])[:10]:
             print("   %s" % line)
         return 1
     print("\nEnvironment audit passed: %d native libraries checked, all %s." % (audit["checked"], arch))
@@ -232,10 +285,12 @@ def main() -> int:
         shutil.rmtree(DIST, ignore_errors=True)
 
     build_icns()
+    build_env = dict(os.environ, SPATIALMIND_BUILD_ARCH=arch, SPATIALMIND_BUILD_VERSION=args.version,
+                     SPATIALMIND_MIN_MACOS="15.0")
 
     print("\nFreezing. This takes several minutes.")
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--distpath", str(DIST),
-         "--workpath", str(BUILD), str(PACKAGING / "SpatialMindStudio.spec")], cwd=str(ROOT))
+         "--workpath", str(BUILD), str(PACKAGING / "SpatialMindStudio.spec")], cwd=str(ROOT), env=build_env)
 
     app_path = DIST / ("%s.app" % APP_NAME)
     print("\nVerifying the bundle.")
@@ -258,35 +313,55 @@ def main() -> int:
     # SPATIALMIND_CODESIGN_IDENTITY is used when present; otherwise the app is
     # ad-hoc signed, which keeps it launchable on this machine and nowhere else
     # without a manual override.
-    identity = os.environ.get("SPATIALMIND_CODESIGN_IDENTITY", "").strip()
     signed_properly = False
     if shutil.which("codesign"):
         try:
-            command = ["codesign", "--force", "--deep", "--sign", identity or "-"]
+            command = ["codesign", "--force", "--sign", identity or "-"]
             if identity:
                 # Hardened runtime and a timestamp are preconditions for
                 # notarisation; without them `notarytool` rejects the upload.
-                command += ["--options", "runtime", "--timestamp"]
+                command += ["--options", "runtime", "--timestamp", "--entitlements", str(PACKAGING / "entitlements.plist")]
             run(command + [str(app_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run(["codesign", "--verify", "--deep", "--strict", str(app_path)])
             signed_properly = bool(identity)
             print("  signed     : %s" % (("Developer ID (%s)" % identity) if identity else "ad-hoc"))
         except subprocess.CalledProcessError:
-            print("  signed     : signing failed; the app still runs on this machine")
+            print("  signed     : verification failed; no distribution package will be produced")
+            return 1
 
     if not signed_properly:
         print()
-        print("  NOT NOTARISED. On any Mac but this one, macOS will refuse to open it:")
-        print("    \"SpatialMind Studio is damaged and can't be opened\" -- which is Gatekeeper,")
-        print("    not a corrupt download. Until the app is signed and notarised, a recipient has to run")
-        print("      xattr -dr com.apple.quarantine '/Applications/%s.app'" % APP_NAME)
-        print("    To do this properly: set SPATIALMIND_CODESIGN_IDENTITY to a Developer ID Application")
-        print("    identity (`security find-identity -v -p codesigning`), rebuild, then notarise:")
-        print("      xcrun notarytool submit <dmg> --apple-id <id> --team-id <team> --password <app-password> --wait")
-        print("      xcrun stapler staple <dmg>")
+        print("  Ad-hoc signed test build. Downloaded apps may be blocked by Gatekeeper.")
+        print("  Developer ID signing and notarization are required for normal distribution.")
 
+    notarized = False
     if args.dmg:
-        dmg = make_dmg(app_path, arch)
+        dmg = make_dmg(app_path, arch, args.version)
+        if args.notarize_profile:
+            submission = run(["xcrun", "notarytool", "submit", str(dmg), "--keychain-profile",
+                              args.notarize_profile, "--wait", "--output-format", "json"], capture_output=True, text=True)
+            status = json.loads(submission.stdout)
+            if status.get("status") != "Accepted":
+                raise RuntimeError("Notarization failed: " + str(status.get("status")))
+            run(["xcrun", "stapler", "staple", str(app_path)])
+            dmg = make_dmg(app_path, arch, args.version)
+            submission = run(["xcrun", "notarytool", "submit", str(dmg), "--keychain-profile",
+                              args.notarize_profile, "--wait", "--output-format", "json"], capture_output=True, text=True)
+            if json.loads(submission.stdout).get("status") != "Accepted":
+                raise RuntimeError("Final DMG notarization failed.")
+            run(["xcrun", "stapler", "staple", str(dmg)])
+            run(["xcrun", "stapler", "validate", str(dmg)])
+            notarized = True
         print("  dmg        : %s (%.1f MB)" % (dmg, dmg.stat().st_size / (1024 * 1024)))
+
+    source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True)
+    manifest = {"version": args.version, "architecture": arch, "minimum_macos": "15.0",
+                "source_commit": source.stdout.strip(), "source_dirty": bool(dirty.stdout.strip()),
+                "python": platform.python_version(), "signature": "developer_id" if signed_properly else "ad_hoc",
+                "notarized": notarized, "status": "built_awaiting_runtime_tests", "bundle": results}
+    manifest["bundle"]["binary_archs"] = sorted(results["binary_archs"])
+    (DIST / "build_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     print("\nDone. Open with:  open '%s'" % app_path)
     return 0

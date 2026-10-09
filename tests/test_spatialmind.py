@@ -3238,13 +3238,13 @@ class SpatialGeneScreeningTests(unittest.TestCase):
         # exactly the mistake this default avoids.
         self.assertEqual(screen["permutations"], 100)
 
-    def test_screen_falls_back_when_too_few_genes_survive(self):
+    def test_detection_filter_remains_prespecified_when_no_genes_survive(self):
         from spatialmind.tools.implementations import _screen_spatial_genes
 
         adata = self._adata_stub(1000, ["A", "B"], [1, 1])
         screen = _screen_spatial_genes(sq=None, adata=adata, params={"min_detected_cells": 500}, n_top=5, random_state=0)
-        # Never return an empty test set just because the filter was strict.
-        self.assertEqual(sorted(screen["tested_genes"]), ["A", "B"])
+        self.assertEqual(screen["tested_genes"], [])
+        self.assertEqual(len(screen["screened_out_genes"]), 2)
 
     def test_report_states_the_screen(self):
         from spatialmind.pilot.xenium import _spatial_screen_note
@@ -3587,14 +3587,14 @@ class ControlProbeExclusionTests(unittest.TestCase):
         kept = expression_feature_names(dataset)
         self.assertEqual(sorted(kept), ["AQP4", "CD3D", "GJA1"])
 
-    def test_fixtures_of_only_control_features_still_return_something(self):
+    def test_control_only_input_has_no_expression_features(self):
         from spatialmind.tools.implementations import expression_feature_names
 
         dataset = SpatialDataset(
             sample_id="X", source_path="x", modality="xenium_spatial_rna",
             records=[SpotRecord("X", 0.0, 0.0, "c", {"BLANK_0001": 1.0, "BLANK_0002": 2.0}, cell_id="c1")],
         )
-        self.assertEqual(len(expression_feature_names(dataset)), 2)
+        self.assertEqual(expression_feature_names(dataset), [])
 
     def test_real_panels_lose_only_control_features(self):
         if not os.path.isdir(XENIUM_LYMPH):

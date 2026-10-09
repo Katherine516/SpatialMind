@@ -23,6 +23,31 @@ pending biological review, not a validated brain analysis product.
 
 ## Reference
 
+The [ordered P1 implementation](docs/brain_p1_implementation_20261003.md) adds
+reference label/state/donor review contracts, portable content-bound observation
+IDs, chunked sparse H5AD caches and a mandatory approved development protocol.
+The new HTML/JSON preflight keeps training blocked while real reviews are absent.
+Two 256-cell full-feature reference caches passed exact source-parity checks;
+this is storage verification, not biological training or annotation accuracy.
+
+The [brain-reference readiness increment](docs/reference_readiness_20261003.md)
+adds explicit H5AD layers, donor-isolated reads, source identity and panel checks,
+and unapproved collection-wide donor plans. Eight human reference files pass
+bounded loading checks; the smaller `glioblastoma_brain.h5ad` is mouse data and
+is excluded from direct human transfer. The seven Siletti files share four donors,
+not seven independent cohorts. No brain training or external evaluation is claimed.
+
+The [October 3 layer evaluation](docs/layer_evaluation_20261003.md) identified
+correctness gaps beyond the passing baseline test suite. The subsequent
+[correctness upgrade](docs/correctness_upgrade_20261003.md) fixes all eight
+documented software defects, adds regression tests, complete-family gene
+testing/export, a sparse wide-matrix bridge and a reference-curation inventory.
+Reports remain exploratory; no brain labels or regions have been specialist-approved. See the
+[prioritized data-expansion roadmap](docs/multimodal_roadmap_20261003.md) before
+adding Visium, other spatial RNA platforms, protein imaging or ATAC. A readable
+file is not an assay-validated workflow, and a reliability index is not a
+probability of biological truth.
+
 The September 30 evidence-boundary update requires explicit approval, identified
 reviewers, ISO review dates, finite confidence and evidence references before
 labels/regions count as reviewed. Regions need a declared basis; user-drawn ROIs
@@ -402,11 +427,11 @@ python scripts/analyze.py "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_He
 
 ```text
 SpatialMind analysis
-  cells        : 6000 of 24406 (sampled)
-  features     : 408
-  clusters     : 9
-  spatial genes: 50 significant
-  analysis time: 33s
+  cells        : <loaded cells and sampled/full-section scope>
+  features     : <detected biological genes>
+  clusters     : <expression clusters>
+  spatial genes: <adjusted-p discoveries in the complete eligible family>
+  analysis time: <measured elapsed time>
 
 Report   : outputs/analysis/validated_xenium_pilot_report.html
 Viewer   : outputs/analysis/explorer_lite_viewer.html

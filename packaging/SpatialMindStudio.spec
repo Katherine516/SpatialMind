@@ -12,6 +12,10 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 APP_NAME = "SpatialMind Studio"
+APP_VERSION = os.environ.get("SPATIALMIND_BUILD_VERSION", "1.0.1")
+TARGET_ARCH = os.environ.get("SPATIALMIND_BUILD_ARCH")
+SIGNING_IDENTITY = os.environ.get("SPATIALMIND_CODESIGN_IDENTITY") or None
+MIN_MACOS = os.environ.get("SPATIALMIND_MIN_MACOS", "15.0")
 ICON = os.path.join(SPECPATH, "SpatialMindStudio.icns")
 
 # Packages whose data files, dylibs and submodules must all come along. Each is
@@ -109,9 +113,9 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,   # host architecture; see scripts/build_macos_app.py
-    codesign_identity=None,
-    entitlements_file=None,
+    target_arch=TARGET_ARCH,
+    codesign_identity=SIGNING_IDENTITY,
+    entitlements_file=os.path.join(SPECPATH, "entitlements.plist") if SIGNING_IDENTITY else None,
     icon=ICON if os.path.exists(ICON) else None,
 )
 
@@ -125,19 +129,18 @@ app = BUNDLE(
     name="%s.app" % APP_NAME,
     icon=ICON if os.path.exists(ICON) else None,
     bundle_identifier="com.spatialmind.studio",
-    version="1.0.0",
+    version=APP_VERSION,
     info_plist={
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
-        "CFBundleShortVersionString": "1.0.0",
-        "CFBundleVersion": "1.0.0",
+        "CFBundleShortVersionString": APP_VERSION,
+        "CFBundleVersion": APP_VERSION,
         "NSHighResolutionCapable": True,
         # The window loads http://127.0.0.1; App Transport Security blocks plain
         # HTTP unless local networking is allowed explicitly.
         "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
-        # The UI is a browser tab; the app itself shows no window.
         "LSBackgroundOnly": False,
-        "LSMinimumSystemVersion": "11.0",
+        "LSMinimumSystemVersion": MIN_MACOS,
         "NSHumanReadableCopyright": "SpatialMind",
         # macOS asks before letting the app read these folders. Without a reason
         # string the prompt is bare and easy to refuse by accident, and a refused

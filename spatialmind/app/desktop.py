@@ -15,6 +15,7 @@ it cannot start at all.
 from pathlib import Path
 from typing import Optional
 import logging
+import json
 import os
 import socket
 import sys
@@ -186,6 +187,60 @@ class WindowBridge:
         return True
 
 
+def _native_smoke_report(window):
+    """Opt-in packaged-window acceptance probe used only by the release runner."""
+    destination = os.environ.get("SPATIALMIND_NATIVE_SMOKE_REPORT")
+    if not destination:
+        return
+    result = {"status": "failed", "native_window": False, "folder_panel": False}
+    try:
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            page = window.evaluate_js("""JSON.stringify({
+                title: document.title, text: document.body.innerText,
+                width: window.innerWidth, height: window.innerHeight,
+                elements: document.body.querySelectorAll('*').length,
+                bridge: !!(window.pywebview && window.pywebview.api && window.pywebview.api.open_external),
+                url: location.href
+            })""")
+            page = json.loads(page) if isinstance(page, str) else page
+            if (page and page.get("bridge") and page.get("url", "").startswith("http://localhost:")
+                    and "SpatialMind" in page.get("text", "")):
+                break
+            time.sleep(.25)
+        else:
+            raise RuntimeError("WKWebView did not load the Studio with its native bridge.")
+        from PyObjCTools import AppHelper
+        import AppKit
+        completed = threading.Event()
+
+        def inspect_native():
+            try:
+                result["native_window"] = bool(window.native and window.native.isVisible())
+                panel = AppKit.NSOpenPanel.openPanel()
+                panel.setCanChooseDirectories_(True)
+                panel.setCanChooseFiles_(False)
+                result["folder_panel"] = bool(panel.canChooseDirectories() and not panel.canChooseFiles())
+            except Exception as exc:
+                result["native_error"] = str(exc)
+            finally:
+                completed.set()
+
+        AppHelper.callAfter(inspect_native)
+        if not completed.wait(10):
+            raise RuntimeError("Cocoa main-thread inspection timed out.")
+        result["page"] = {key: page[key] for key in ("title", "width", "height", "elements", "bridge", "url")}
+        if not result["native_window"] or not result["folder_panel"] or page["elements"] < 20 or page["width"] < 500:
+            raise RuntimeError("Native window, rendered UI or folder panel verification failed.")
+        result["status"] = "passed"
+    except Exception as exc:
+        result["error"] = str(exc)
+        logging.exception("native smoke verification failed")
+    finally:
+        Path(destination).write_text(json.dumps(result, indent=2), encoding="utf-8")
+        window.destroy()
+
+
 def run_windowed(build_app, port: int, url: str, log_path=None) -> int:
     """Put the window up first, then build the app behind it.
 
@@ -218,6 +273,12 @@ def run_windowed(build_app, port: int, url: str, log_path=None) -> int:
         background_color=WINDOW_BACKGROUND,
     )
     window.events.shown += lambda: _make_window_dark(window)
+    if os.environ.get("SPATIALMIND_NATIVE_SMOKE_REPORT"):
+        def inspect_loaded():
+            # Ignore the initial splash's load event.
+            if (window.get_current_url() or "").startswith("http://localhost:"):
+                _native_smoke_report(window)
+        window.events.loaded += inspect_loaded
 
     def remember_size():
         try:

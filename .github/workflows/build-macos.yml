@@ -2,8 +2,7 @@ name: Build SpatialMind Studio (macOS)
 
 # One app per architecture, each built on that architecture. PyInstaller freezes
 # installed wheels, and the scientific stack ships thin (single-arch) wheels, so
-# a universal2 bundle cannot be produced from one runner. macos-13 is Intel;
-# macos-14 and later are Apple Silicon.
+# a universal2 bundle cannot be produced from one runner with thin wheels.
 
 on:
   workflow_dispatch:
@@ -14,15 +13,18 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15-intel
             arch: x86_64
+            python_arch: x64
             label: Intel (x86_64)
-          - runner: macos-14
+          - runner: macos-15
             arch: arm64
+            python_arch: arm64
             label: Apple Silicon (arm64)
 
     steps:
@@ -31,6 +33,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          architecture: ${{ matrix.python_arch }}
 
       - name: Confirm the runner architecture
         run: |
@@ -49,19 +52,45 @@ jobs:
           python -m pip install -r requirements-app.txt
 
       - name: Test
-        run: python -m unittest discover -s tests -p 'test_studio_app.py' -v
+        run: |
+          python -m unittest discover -s tests -p 'test_studio_app.py' -v
+          python -m unittest discover -s tests -p 'test_macos_packaging.py' -v
 
       - name: Audit the environment for this architecture
-        run: python scripts/build_macos_app.py --check
+        run: python scripts/build_macos_app.py --check --expected-arch ${{ matrix.arch }}
 
       - name: Build the app
-        run: python scripts/build_macos_app.py --clean --dmg
+        run: |
+          python scripts/build_macos_app.py --clean --dmg --expected-arch ${{ matrix.arch }}
+          python -m pip freeze > dist/dependencies.txt
 
       - name: Smoke-test the built app
-        run: python scripts/smoke_test_macos_app.py
+        run: python scripts/smoke_test_macos_app.py --report dist/headless_smoke.json
+
+      - name: Test the real native window
+        run: python scripts/smoke_test_macos_window.py --app "dist/SpatialMind Studio.app" --report dist/native_smoke.json
+
+      - name: Finalize verified downloads
+        run: python scripts/finalize_macos_release.py
 
       - uses: actions/upload-artifact@v4
         with:
           name: SpatialMind-Studio-macos-${{ matrix.arch }}
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.json
+            dist/SHA256SUMS.txt
+            dist/dependencies.txt
           if-no-files-found: error
+
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-diagnostics-${{ matrix.arch }}
+          path: |
+            dist/*.log
+            dist/*smoke.json
+            build/**/warn-*.txt
+          if-no-files-found: ignore
