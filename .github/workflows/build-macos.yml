@@ -6,11 +6,18 @@ name: Build SpatialMind Studio (macOS)
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_run_id:
+        description: Optional successful build run ID to publish instead of rebuilding
+        required: false
+        default: ""
+        type: string
   push:
     tags: ["v*"]
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || inputs.publish_run_id == ''
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -118,3 +125,39 @@ jobs:
       - name: Remove temporary signing keychain
         if: always()
         run: python scripts/configure_macos_signing.py cleanup
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_RUN_ID: ${{ inputs.publish_run_id }}
+      APP_VERSION: "1.0.1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify successful build origin
+        run: |
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > build_run.json
+          python -c 'import json; r=json.load(open("build_run.json")); assert r["status"] == "completed" and r["conclusion"] == "success"; assert r["path"] == ".github/workflows/build-macos.yml"; print("Verified successful dual-native build", r["head_sha"])'
+          echo "SOURCE_COMMIT=$(jq -r .head_sha build_run.json)" >> "$GITHUB_ENV"
+      - name: Download both verified artifacts
+        run: gh run download "$BUILD_RUN_ID" --pattern 'SpatialMind-Studio-macos-*' --dir artifacts
+      - name: Verify and assemble downloads
+        run: python -m scripts.prepare_macos_release --artifacts artifacts --output release_files --version "$APP_VERSION" --commit "$SOURCE_COMMIT"
+      - name: Publish research test prerelease
+        run: |
+          gh release create "studio-v$APP_VERSION-native" release_files/* --target "$SOURCE_COMMIT" --prerelease --title "SpatialMind Studio $APP_VERSION: Intel and Apple Silicon test packages" --notes-file docs/macos_release_1_0_1.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: published-macos-evidence
+          path: |
+            release_files/SHA256SUMS.txt
+            release_files/*verification.zip

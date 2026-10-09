@@ -1,6 +1,7 @@
 """Release guards must not certify incomplete or wrong-architecture bundles."""
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -19,6 +20,7 @@ def load_script(name):
 build = load_script("build_macos_app")
 release = load_script("finalize_macos_release")
 signing = load_script("configure_macos_signing")
+publish = load_script("prepare_macos_release")
 
 
 class PackagingTests(unittest.TestCase):
@@ -63,6 +65,43 @@ class PackagingTests(unittest.TestCase):
         with patch.dict(os.environ, {"SPATIALMIND_CODESIGN_IDENTITY": "Developer ID Application: Example"}, clear=True):
             with self.assertRaises(ValueError):
                 signing.prepare()
+
+
+class PublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(self.workspace.cleanup)
+        self.root = Path(self.workspace.name)
+        self.commit = "a" * 40
+        manifest = {"architecture": "arm64", "version": "1.0.1", "source_commit": self.commit,
+                    "source_dirty": False, "status": "runtime_verified", "bundle": {"problems": []}}
+        headless = {"status": "passed", "architecture": "arm64", "passed": 13, "total": 13,
+                    "analysis": {"result": {"results": [
+                        {"tool": "qc_and_cluster", "metrics": {"engine": "scanpy"}},
+                        {"tool": "spatial_variable_genes", "metrics": {"engine": "squidpy"}}]}}}
+        native = {"status": "passed", "architecture": "arm64", "native_window": True,
+                  "folder_panel": True, "page": {"bridge": True}}
+        for name, value in (("build_manifest.json", manifest), ("headless_smoke.json", headless),
+                            ("native_smoke.json", native)):
+            (self.root / name).write_text(json.dumps(value))
+        (self.root / "dependencies.txt").write_text("fixture-dependency==1.0\n")
+        for extension in ("dmg", "zip"):
+            (self.root / ("SpatialMind-Studio-1.0.1-macos-arm64." + extension)).write_bytes(b"synthetic installer fixture")
+        files = sorted(self.root.iterdir())
+        (self.root / "SHA256SUMS.txt").write_text(
+            "".join("%s  %s\n" % (publish.digest(path), path.name) for path in files))
+
+    def test_matching_evidence_and_checksums_are_accepted(self):
+        self.assertEqual(len(publish.verify_artifact(self.root, "arm64", "1.0.1", self.commit)), 6)
+
+    def test_modified_installer_is_refused(self):
+        (self.root / "SpatialMind-Studio-1.0.1-macos-arm64.dmg").write_bytes(b"tampered")
+        with self.assertRaises(ValueError):
+            publish.verify_artifact(self.root, "arm64", "1.0.1", self.commit)
+
+    def test_different_source_commit_is_refused(self):
+        with self.assertRaises(ValueError):
+            publish.verify_artifact(self.root, "arm64", "1.0.1", "b" * 40)
 
 
 if __name__ == "__main__":

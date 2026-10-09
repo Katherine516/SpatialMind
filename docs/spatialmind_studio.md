@@ -267,6 +267,13 @@ inspection and a representative large-data run on a collaborator's Mac.
 reports, archives the app, and records SHA-256 checksums. Each architecture's
 download includes its build manifest, test results and dependency inventory.
 
+After both jobs pass, the same workflow accepts an optional `publish_run_id`.
+It verifies that run's successful build origin, checks both clean source
+identities, strict backend/window evidence and every artifact checksum, then
+publishes an explicitly marked research test prerelease. Release assembly runs
+on GitHub rather than relaying large binaries through a development laptop.
+`scripts/prepare_macos_release.py` provides the same integrity check locally.
+
 ### Signing and notarization
 
 Without a Developer ID certificate the builder produces an ad-hoc signed test
@@ -295,6 +302,10 @@ certificate into an ephemeral keychain and removes it in an always-run cleanup
 step. Secret command output is suppressed. With no certificate the same workflow
 builds explicitly identified ad-hoc test packages; partial signing configuration
 fails instead of silently downgrading the release.
+
+References: [GitHub macOS runner architectures](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),
+[PyInstaller macOS architecture and signing](https://pyinstaller.org/en/stable/feature-notes.html),
+and [Apple's guidance for safely opening downloaded apps](https://support.apple.com/en-us/102445).
 
 ### The icon
 

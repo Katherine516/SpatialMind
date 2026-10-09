@@ -20,9 +20,18 @@ were preserved; builds use a separate `codex/macos-dual-architecture` snapshot.
   stapling. CI uses an ephemeral signing keychain with always-run cleanup and
   suppressed secret output. No signing credentials are currently configured.
 
-Verification in progress: local Studio tests passed 77/77 and packaging guards
-passed 6/6. Both native CI builds are running; runtime success and download links
-will be recorded after acceptance, not inferred from a successful freeze.
+Verification: the final local regression passed 645/645 tests in 302.327 seconds;
+source end-to-end acceptance passed 13/13. Both native CI jobs passed 79 Studio
+tests, six packaging guards, architecture/signature audits, 13/13 packaged API
+checks and the visible native-window probe. An initial ARM acceptance failure
+revealed Markdown being returned by the HTML report endpoint. Fixed format
+selection and added two regressions; the broken initial artifacts were not released.
+
+Added independently tested release publication guards (9/9 packaging/publication
+tests after that full regression) and module-help verification. The publisher
+checks both source identities, strict backend/window evidence and SHA-256
+inventories, assembling the prerelease directly on GitHub to avoid a slow local
+installer relay. See [acceptance and remaining scope](macos_release_1_0_1.md).
 
 Remaining distribution requirements: Apple Developer ID/notarization credentials
 and manual collaborator checks of folder-consent choices, display layout and
