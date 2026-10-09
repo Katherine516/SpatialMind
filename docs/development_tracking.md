@@ -2,6 +2,33 @@
 
 This log tracks implementation work against the current v2 build plan. It is updated as development proceeds so decisions, blockers, and verification steps remain visible.
 
+## 2026-10-08: Native Intel and Apple Silicon Packaging
+
+Implemented a dual-native build path for SpatialMind Studio 1.0.1, with macOS
+15 as the declared minimum. The main working tree and existing Intel package
+were preserved; builds use a separate `codex/macos-dual-architecture` snapshot.
+
+- Replaced retired macOS 13 runners with `macos-15-intel` and `macos-15`, native
+  Python 3.11 and isolated application environments. Shared constraints pin the
+  scientific stack; each architecture archives its complete dependency inventory.
+- Audits now inspect every Mach-O file, including extensionless framework
+  executables, and reject wrong or unreadable architectures before distribution.
+- Added packaged analysis/export checks and an opt-in native Cocoa/WKWebView
+  probe. Synthetic review decisions exercise gates, not biological validation.
+- Added fail-closed release finalization, ZIP/DMG manifests and SHA-256 checksums.
+- Added optional Developer ID signing, LLVM/Numba entitlements, notarization and
+  stapling. CI uses an ephemeral signing keychain with always-run cleanup and
+  suppressed secret output. No signing credentials are currently configured.
+
+Verification in progress: local Studio tests passed 77/77 and packaging guards
+passed 6/6. Both native CI builds are running; runtime success and download links
+will be recorded after acceptance, not inferred from a successful freeze.
+
+Remaining distribution requirements: Apple Developer ID/notarization credentials
+and manual collaborator checks of folder-consent choices, display layout and
+representative large-data workloads. Expert labels, regions and independent
+biological validation remain separate pending requirements.
+
 ## 2026-10-03: Ordered P1 Review Contracts, Portable Sparse Storage and Training Protocol
 
 Implemented the engineering portions of the requested three-step sequence. The

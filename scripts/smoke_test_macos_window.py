@@ -7,10 +7,14 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import sys
 import tempfile
 import time
 
-from smoke_test_macos_app import make_dataset
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.smoke_test_macos_app import make_dataset
 
 
 def main():
