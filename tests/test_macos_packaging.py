@@ -68,6 +68,21 @@ class PackagingTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_publishing_requires_a_green_checks_run_before_any_upload(self):
+        """1.0.1 was published while checks.yml was red on every commit of its
+        branch. The build workflow verified its own run and nothing else; the
+        full suite, evals and doc counts live in Checks. Publishing has to ask
+        Checks, and has to ask before anything is downloaded or uploaded."""
+        import yaml
+
+        workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build-macos.yml"
+        steps = [step.get("name") or step.get("uses")
+                 for step in yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["publish"]["steps"]]
+        guard = "Require a green Checks run on the same commit"
+        self.assertIn(guard, steps)
+        self.assertLess(steps.index(guard), steps.index("Download both verified artifacts"))
+        self.assertIn("checks.yml/runs?head_sha=$SOURCE_COMMIT", workflow.read_text(encoding="utf-8"))
+
     def setUp(self):
         self.workspace = tempfile.TemporaryDirectory()
         self.addCleanup(self.workspace.cleanup)

@@ -148,6 +148,15 @@ jobs:
           gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > build_run.json
           python -c 'import json; r=json.load(open("build_run.json")); assert r["status"] == "completed" and r["conclusion"] == "success"; assert r["path"] == ".github/workflows/build-macos.yml"; print("Verified successful dual-native build", r["head_sha"])'
           echo "SOURCE_COMMIT=$(jq -r .head_sha build_run.json)" >> "$GITHUB_ENV"
+      # The build workflow runs only the Studio tests and the packaged smoke
+      # checks. The full suite, both eval sets, the import contracts and the doc
+      # counts live in checks.yml, and 1.0.1 was published while that workflow
+      # was red on every commit of its branch. A release is published from a
+      # commit Checks has passed, or not at all.
+      - name: Require a green Checks run on the same commit
+        run: |
+          gh api "repos/$GH_REPO/actions/workflows/checks.yml/runs?head_sha=$SOURCE_COMMIT&status=completed" > checks_runs.json
+          python -c 'import json, os; runs = json.load(open("checks_runs.json"))["workflow_runs"]; green = [r for r in runs if r["conclusion"] == "success"]; assert green, "No successful Checks run on %s; fix Checks before publishing" % os.environ["SOURCE_COMMIT"]; print("Checks green on", os.environ["SOURCE_COMMIT"], "run", green[0]["id"])'
       - name: Download both verified artifacts
         run: gh run download "$BUILD_RUN_ID" --pattern 'SpatialMind-Studio-macos-*' --dir artifacts
       - name: Verify and assemble downloads
