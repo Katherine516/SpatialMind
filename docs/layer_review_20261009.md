@@ -213,3 +213,10 @@ software will not close that gap.
   run on the exact source commit before anything is downloaded or uploaded, and
   `tests/test_macos_packaging.py` fails if that step is removed or moved after
   the download.
+- **A new failure on the first green attempt.** Checks on the merged tip passed on
+  py3.9 and failed on py3.11 with `pyarrow requires NumPy 2.0 or newer, found
+  1.26.4`. pyarrow 26.0.0 had been released after Codex's last passing run; Checks
+  installed `requirements.txt` without constraints, so py3.11 took it while py3.9,
+  with no matching wheel, fell back to 21.0.0. The shipped app was unaffected,
+  because its build installs against `packaging/constraints-macos.txt`. Checks now
+  installs against the same pins, so it tests the stack that ships.

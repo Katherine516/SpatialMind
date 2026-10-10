@@ -29,7 +29,7 @@ Historical held-out annotation results are in [the benchmark record](annotation_
 and were not rescored or promoted in this upgrade. The ordered brain review gates
 and breast-only rare-class experiment are documented in [the brain review execution record](brain_review_execution.md).
 
-Inventory counts: 649 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
+Inventory counts: 650 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
 
 ## The one-sentence version
 

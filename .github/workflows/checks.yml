@@ -50,11 +50,17 @@ jobs:
       - name: System headers pyreadr builds against
         run: sudo apt-get update && sudo apt-get install -y libbz2-dev liblzma-dev zlib1g-dev
 
+      # Install against the same pins the released app is built from. Without
+      # them this job floated: on 10 Oct pip gave py3.11 pyarrow 26.0.0, which
+      # requires NumPy 2, beside the project's numpy<2 -- pyarrow failed to
+      # import and took parquet loading and every Squidpy tool with it, while
+      # the shipped app, pinned to pyarrow 21.0.0, was unaffected. CI was testing
+      # a stack nobody ships, and broke on a change nobody made.
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements.txt -c packaging/constraints-macos.txt
+          python -m pip install -r requirements-dev.txt -c packaging/constraints-macos.txt
           python -m pip install -e .
 
       - name: Import contracts

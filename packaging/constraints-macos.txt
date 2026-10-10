@@ -1,4 +1,5 @@
 # Shared, tested application stack for native macOS builds with Python 3.11.
+# checks.yml installs against these pins too, so CI tests what ships.
 # Transitive resolutions are captured in each build's dependency lock artifact.
 numpy==1.26.4
 scipy==1.13.1

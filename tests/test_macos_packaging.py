@@ -68,6 +68,17 @@ class PackagingTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_checks_installs_the_same_pins_the_release_ships(self):
+        """Unpinned CI broke on 10 Oct when pyarrow 26 required NumPy 2 beside
+        numpy<2; the release, pinned to pyarrow 21, was fine. Checks has to test
+        the stack that ships, not whatever PyPI published that night."""
+        root = Path(__file__).resolve().parents[1]
+        checks = (root / ".github" / "workflows" / "checks.yml").read_text(encoding="utf-8")
+        self.assertIn("-r requirements.txt -c packaging/constraints-macos.txt", checks)
+        pins = (root / "packaging" / "constraints-macos.txt").read_text(encoding="utf-8")
+        self.assertIn("numpy==1.26.4", pins)
+        self.assertIn("pyarrow==21.0.0", pins)
+
     def test_publishing_requires_a_green_checks_run_before_any_upload(self):
         """1.0.1 was published while checks.yml was red on every commit of its
         branch. The build workflow verified its own run and nothing else; the
