@@ -1,5 +1,20 @@
 # SpatialMind
 
+## Download SpatialMind Studio for macOS
+
+| Your Mac | Installer |
+| --- | --- |
+| Apple Silicon (M-series, ARM64) | [Download Apple Silicon DMG](https://github.com/Katherine516/SpatialMind/releases/download/studio-v1.0.1-native/SpatialMind-Studio-1.0.1-macos-arm64.dmg) |
+| Intel (x86_64) | [Download Intel DMG](https://github.com/Katherine516/SpatialMind/releases/download/studio-v1.0.1-native/SpatialMind-Studio-1.0.1-macos-x86_64.dmg) |
+
+Requires **macOS 15 or newer**. Python and the scientific runtime are bundled;
+no separate Python installation is needed. Open the DMG, then drag SpatialMind
+Studio into Applications. These are ad-hoc signed research prereleases, **not
+Apple-notarized**, so macOS may display a security warning. Biological validation
+is still pending.
+
+[All downloads, ZIP alternatives, checksums and verification evidence](https://github.com/Katherine516/SpatialMind/releases/tag/studio-v1.0.1-native).
+
 SpatialMind turns platform-processed spatial omics data into reviewable workflows and reports. Its active path supports Xenium, H5AD, and tabular inputs, QC, expert-review packets, gated analyses, visualizations, and replayable provenance. Biological claims require reviewed cell labels and tissue regions. The current brain cohorts still lack specialist review, matched H&E/IHC, and a verified independent donor test; the rare-class adjustment has only been selected on breast validation data.
 
 1. Contracts and recorded review evidence
