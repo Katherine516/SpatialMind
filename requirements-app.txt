@@ -8,7 +8,7 @@
 #   python3.11 -m venv .venv-app
 #   .venv-app/bin/python -m pip install -r requirements-app.txt
 
--c packaging/constraints-macos.txt
+-c packaging/constraints.txt
 
 -e .
 setuptools<81

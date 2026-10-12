@@ -74,8 +74,8 @@ class PublicationTests(unittest.TestCase):
         the stack that ships, not whatever PyPI published that night."""
         root = Path(__file__).resolve().parents[1]
         checks = (root / ".github" / "workflows" / "checks.yml").read_text(encoding="utf-8")
-        self.assertIn("-r requirements.txt -c packaging/constraints-macos.txt", checks)
-        pins = (root / "packaging" / "constraints-macos.txt").read_text(encoding="utf-8")
+        self.assertIn("-r requirements.txt -c packaging/constraints.txt", checks)
+        pins = (root / "packaging" / "constraints.txt").read_text(encoding="utf-8")
         self.assertIn("numpy==1.26.4", pins)
         self.assertIn("pyarrow==21.0.0", pins)
 

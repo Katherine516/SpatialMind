@@ -183,7 +183,7 @@ architecture**; a universal2 bundle is not achievable with this dependency set.
 `.github/workflows/build-macos.yml` runs the same script on `macos-15-intel`
 (Intel) and `macos-15` (Apple Silicon). Version 1.0.1 targets macOS 15 or newer;
 choose `x86_64` for an Intel Mac and `arm64` for M-series Macs. The scientific
-stack is constrained in `packaging/constraints-macos.txt`; each build records the
+stack is constrained in `packaging/constraints.txt`; each build records the
 complete installed dependency set. The release checks every native binary and
 requires both packaged analysis/export tests and a visible Cocoa/WKWebView test
 before producing ZIP downloads and checksums alongside the DMG.
