@@ -16,6 +16,7 @@ def main():
     select.add_argument("--staging", required=True)
     select.add_argument("--out", required=True)
     select.add_argument("--donor-map", help="JSON section-key to independently verified donor-ID mapping.")
+    select.add_argument("--protocol", required=True, help="Human-approved, prespecified development protocol.")
     test = commands.add_parser("external-test")
     test.add_argument("--model-lock", required=True)
     test.add_argument("--manifest", required=True)
@@ -25,7 +26,7 @@ def main():
     args = parser.parse_args()
     if args.command == "select":
         donors = json.loads(Path(args.donor_map).read_text()) if args.donor_map else None
-        result = select_brain_annotation(args.packet, args.staging, args.out, donors)
+        result = select_brain_annotation(args.packet, args.staging, args.out, donors, args.protocol)
     else:
         result = evaluate_external_once(args.model_lock, args.manifest, args.out,
                                         args.custodian_id, args.expected_lock_sha256)

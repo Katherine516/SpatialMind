@@ -28,6 +28,14 @@ The base path remains dependency-light for fast testing, while the core workstat
 
 ## Collaborator Downloads
 
+The [native macOS 1.0.1 test prerelease](https://github.com/Katherine516/SpatialMind/releases/tag/studio-v1.0.1-native)
+provides separate Intel (`x86_64`) and Apple Silicon (`arm64`) DMG/ZIP downloads
+for macOS 15 or newer. Both native builds passed 13 packaged analysis/export
+checks and the real Cocoa/WKWebView probe. SHA-256 checksums and a verification
+archive accompany the installers. These are ad-hoc signed research packages,
+not Apple-notarized or biologically validated releases. See
+[acceptance and installation](docs/macos_release_1_0_1.md).
+
 The earlier [October 2 collaboration snapshot](https://github.com/Katherine516/SpatialMind/releases/tag/collaboration-2026-10-02)
 distributes the full local data snapshot as split release assets, the tested Intel
 macOS app, a glioblastoma example report and the specialist-review packet.
@@ -36,9 +44,34 @@ them. See [download, checksum and restoration instructions](docs/collaborator_ha
 The app is ad-hoc signed, not Apple-notarized. This is a research snapshot with
 pending biological review, not a validated brain analysis product.
 That older snapshot is currently a draft and may require maintainer access;
-the public native-app release above does not embed those data archives.
+the new native-app release does not publish or embed those data archives.
 
 ## Reference
+
+The [ordered P1 implementation](docs/brain_p1_implementation_20261003.md) adds
+reference label/state/donor review contracts, portable content-bound observation
+IDs, chunked sparse H5AD caches and a mandatory approved development protocol.
+The new HTML/JSON preflight keeps training blocked while real reviews are absent.
+Two 256-cell full-feature reference caches passed exact source-parity checks;
+this is storage verification, not biological training or annotation accuracy.
+
+The [brain-reference readiness increment](docs/reference_readiness_20261003.md)
+adds explicit H5AD layers, donor-isolated reads, source identity and panel checks,
+and unapproved collection-wide donor plans. Eight human reference files pass
+bounded loading checks; the smaller `glioblastoma_brain.h5ad` is mouse data and
+is excluded from direct human transfer. The seven Siletti files share four donors,
+not seven independent cohorts. No brain training or external evaluation is claimed.
+
+The [October 3 layer evaluation](docs/layer_evaluation_20261003.md) identified
+correctness gaps beyond the passing baseline test suite. The subsequent
+[correctness upgrade](docs/correctness_upgrade_20261003.md) fixes all eight
+documented software defects, adds regression tests, complete-family gene
+testing/export, a sparse wide-matrix bridge and a reference-curation inventory.
+Reports remain exploratory; no brain labels or regions have been specialist-approved. See the
+[prioritized data-expansion roadmap](docs/multimodal_roadmap_20261003.md) before
+adding Visium, other spatial RNA platforms, protein imaging or ATAC. A readable
+file is not an assay-validated workflow, and a reliability index is not a
+probability of biological truth.
 
 The September 30 evidence-boundary update requires explicit approval, identified
 reviewers, ISO review dates, finite confidence and evidence references before
@@ -136,16 +169,30 @@ produce a typed plan that the local validator checks before anything runs. The
 Build the macOS app:
 
 ```bash
-python3 -m pip install -r requirements-app.txt
+python3.11 -m venv .venv-app
+source .venv-app/bin/activate
+python -m pip install -r requirements-app.txt
 python scripts/build_macos_app.py --clean --dmg   # builds for the HOST architecture
 python scripts/smoke_test_macos_app.py            # launches it and drives the API
+python scripts/smoke_test_macos_window.py --app "dist/SpatialMind Studio.app" --report dist/native_smoke.json
 ```
 
 PyInstaller freezes installed wheels, and the scientific stack ships
 single-architecture wheels, so **each macOS architecture must be built on that
 architecture**; a universal2 bundle is not achievable with this dependency set.
-`.github/workflows/build-macos.yml` runs the same script on `macos-13` (Intel)
-and `macos-14` (Apple Silicon) and uploads a `.dmg` for each.
+`.github/workflows/build-macos.yml` runs the same script on `macos-15-intel`
+(Intel) and `macos-15` (Apple Silicon). Version 1.0.1 targets macOS 15 or newer;
+choose `x86_64` for an Intel Mac and `arm64` for M-series Macs. The scientific
+stack is constrained in `packaging/constraints.txt`; each build records the
+complete installed dependency set. The release checks every native binary and
+requires both packaged analysis/export tests and a visible Cocoa/WKWebView test
+before producing ZIP downloads and checksums alongside the DMG.
+
+Current builds are **ad-hoc signed test packages**, not notarized distribution
+releases. Native architecture support does not bypass Gatekeeper. Developer ID
+signing and Apple notarization require the project owner's Apple credentials.
+See [macOS packaging and acceptance](docs/spatialmind_studio.md#packaging-for-macos)
+for the build, testing and signing procedure.
 
 ## Architecture
 
@@ -419,11 +466,11 @@ python scripts/analyze.py "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_He
 
 ```text
 SpatialMind analysis
-  cells        : 6000 of 24406 (sampled)
-  features     : 408
-  clusters     : 9
-  spatial genes: 50 significant
-  analysis time: 33s
+  cells        : <loaded cells and sampled/full-section scope>
+  features     : <detected biological genes>
+  clusters     : <expression clusters>
+  spatial genes: <adjusted-p discoveries in the complete eligible family>
+  analysis time: <measured elapsed time>
 
 Report   : outputs/analysis/validated_xenium_pilot_report.html
 Viewer   : outputs/analysis/explorer_lite_viewer.html

@@ -153,10 +153,8 @@ def _spatial_gene_block(payload: Dict[str, Any], metrics_by_tool: Optional[Dict[
 def _gene_rows(payload: Dict[str, Any], metrics_by_tool: Dict[str, Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
     """Every gene the spatial test saw, not only the ones that survived the screen.
 
-    The screen ranks by analytic Moran's I and permutes only the top slice, so a
-    reader who sees only the survivors cannot tell what was excluded or why. The
-    untested genes carry their analytic I with `tested=false` and no p-value,
-    which is exactly what is known about them.
+    Display top-N never limits export. Detection-filter exclusions have no
+    inferential p-value; older records may contain analytic-screen exclusions.
     """
     spatial = _spatial_gene_block(payload, metrics_by_tool)
     if not spatial:

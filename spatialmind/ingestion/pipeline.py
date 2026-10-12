@@ -109,7 +109,7 @@ class IngestionConfig:
     annotation_key: Optional[str] = None
     sample_id: Optional[str] = None
     max_records: int = 5000
-    max_features_per_record: int = 200
+    max_features_per_record: int = 0
     species: str = "human"
     normalize_coordinates_to_microns: bool = True
 
@@ -257,7 +257,12 @@ class DataIngestionLayer:
             dataset.notes.append("%d rows were rejected during ingestion because required values were invalid." % rejected_rows)
         self._qc(dataset)
         self._annotate_feature_metadata(dataset)
-        self._normalize_features(dataset)
+        if dataset.modality in {"multiplexed_protein", "protein_imaging", "proteomics"}:
+            dataset.metadata.update({"source_value_semantics": "protein_intensity",
+                                     "assay_subtype": "protein_imaging", "feature_type": "protein_intensity"})
+            dataset.processing_steps.append("Preserved protein intensities without RNA normalization.")
+        else:
+            self._normalize_features(dataset)
         return dataset
 
     def load_h5ad(
@@ -266,11 +271,13 @@ class DataIngestionLayer:
         sample_id: Optional[str] = None,
         annotation_key: Optional[str] = None,
         max_records: int = 5000,
-        max_features_per_record: int = 200,
+        max_features_per_record: int = 0,
         require_spatial: bool = True,
         backed: bool = True,
         expression_semantics: str = "auto",
     ) -> SpatialDataset:
+        if max_features_per_record != 0:
+            raise IngestionValidationError("Per-cell feature truncation is not supported for scientific H5AD ingestion; use 0 to preserve all features.")
         try:
             import anndata as ad  # type: ignore
         except ImportError as exc:
@@ -315,6 +322,7 @@ class DataIngestionLayer:
             raise IngestionValidationError("H5AD contains no observations: %s" % path)
 
         coords = _extract_obsm_coordinates(adata)
+        coordinate_system = "obsm:spatial" if coords is not None else "embedding_or_index"
         if coords is None:
             if require_spatial:
                 raise IngestionValidationError(
@@ -329,6 +337,8 @@ class DataIngestionLayer:
         # Prefer readable gene symbols over Ensembl IDs so references align with
         # symbol-based panels such as Xenium.
         var_names = _h5ad_feature_names(adata)
+        if len(set(var_names)) != len(var_names):
+            raise IngestionValidationError("H5AD feature identifiers are not unique after symbol mapping; resolve duplicates explicitly.")
         selected_indices = _sample_indices(int(adata.n_obs), max_records)
         records: List[SpotRecord] = []
         inferred_sample = sample_id or _infer_sample_id_from_obs(adata.obs, selected_indices) or Path(path).stem
@@ -373,14 +383,14 @@ class DataIngestionLayer:
             records=records,
             source_path=path,
             modality="annotated_expression",
-            coordinate_system="obsm:spatial",
+            coordinate_system=coordinate_system,
             sources=[
                 RawDataSource(
                     path=path,
                     data_type="h5ad_anndata",
                     modality="annotated_expression",
                     sample_id=inferred_sample,
-                    coordinate_system="obsm:spatial",
+                    coordinate_system=coordinate_system,
                     metadata={
                         "n_obs_total": int(adata.n_obs),
                         "n_vars_total": int(adata.n_vars),
@@ -398,6 +408,9 @@ class DataIngestionLayer:
                 "h5ad_read_mode": read_mode,
                 "max_records": max_records,
                 "max_features_per_record": max_features_per_record,
+                "measured_feature_names": var_names,
+                "coordinate_kind": "tissue" if coordinate_system == "obsm:spatial" else "index",
+                "coordinate_units": str((adata.uns.get("spatialmind") or {}).get("coordinate_units") or "unknown"),
                 "source_value_semantics": semantics,
                 "raw_counts_available": semantics == "raw_counts",
                 "raw_count_layer": counts_layer,
@@ -430,9 +443,11 @@ class DataIngestionLayer:
         path: str,
         sample_id: Optional[str] = None,
         max_records: int = 5000,
-        max_features_per_record: int = 200,
+        max_features_per_record: int = 0,
     ) -> SpatialDataset:
         input_path = path
+        if max_features_per_record != 0:
+            raise IngestionValidationError("Per-cell feature truncation is not supported for scientific Xenium ingestion; use 0.")
         path = _resolve_xenium_input_path(path)
         cells_path = _first_existing(
             [
@@ -1234,14 +1249,16 @@ def _h5ad_organism(adata: Any) -> str:
 
 
 def _matrix_row_to_features(row: Any, gene_names: List[str], max_features_per_record: int) -> Dict[str, float]:
-    if hasattr(row, "toarray"):
-        values = row.toarray()[0]
+    if hasattr(row, "tocsr"):
+        row = row.tocsr(copy=True)
+        row.sum_duplicates()
+        indexed_values = zip(row.indices, row.data)
     elif hasattr(row, "A1"):
-        values = row.A1
+        indexed_values = enumerate(row.A1)
     else:
-        values = row
+        indexed_values = enumerate(row)
     pairs = []
-    for index, value in enumerate(values):
+    for index, value in indexed_values:
         try:
             numeric = float(value)
         except (TypeError, ValueError) as exc:
@@ -1250,8 +1267,8 @@ def _matrix_row_to_features(row: Any, gene_names: List[str], max_features_per_re
             raise IngestionValidationError("Counts and log-normalized expression must be finite and nonnegative.")
         if numeric > 0:
             pairs.append((index, numeric))
-    pairs.sort(key=lambda item: item[1], reverse=True)
     if max_features_per_record > 0:
+        pairs.sort(key=lambda item: item[1], reverse=True)
         pairs = pairs[:max_features_per_record]
     return {gene_names[index]: value for index, value in pairs if index < len(gene_names)}
 
@@ -1702,6 +1719,9 @@ def apply_xenium_cell_qc(
 
 
 def _apply_threshold_qc(dataset: SpatialDataset, config: IngestionConfig) -> None:
+    if dataset.modality in {"multiplexed_protein", "protein_imaging", "proteomics"}:
+        dataset.notes.append("RNA count/gene QC thresholds are not applied to protein intensities.")
+        return
     before = len(dataset.records)
     kept = []
     removed_low_counts = 0

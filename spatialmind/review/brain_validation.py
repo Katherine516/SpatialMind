@@ -6,10 +6,12 @@ Human decisions and donor identities are never generated here.
 
 import csv
 import json
+import shutil
 from pathlib import Path
 
 from .annotation_benchmark import blinded_dataset, digest, metrics, write_csv, write_json
 from .brain_readiness import validate_external_manifest, assignment_issues
+from .development_protocol import validate_protocol
 from spatialmind.ingestion import load_xenium, load_scrna
 from spatialmind.schemas import SpatialDataset, SpotRecord, expression_feature_names
 from spatialmind.tools.implementations import reference_label_transfer
@@ -39,7 +41,7 @@ def _predict(query, reference, params):
                                     min_shared_features=2, allow_incomplete_reference=True)).metrics["predictions"]
 
 
-def select_brain_annotation(packet, staging, output_dir, donor_map=None):
+def select_brain_annotation(packet, staging, output_dir, donor_map=None, protocol_path=None):
     """Use staged training/validation only; never parse internal test truth."""
     packet, staging = Path(packet).resolve(), Path(staging).resolve()
     configuration = packet / "study_readiness.json"
@@ -54,8 +56,12 @@ def select_brain_annotation(packet, staging, output_dir, donor_map=None):
     for name, expected in manifest["source_review_hashes"].items():
         if digest(name) != expected:
             raise ValueError("Reviewed decisions changed after staging: " + name)
+    protocol_sha256 = digest(protocol_path) if protocol_path is not None else None
+    protocol = validate_protocol(protocol_path, packet)
     sources = json.loads((packet / "handoff_manifest.json").read_text())["datasets"]
-    donors = donor_map or {}
+    donors = {key: row["donor_id"] for key, row in protocol["development_donors"].items()}
+    if donor_map is not None and donor_map != donors:
+        raise ValueError("Donor map differs from the approved protocol evidence.")
     if donors and (set(donors) != set(sources) or any(not str(value).strip() for value in donors.values())):
         raise ValueError("Donor map must identify every development section; do not infer donor IDs from filenames.")
     groups, features, inputs = {"train": [], "validation": []}, set(), {}
@@ -94,22 +100,34 @@ def select_brain_annotation(packet, staging, output_dir, donor_map=None):
         row.genes = {gene: row.genes.get(gene, 0.0) for gene in features}
     truth_by_id = {row.cell_id: row.cell_type for row in val}
     trials, predictions = [], {}
-    for k in (5, 15):
-        for power in (0.0, 0.25, 0.5, 1.0):
+    for k in protocol["candidate_neighbors"]:
+        if k > len(train):
+            raise ValueError("Prespecified neighbor count exceeds training cohort size.")
+        for power in protocol["candidate_prior_powers"]:
             params = {"n_neighbors": k, "class_prior_power": power}
             rows = _predict(validation, reference, params)
-            score = metrics([truth_by_id[row["cell_id"]] for row in rows], rows)
+            score = metrics([truth_by_id[row["cell_id"]] for row in rows], rows, protocol["confidence_threshold"])
             trials.append({"params": params, "validation": score})
             predictions[(k, power)] = rows
     winner = max(trials, key=lambda item: (item["validation"]["macro_f1"],
                                          -item["params"]["class_prior_power"], -item["params"]["n_neighbors"]))
+    if digest(protocol_path) != protocol_sha256:
+        raise ValueError("Development protocol changed during selection.")
     root = _empty_output(output_dir)
-    write_json(root / "training_reference.json", [{"cell_id": row.cell_id, "expert_label": row.cell_type,
-                                                    "genes": row.genes} for row in reference.records])
+    shutil.copyfile(protocol_path, root / "development_protocol.json")
     write_json(root / "validation_results.json", {"selected": winner, "trials": trials})
     write_csv(root / "validation_predictions.csv", predictions[(winner["params"]["n_neighbors"], winner["params"]["class_prior_power"])])
+    if (winner["validation"]["macro_f1"] < protocol["minimum_validation_macro_f1"]
+            or winner["validation"]["coverage"] < protocol["minimum_validation_coverage"]):
+        return {"status": "blocked_development_acceptance_thresholds", "validation": winner["validation"],
+                "test_scored": False, "model_locked": False, "protocol_sha256": protocol_sha256}
+    write_json(root / "training_reference.json", [{"cell_id": row.cell_id, "expert_label": row.cell_type,
+                                                    "genes": row.genes} for row in reference.records])
     lock = {"status": "brain_validation_selected_not_externally_validated", "tool": "reference_label_transfer",
-            "params": winner["params"], "confidence_threshold": 0.6, "features": features,
+            "params": winner["params"], "confidence_threshold": protocol["confidence_threshold"], "features": features,
+            "protocol_sha256": protocol_sha256,
+            "reference_decision_sha256": protocol["reference_decision_sha256"],
+            "reference_snapshot_sha256": protocol["reference_snapshot_sha256"],
             "development_donor_ids": sorted(set(map(str, donors.values()))), "source_donor_map": donors,
             "selection": "Validation macro-F1 only; lower prior power then smaller k breaks ties",
             "source_matrix_hashes": inputs, "review_hashes": manifest["source_review_hashes"],
@@ -133,6 +151,8 @@ def evaluate_external_once(model_lock, manifest_path, output_dir, custodian_id, 
     lock = json.loads(lock_path.read_text())
     if lock["status"] != "brain_validation_selected_not_externally_validated":
         raise ValueError("Only the reviewed brain model selection can be externally tested.")
+    if lock.get("protocol_sha256") and digest(lock_path.parent / "development_protocol.json") != lock["protocol_sha256"]:
+        raise ValueError("Frozen development protocol changed.")
     if not custodian_id.strip() or custodian_id != manifest["custodian_id"]:
         raise ValueError("Release requires the recorded independent custodian.")
     if not lock["development_donor_ids"] or set(lock["development_donor_ids"]) != set(manifest["development_donor_ids"]):

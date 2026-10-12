@@ -13,10 +13,13 @@ from spatialmind.review import DEFAULT_GLIOBLASTOMA_DATASET, build_reference_ass
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run or gate tissue-matched reference-assist annotation.")
     parser.add_argument("--target", default=DEFAULT_GLIOBLASTOMA_DATASET, help="Target Xenium output directory.")
-    parser.add_argument("--reference", default=None, help="Reviewed tissue-matched reference directory.")
+    parser.add_argument("--reference", default=None, help="Tissue-matched reference H5AD, table or reviewed Xenium directory; predictions remain candidates.")
     parser.add_argument("--out", default="outputs/glioblastoma_reference_assist", help="Reference-assist output directory.")
     parser.add_argument("--max-records", type=int, default=2500)
     parser.add_argument("--min-shared-features", type=int, default=20)
+    parser.add_argument("--expression-layer", default="auto", help="auto, X, raw.X, or layers/<name>; use source-confirmed semantics.")
+    parser.add_argument("--expression-semantics", default="auto", choices=["auto", "raw_counts", "log_normalized"])
+    parser.add_argument("--reference-donor", action="append", help="Include only this donor; repeat for multiple development donors.")
     args = parser.parse_args()
 
     result = build_reference_assist_report(
@@ -25,6 +28,9 @@ def main() -> None:
         reference_path=args.reference,
         max_records=args.max_records,
         min_shared_features=args.min_shared_features,
+        expression_layer=args.expression_layer,
+        expression_semantics=args.expression_semantics,
+        allowed_donors=args.reference_donor,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
 

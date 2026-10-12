@@ -8,9 +8,11 @@ HTTP API against a synthetic dataset, and fails loudly if anything is missing.
 """
 
 from pathlib import Path
+import argparse
 import gzip
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -176,7 +178,9 @@ def _squidpy_runs(state):
         "dataset_id": state["dataset_id"], "kind": "plan",
         "label": "smoke: spatial statistics",
         "tools": ["qc_and_cluster", "spatial_variable_genes"],
-        "overrides": {"spatial_variable_genes": {"n_perms": 20, "n_top": 5}},
+        "overrides": {"qc_and_cluster": {"engine": "scanpy", "strict_engine": True},
+                      "spatial_variable_genes": {"engine": "squidpy", "strict_engine": True,
+                                                  "n_perms": 20, "n_top": 5}},
     })
     job_id = job["job_id"]
     deadline = time.time() + 420
@@ -188,9 +192,29 @@ def _squidpy_runs(state):
             break
         time.sleep(2.0)
     assert state_name == "succeeded", "%s: %s" % (state_name, error[:400])
-    tools = [entry["tool"] for entry in (get("/api/runs/%s" % job_id)["result"] or {}).get("results", [])]
-    assert "spatial_variable_genes" in tools, tools
+    entries = {entry["tool"]: entry for entry in (get("/api/runs/%s" % job_id)["result"] or {}).get("results", [])}
+    for tool, engine in (("qc_and_cluster", "scanpy"), ("spatial_variable_genes", "squidpy")):
+        assert entries.get(tool, {}).get("metrics", {}).get("engine") == engine, entries.get(tool)
+    state["analysis_job"] = job_id
+    state["analysis_result"] = get("/api/runs/%s" % job_id)
     return "qc_and_cluster + spatial_variable_genes on %d cells" % N_CELLS
+
+
+@check("analysis delivers HTML, figures, PDF, Word and Excel exports")
+def _exports(state):
+    with urllib.request.urlopen(BASE + "/api/runs/%s/report" % state["analysis_job"], timeout=30) as response:
+        assert b"<html" in response.read().lower(), "No HTML report"
+    reports = get("/api/reports")["reports"]
+    assert reports, "Report library is empty"
+    report_id = reports[0]["report_id"]
+    for format, magic in (("pdf", b"%PDF"), ("docx", b"PK")):
+        with urllib.request.urlopen(BASE + "/api/reports/%s/export?format=%s" % (report_id, format), timeout=60) as response:
+            assert response.read().startswith(magic), "Invalid %s export" % format
+    with urllib.request.urlopen(BASE + "/api/reports/%s/results?format=xlsx" % report_id, timeout=60) as response:
+        assert response.read().startswith(b"PK"), "Invalid Excel export"
+    result = get("/api/runs/%s" % state["analysis_job"])["result"]
+    assert result.get("figures"), "No analysis figures"
+    return "HTML + figures + PDF + DOCX + XLSX"
 
 
 @check("planning inserts dependencies and validates")
@@ -250,6 +274,13 @@ def _clear(state):
 
 
 def main() -> int:
+    global APP, BINARY
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--app", type=Path, default=APP)
+    parser.add_argument("--report", type=Path)
+    args = parser.parse_args()
+    APP = args.app.resolve()
+    BINARY = APP / "Contents" / "MacOS" / "SpatialMindStudio"
     if not BINARY.exists():
         print("No built app at %s\nRun: python scripts/build_macos_app.py" % BINARY)
         return 2
@@ -269,31 +300,52 @@ def main() -> int:
         # thing for a person's session and pure noise for a timed check that
         # never runs a real analysis.
         "SPATIALMIND_NO_WARMUP": "1",
+        "SPATIALMIND_SUPPORT_DIR": str(workspace / "support"),
     })
 
     print("Launching %s" % BINARY)
-    process = subprocess.Popen([str(BINARY)], env=env, stdout=subprocess.PIPE,
+    log_path = args.report.with_suffix(".log") if args.report else workspace / "app.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = log_path.open("w", encoding="utf-8")
+    process = subprocess.Popen([str(BINARY)], env=env, stdout=log_handle,
                                stderr=subprocess.STDOUT, text=True)
     failures = []
+    results = []
+    state = {"bundle": bundle}
     try:
         started = time.time()
         wait_for_health(process)
         print("App answered in %.1fs on port %d\n" % (time.time() - started, PORT))
 
-        state = {"bundle": bundle}
         for name, func in CHECKS:
             try:
                 detail = func(state)
+                results.append({"check": name, "status": "passed", "detail": str(detail or "")})
                 print("  PASS  %-52s %s" % (name, detail or ""))
             except Exception as exc:
                 failures.append((name, exc))
+                results.append({"check": name, "status": "failed", "error": str(exc)})
                 print("  FAIL  %-52s %s" % (name, exc))
+    except BaseException as exc:
+        failures.append(("startup", exc))
+        results.append({"check": "startup", "status": "failed", "error": str(exc)})
     finally:
         process.terminate()
         try:
             process.wait(timeout=15)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait(timeout=15)
+        log_handle.close()
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps({"status": "failed" if failures else "passed",
+                "architecture": platform.machine(), "checks": results,
+                "analysis": state.get("analysis_result"),
+                "passed": sum(item["status"] == "passed" for item in results),
+                "total": len(CHECKS)}, indent=2), encoding="utf-8")
+            if (workspace / "outputs").exists():
+                shutil.copytree(workspace / "outputs", args.report.parent / "smoke_example", dirs_exist_ok=True)
         shutil.rmtree(workspace, ignore_errors=True)
 
     print("\n%d of %d checks passed." % (len(CHECKS) - len(failures), len(CHECKS)))

@@ -993,6 +993,31 @@ class StudioAppTests(unittest.TestCase):
 
     # -------------------------------------------------------------- reports
 
+    def test_run_report_selects_html_not_first_markdown_path(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            markdown = Path(directory) / "report.md"
+            html = Path(directory) / "report.html"
+            markdown.write_text("# Report", encoding="utf-8")
+            html.write_text("<html><body>Report</body></html>", encoding="utf-8")
+            job = SimpleNamespace(result={"report_path": str(markdown),
+                "report_paths": {"markdown": str(markdown), "html": str(html)}})
+            with patch.object(self.app.state.studio.jobs, "get", return_value=job):
+                response = self.client.get("/api/runs/report-format-fixture/report")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("text/html", response.headers["content-type"])
+            self.assertEqual(response.text, html.read_text(encoding="utf-8"))
+
+    def test_run_report_refuses_markdown_when_no_html_exists(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            markdown = Path(directory) / "report.md"
+            markdown.write_text("# Report", encoding="utf-8")
+            job = SimpleNamespace(result={"report_paths": {"markdown": str(markdown)}})
+            with patch.object(self.app.state.studio.jobs, "get", return_value=job):
+                response = self.client.get("/api/runs/missing-html-fixture/report")
+            self.assertEqual(response.status_code, 404)
+
     def test_reports_list_reports_its_root_and_a_well_formed_list(self):
         # Not asserted empty: other tests in this class submit runs, and a test
         # that depends on running first is a test that fails on reordering.

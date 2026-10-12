@@ -1101,7 +1101,7 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
                 # genes the screen excluded are kept for `tables/genes_spatial.tsv`,
                 # which otherwise reported 15 rows for a 296-gene panel.
                 "top_genes": result.metrics.get("top_genes", [])[:15],
-                "all_tested_genes": result.metrics.get("top_genes", []),
+                "all_tested_genes": result.metrics.get("all_tested_genes", result.metrics.get("top_genes", [])),
                 "screened_out_genes": result.metrics.get("screened_out_genes") or [],
                 "detected_by_gene": result.metrics.get("detected_by_gene") or {},
             }
@@ -3420,7 +3420,7 @@ def _descriptive_html(payload: Dict[str, Any]) -> str:
         "<h3>QC and clustering diagnostics</h3><table><tr><th>Metric</th><th>Value</th></tr>%s</table>"
         "<h3>Expression clusters (%s)</h3><table><tr><th>Cluster</th><th>Cells</th></tr>%s</table>"
         "<h3>Top markers per cluster</h3><table><tr><th>Cluster</th><th>Marker genes</th></tr>%s</table>"
-        "<h3>Spatially autocorrelated genes</h3><table><tr><th>Gene</th><th>Moran's I</th><th>Adjusted p-value</th></tr>%s</table>"
+        "<h3>Spatially autocorrelated genes</h3><p>%s</p><table><tr><th>Gene</th><th>Moran's I</th><th>Adjusted p-value</th></tr>%s</table>"
         "<h3>Cluster spatial co-occurrence</h3><table><tr><th>Pair</th><th>z-score</th></tr>%s</table>"
         "%s"
         "<p>%s</p></section>"
@@ -3429,6 +3429,7 @@ def _descriptive_html(payload: Dict[str, Any]) -> str:
             html.escape(str(descriptive.get("clustering_method") or "leiden")),
             cluster_rows,
             marker_rows,
+            html.escape(_spatial_screen_note(descriptive.get("spatial_genes") or {})),
             spatial_gene_rows,
             neighborhood_rows,
             _descriptive_figures_html(descriptive),
@@ -3452,6 +3453,14 @@ def _spatial_screen_note(spatial_genes: Dict[str, Any]) -> str:
     screen = spatial_genes.get("screening") or {}
     if not screen:
         return ""
+    if screen.get("method") == "detection_filter_only":
+        return (
+            "Coordinate-independent filter: %s. Tested all %s eligible genes from %s panel genes; "
+            "%s passed adjusted p <= 0.05. BH correction covers the complete eligible family, "
+            "independent of display top-N. Tissue-specific null calibration remains required."
+            % (screen.get("rule"), screen.get("tested_genes"), screen.get("panel_genes"),
+               spatial_genes.get("significant_gene_count_all", "?"))
+        )
     return (
         "Screened before permutation testing: %s. Of %s panel genes, %s were detected and %s were "
         "tested; %s of the tested genes passed FDR <= 0.05. Adjusted p-values are corrected over the "

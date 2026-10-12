@@ -15,7 +15,7 @@ from spatialmind.ingestion import (
 )
 from spatialmind.methods.replication import assess_condition_replication
 from spatialmind.ingestion.labels import MARKER_EVIDENCE_FEATURES, NON_BIOLOGICAL_FEATURES, load_xenium_analysis_clusters
-from spatialmind.schemas import SpatialDataset
+from spatialmind.schemas import SpatialDataset, expression_feature_names
 from spatialmind.tools.exceptions import MissingPreconditionError
 from spatialmind.tools.implementations import annotation, marker_detection, neighborhood_enrichment, reference_label_transfer, region_summary
 
@@ -111,6 +111,9 @@ def build_reference_assist_report(
     reference_path: Optional[str] = None,
     max_records: int = 2500,
     min_shared_features: int = 20,
+    expression_layer: str = "auto",
+    expression_semantics: str = "auto",
+    allowed_donors: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -120,6 +123,10 @@ def build_reference_assist_report(
         "target_path": target_path,
         "reference_path": reference_path,
         "status": "blocked_missing_curated_reference",
+        "expression_layer_requested": expression_layer,
+        "expression_semantics_requested": expression_semantics,
+        "allowed_reference_donors": allowed_donors,
+        "interpretation": "Reference-assist predictions are candidates, not expert labels or independent benchmark truth.",
         "required_reference": {
             "format": "h5ad, csv, or Xenium-derived reference table with validated labels",
             "tissue": "human brain or glioblastoma-relevant brain tumor microenvironment",
@@ -131,6 +138,10 @@ def build_reference_assist_report(
         reference, reference_ready, reference_status, reference_blockers, reference_format = _load_reference_dataset(
             reference_path,
             max_records=max_records,
+            expression_layer=expression_layer,
+            expression_semantics=expression_semantics,
+            allowed_donors=allowed_donors,
+            keep_features=expression_feature_names(target),
         )
         payload["reference_format"] = reference_format
         if reference is None:
@@ -146,6 +157,8 @@ def build_reference_assist_report(
                     "reference_label_classes": len(reference.cell_types),
                     "shared_feature_count": len(shared),
                     "shared_features_preview": shared[:50],
+                    "reference_expression_layer": reference.metadata.get("expression_layer"),
+                    "reference_donors_loaded": reference.metadata.get("donor_ids", []),
                 }
             )
             if reference_ready and len(shared) >= min_shared_features:
@@ -238,6 +251,10 @@ def _load_reference_dataset(
     reference_path: str,
     max_records: int,
     min_label_classes: int = 2,
+    expression_layer: str = "auto",
+    expression_semantics: str = "auto",
+    allowed_donors: Optional[List[str]] = None,
+    keep_features: Optional[List[str]] = None,
 ) -> Tuple[Optional[SpatialDataset], bool, str, List[str], str]:
     """Load a label-transfer reference from a Xenium folder, .h5ad, or tabular file.
 
@@ -249,7 +266,9 @@ def _load_reference_dataset(
     if suffix in {".h5ad", ".csv", ".tsv", ".txt"}:
         reference_format = "anndata" if suffix == ".h5ad" else "table"
         try:
-            reference = load_scrna(reference_path)
+            reference = load_scrna(reference_path, max_records=max_records,
+                                   expression_layer=expression_layer, expression_semantics=expression_semantics,
+                                   allowed_donors=allowed_donors, keep_features=keep_features)
         except Exception as exc:
             return (
                 None,
@@ -272,6 +291,10 @@ def _load_reference_dataset(
             )
         return reference, True, "reference_labels_available", [], reference_format
 
+    if expression_layer != "auto" or allowed_donors is not None:
+        return (None, False, "blocked_unsupported_reference_selection",
+                ["Explicit layer/donor selection requires H5AD input; it cannot be ignored for a Xenium directory."],
+                "xenium_directory")
     reference = load_xenium(reference_path, max_records=max_records)
     intake = validate_xenium_label_intake(reference_path, max_records=max_records)
     return reference, intake.ready_for_validated_pilot, intake.status, list(intake.blockers), "xenium_directory"

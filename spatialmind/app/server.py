@@ -758,11 +758,11 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
             raise HTTPException(status_code=404, detail="No report for %s yet." % job_id)
         for key in ("report_path", "html_report_path", "report_html_path"):
             candidate = job.result.get(key)
-            if candidate and os.path.exists(str(candidate)):
+            if candidate and Path(str(candidate)).suffix.lower() == ".html" and os.path.exists(str(candidate)):
                 return FileResponse(str(candidate))
         reports = job.result.get("report_paths") or {}
         for candidate in reports.values():
-            if candidate and os.path.exists(str(candidate)):
+            if candidate and Path(str(candidate)).suffix.lower() == ".html" and os.path.exists(str(candidate)):
                 return FileResponse(str(candidate))
         directory = Path(studio.output_root) / job_id
         for candidate in sorted(directory.glob("*.html")):

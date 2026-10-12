@@ -115,8 +115,22 @@ def expression_feature_names(dataset: "SpatialDataset") -> list:
         for gene in dataset.genes
         if gene.upper() not in NON_EXPRESSION_FEATURE_NAMES and gene.upper() not in controls
     ]
-    # Only drop them when real genes remain, so tiny fixtures stay usable.
-    return biological if len(biological) >= 2 else list(dataset.genes)
+    return biological
+
+
+def has_tissue_coordinates(dataset: "SpatialDataset") -> bool:
+    """Physical tissue positions, never embeddings or index placeholders."""
+    import math
+
+    if dataset.coordinate_system.lower() not in {
+        "pixel", "pixels", "micron", "microns", "um", "obsm:spatial", "obsm:x_spatial",
+    }:
+        return False
+    if dataset.metadata.get("coordinate_kind") in {"embedding", "index", "unknown"}:
+        return False
+    return bool(dataset.records) and all(
+        math.isfinite(record.x) and math.isfinite(record.y) for record in dataset.records
+    )
 
 
 @dataclass
