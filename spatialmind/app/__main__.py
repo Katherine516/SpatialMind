@@ -37,7 +37,7 @@ def main() -> None:
     except ImportError:
         logging.warning("pywebview is not installed; opening the default browser instead")
         raise SystemExit(desktop.run_browser(app, port, url))
-    raise SystemExit(desktop.run_windowed(app, port, url))
+    raise SystemExit(desktop.run_windowed(lambda: app, port, url))
 
 
 if __name__ == "__main__":

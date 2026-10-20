@@ -81,10 +81,13 @@ class DatasetEntry:
     relative_path: str
     data_type: str
     reviewable: bool
+    custom_display_name: str = ""
+    location_mode: str = "linked"
+    missing: bool = False
 
     @property
     def display_name(self) -> str:
-        return pretty_name(self.name)
+        return self.custom_display_name or pretty_name(self.name)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -95,6 +98,8 @@ class DatasetEntry:
             "relative_path": self.relative_path,
             "data_type": self.data_type,
             "reviewable": self.reviewable,
+            "location_mode": self.location_mode,
+            "missing": self.missing,
         }
 
 
@@ -165,7 +170,7 @@ def discover_datasets(data_root: str) -> List[DatasetEntry]:
     seen: set = set()
 
     for candidate in sorted(root.rglob("*")):
-        if candidate.name.startswith("."):
+        if any(part.startswith(".") for part in candidate.relative_to(root).parts):
             continue
         if _inside_dataset(candidate, seen):
             # A Xenium bundle's own cells.csv.gz is not a second dataset.

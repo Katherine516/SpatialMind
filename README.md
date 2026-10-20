@@ -17,6 +17,74 @@ is still pending.
 
 SpatialMind turns platform-processed spatial omics data into reviewable workflows and reports. Its active path supports Xenium, H5AD, and tabular inputs, QC, expert-review packets, gated analyses, visualizations, and replayable provenance. Biological claims require reviewed cell labels and tissue regions. The current brain cohorts still lack specialist review, matched H&E/IHC, and a verified independent donor test; the rare-class adjustment has only been selected on breast validation data.
 
+## Local Library and Knowledge Chat (October 15, 2026)
+
+**October 17 research-wiki increment:** Knowledge now supports versioned Markdown
+drafts, source-linked claims, per-claim human review, publication, revision diffs,
+shared-source backlinks and integrity checks. BioBot reads multiple source excerpts
+and can file an answer as a derived draft. A verified historical-run import bridge
+preserves dataset scope. Offline compilation is an evidence digest; model drafting
+requires explicit provider/sharing configuration. See the
+[research knowledge workspace](docs/research_knowledge_workspace.md) for workflow,
+limits, evaluation and remaining priorities. No specialist approval is automated.
+
+The updated **source app** adds a persistent local dataset library, a Knowledge
+view, and conversational **BioBot** (formerly Ask). The published 1.0.1 DMGs above predate these changes.
+
+- A fresh packaged installation contains **no research datasets**. Add files or
+  link a local folder; your existing data on your own machine are not removed.
+- External-folder links survive restart. Remove hides the library entry without
+  deleting original files or reports; Removed datasets provides Restore.
+- Browser imports copy locally in bounded chunks, with an 8 GiB/512-file limit,
+  progress, hashes and hidden staging. Link larger Xenium folders instead.
+- Knowledge starts with 11 original product/method notes. Upload Word (`.docx`),
+  Excel (`.xlsx`), PowerPoint (`.pptx`), text-based PDF, CSV, TSV, TXT or Markdown;
+  inspect extracted content, record a reviewer, search, disable or delete sources.
+  Multiple files are processed individually, with a 25 MiB limit per file.
+  Legacy `.doc/.xls/.ppt` need conversion; scanned PDFs need external OCR.
+  Pending sources are excluded from answers. These notes are not expert labels.
+- BioBot works without a dataset for general questions, saves local conversations,
+  shows source citations, and proposes analysis without executing it. Offline
+  answers are retrieved passages, **not a local generative model**.
+
+Optional hosted prose generation requires `SPATIALMIND_CHAT_PROVIDER` (`openai`
+or `anthropic`), `SPATIALMIND_CHAT_MODEL`, the corresponding API-key environment
+variable, and explicit consent in BioBot. Only the current question and bundled
+public-note evidence are sent; private knowledge sources stay offline. Questions
+themselves may be sensitive. Live hosted generation has not been validated here.
+
+Library/history state is stored under `<output_root>/.studio/`; keep that directory
+when upgrading. Launch through `python -m spatialmind.app` for loopback session
+protection. The in-process `create_studio_app` factory defaults to unprotected
+test mode; embedding callers must explicitly select `secure=True`.
+
+See [usage, verification and remaining scope](docs/local_library_knowledge_chat.md)
+and the [phased design](docs/local_library_knowledge_chat_plan.md). No biological
+review requirement is relaxed by importing a document or using chat.
+
+## Reliability Repairs (October 12, 2026)
+
+The source workflow now snapshots inputs before ingestion, rejects runs whose
+declared inputs change, records descriptive execution and figures, and preserves
+pilot settings on replay. Studio's report lane requires both a passed review gate
+and an executed reviewed-cell result; a label file alone is not validation.
+
+Local Moran candidate maps now exclude each focal cell from its conditional
+permutation pool and use two-sided empirical p-values with per-gene BH correction.
+The default 999 permutations have finite resolution, and selection of genes on
+the same section remains exploratory. These maps do not validate anatomical ROIs.
+PDF reports include the cluster map, marker heatmap and local-inference caveats;
+HTML and PDF titles identify blocked runs as descriptive/review-readiness runs.
+
+`pip install -r requirements.txt` now automatically includes
+`packaging/constraints.txt`, matching the constrained scientific stack used by CI
+and packaging. These are dependency constraints, not a complete transitive lock.
+The existing GitHub DMGs have **not** been rebuilt with these source repairs.
+See the [repair and verification record](docs/reliability_repairs_20261012.md)
+and [current human-review handoff](docs/expert_review_workflow.md#current-handoff-october-12-2026).
+
+## Architecture Overview
+
 1. Contracts and recorded review evidence
 2. Ingestion, scientific tools, storage, memory and LLM providers
 3. Validation gates
@@ -28,6 +96,14 @@ The base path remains dependency-light for fast testing, while the core workstat
 
 ## Collaborator Downloads
 
+The [native macOS 1.0.1 test prerelease](https://github.com/Katherine516/SpatialMind/releases/tag/studio-v1.0.1-native)
+provides separate Intel (`x86_64`) and Apple Silicon (`arm64`) DMG/ZIP downloads
+for macOS 15 or newer. Both native builds passed 13 packaged analysis/export
+checks and the real Cocoa/WKWebView probe. SHA-256 checksums and a verification
+archive accompany the installers. These are ad-hoc signed research packages,
+not Apple-notarized or biologically validated releases. See
+[acceptance and installation](docs/macos_release_1_0_1.md).
+
 The earlier [October 2 collaboration snapshot](https://github.com/Katherine516/SpatialMind/releases/tag/collaboration-2026-10-02)
 distributes the full local data snapshot as split release assets, the tested Intel
 macOS app, a glioblastoma example report and the specialist-review packet.
@@ -36,9 +112,34 @@ them. See [download, checksum and restoration instructions](docs/collaborator_ha
 The app is ad-hoc signed, not Apple-notarized. This is a research snapshot with
 pending biological review, not a validated brain analysis product.
 That older snapshot is currently a draft and may require maintainer access;
-the public native-app release above does not embed those data archives.
+the new native-app release does not publish or embed those data archives.
 
 ## Reference
+
+The [ordered P1 implementation](docs/brain_p1_implementation_20261003.md) adds
+reference label/state/donor review contracts, portable content-bound observation
+IDs, chunked sparse H5AD caches and a mandatory approved development protocol.
+The new HTML/JSON preflight keeps training blocked while real reviews are absent.
+Two 256-cell full-feature reference caches passed exact source-parity checks;
+this is storage verification, not biological training or annotation accuracy.
+
+The [brain-reference readiness increment](docs/reference_readiness_20261003.md)
+adds explicit H5AD layers, donor-isolated reads, source identity and panel checks,
+and unapproved collection-wide donor plans. Eight human reference files pass
+bounded loading checks; the smaller `glioblastoma_brain.h5ad` is mouse data and
+is excluded from direct human transfer. The seven Siletti files share four donors,
+not seven independent cohorts. No brain training or external evaluation is claimed.
+
+The [October 3 layer evaluation](docs/layer_evaluation_20261003.md) identified
+correctness gaps beyond the passing baseline test suite. The subsequent
+[correctness upgrade](docs/correctness_upgrade_20261003.md) fixes all eight
+documented software defects, adds regression tests, complete-family gene
+testing/export, a sparse wide-matrix bridge and a reference-curation inventory.
+Reports remain exploratory; no brain labels or regions have been specialist-approved. See the
+[prioritized data-expansion roadmap](docs/multimodal_roadmap_20261003.md) before
+adding Visium, other spatial RNA platforms, protein imaging or ATAC. A readable
+file is not an assay-validated workflow, and a reliability index is not a
+probability of biological truth.
 
 The September 30 evidence-boundary update requires explicit approval, identified
 reviewers, ISO review dates, finite confidence and evidence references before
@@ -95,6 +196,13 @@ validation; it does not establish validated brain performance.
 workflow, the architecture, every function, the reliability model, and the current
 state with its gaps. Open it in a browser.
 
+The [October 20 cleanup review](docs/project_cleanup_20261020.md) records removal
+of the unused v1 analysis engine and disposable build/cache files, with an
+[exact deletion inventory](docs/cleanup_inventory_20261020.md). Research data,
+run history, knowledge content and packaged applications were preserved.
+Direct imports of `spatialmind.algorithms.AlgorithmEngine` must migrate to the
+canonical tools and shared execution runtime.
+
 ## SpatialMind Studio (desktop app)
 
 The agent packaged as a local application: a browser UI over the same pipeline,
@@ -113,7 +221,7 @@ running under a transparent title bar. Run it from a checkout:
 `--browser` and `--headless` switch off the window when you want the old
 behaviour or a bare server.
 
-Seven surfaces -- Datasets, Readiness, Review Studio, Ask, Tool Bench, Runs --
+Studio surfaces include Datasets, Readiness, Review Studio, BioBot, Tool Bench and Runs --
 over the same `pilot_gate()`, `ToolRegistry` and `validate_tool_plan()` the CLI
 uses. Review Studio is the part that did not exist before: click a cell to
 select its 10x cluster and apply a Cell Ontology label, or drag a rectangle to
@@ -136,16 +244,30 @@ produce a typed plan that the local validator checks before anything runs. The
 Build the macOS app:
 
 ```bash
-python3 -m pip install -r requirements-app.txt
+python3.11 -m venv .venv-app
+source .venv-app/bin/activate
+python -m pip install -r requirements-app.txt
 python scripts/build_macos_app.py --clean --dmg   # builds for the HOST architecture
 python scripts/smoke_test_macos_app.py            # launches it and drives the API
+python scripts/smoke_test_macos_window.py --app "dist/SpatialMind Studio.app" --report dist/native_smoke.json
 ```
 
 PyInstaller freezes installed wheels, and the scientific stack ships
 single-architecture wheels, so **each macOS architecture must be built on that
 architecture**; a universal2 bundle is not achievable with this dependency set.
-`.github/workflows/build-macos.yml` runs the same script on `macos-13` (Intel)
-and `macos-14` (Apple Silicon) and uploads a `.dmg` for each.
+`.github/workflows/build-macos.yml` runs the same script on `macos-15-intel`
+(Intel) and `macos-15` (Apple Silicon). Version 1.0.1 targets macOS 15 or newer;
+choose `x86_64` for an Intel Mac and `arm64` for M-series Macs. The scientific
+stack is constrained in `packaging/constraints.txt`; each build records the
+complete installed dependency set. The release checks every native binary and
+requires both packaged analysis/export tests and a visible Cocoa/WKWebView test
+before producing ZIP downloads and checksums alongside the DMG.
+
+Current builds are **ad-hoc signed test packages**, not notarized distribution
+releases. Native architecture support does not bypass Gatekeeper. Developer ID
+signing and Apple notarization require the project owner's Apple credentials.
+See [macOS packaging and acceptance](docs/spatialmind_studio.md#packaging-for-macos)
+for the build, testing and signing procedure.
 
 ## Architecture
 
@@ -419,11 +541,11 @@ python scripts/analyze.py "data/Xenium Human Brain/Xenium_V1_FFPE_Human_Brain_He
 
 ```text
 SpatialMind analysis
-  cells        : 6000 of 24406 (sampled)
-  features     : 408
-  clusters     : 9
-  spatial genes: 50 significant
-  analysis time: 33s
+  cells        : <loaded cells and sampled/full-section scope>
+  features     : <detected biological genes>
+  clusters     : <expression clusters>
+  spatial genes: <adjusted-p discoveries in the complete eligible family>
+  analysis time: <measured elapsed time>
 
 Report   : outputs/analysis/validated_xenium_pilot_report.html
 Viewer   : outputs/analysis/explorer_lite_viewer.html

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from ...schemas import SpatialDataset
 
@@ -9,8 +9,8 @@ class FusedDataset:
     dataset: SpatialDataset
     modalities_present: List[str]
     fusion_method: Dict[str, str]
-    shared_cells_n: int
-    fusion_quality_score: float
+    shared_cells_n: Optional[int]
+    fusion_quality_score: Optional[float]
     warnings: List[str] = field(default_factory=list)
 
 
@@ -39,7 +39,7 @@ class ModalityFuser:
             dataset=primary,
             modalities_present=modalities,
             fusion_method=methods,
-            shared_cells_n=len(primary.records),
-            fusion_quality_score=0.5 if warnings else 1.0,
+            shared_cells_n=None,
+            fusion_quality_score=None,
             warnings=warnings or ["Fusion scaffold created; production alignment not yet run."],
         )

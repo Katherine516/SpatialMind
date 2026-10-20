@@ -36,7 +36,6 @@ autocorrelation is gated precisely because it names cell types.
 """
 
 from collections import Counter
-from math import erfc, sqrt
 from typing import Any, Dict, List, Optional, Tuple
 
 from spatialmind.schemas import SpatialDataset
@@ -53,12 +52,9 @@ MIN_CELLS_FOR_AUTOCORRELATION = 50
 # the cap is reported rather than assumed.
 DEFAULT_LISA_GENES = 8
 
-# A permutation p-value cannot go below 1/(n_perms + 1), and BH over one test per
-# cell then multiplies that floor by n/rank. At 99 permutations on 4,000 cells the
-# smallest reachable adjusted p is 0.01 x 4000 = 40 for the top-ranked cell, so
-# *nothing* can clear alpha 0.05 and every gene reports zero hotspots -- which is
-# exactly what the first run produced. 999 permutations puts the floor at 0.001
-# and makes the test able to detect anything at all.
+# The empirical p-value floor is 1/(B+1). BH depends on all ranks, not only
+# rank one; many tied small p-values can survive even with a finite floor.
+# Sparse discoveries may require a larger, prespecified permutation budget.
 DEFAULT_LISA_PERMUTATIONS = 999
 
 # Local statistics need a bigger neighbourhood than global ones, and the
@@ -427,6 +423,23 @@ def cell_type_spatial_autocorrelation(
     }
 
 
+def _conditional_lag(weights, z, permutation):
+    """One conditional draw per focal cell, with that cell excluded from its pool.
+
+    Swap the focal value into its fixed slot in a shared uniform permutation.
+    The remaining slots are then a uniform permutation of the other n-1 cells.
+    A sparse correction avoids materializing an n-by-n array of permutations.
+    The weight matrix must have a zero diagonal and be row-standardized.
+    """
+    import numpy as np
+
+    shuffled = z[permutation]
+    inverse = np.empty(len(z), dtype=int)
+    inverse[permutation] = np.arange(len(z))
+    correction = np.asarray(weights[np.arange(len(z)), inverse]).ravel() * (shuffled - z)
+    return np.asarray(weights @ shuffled).ravel() + correction
+
+
 def local_moran_hotspots(
     dataset: SpatialDataset,
     genes: List[str],
@@ -475,11 +488,14 @@ def local_moran_hotspots(
         }
 
     graph = _neighbor_graph(sq, adata, n_neighs, radius if radius is None else float(radius))
-    weights = adata.obsp["spatial_connectivities"].astype(float)
+    weights = adata.obsp["spatial_connectivities"].astype(float).tocsr()
+    weights.setdiag(0)
+    weights.eliminate_zeros()
     # Row-standardise: each cell's neighbourhood is a mean, so a cell with more
     # neighbours does not get more weight purely for being in a dense area.
     degrees = np.asarray(weights.sum(axis=1)).ravel()
     degrees[degrees == 0] = 1.0
+    weights = weights.multiply((1.0 / degrees)[:, None]).tocsr()
     cell_ids = [record.cell_id or str(index) for index, record in enumerate(dataset.records)]
 
     gene_rows: List[Dict[str, Any]] = []
@@ -491,40 +507,33 @@ def local_moran_hotspots(
             gene_rows.append({"gene": gene, "status": "constant_expression", "hotspot_cells": 0})
             continue
         z = (values - float(values.mean())) / spread
-        lag = np.asarray(weights @ z).ravel() / degrees
+        lag = np.asarray(weights @ z).ravel()
         local_i = z * lag
 
-        # Conditional randomisation: hold this cell's own value fixed and permute
-        # the rest, which is the null local Moran's I is defined against. A global
-        # permutation would test a different, easier hypothesis.
-        #
-        # Scored as a z-score against the simulated null rather than as a count of
-        # exceedances, because a counted permutation p cannot fall below
-        # 1/(n_perms + 1) and BH over one test per cell multiplies that floor by
-        # the cell count. Measured: at 999 permutations on 3,993 cells the
-        # smallest reachable adjusted p was 1.0, so every gene reported zero
-        # hotspots -- not because there were none, but because the test could not
-        # express one. The z-score has no floor, so FDR is meaningful at this
-        # scale. This is esda's `p_z_sim`, and the standard way the statistic is
-        # reported for exactly this reason.
+        # Exact conditional expectation for centered z and a zero-diagonal,
+        # row-standardized graph. Two-sided deviations include ties and a +1
+        # correction. Z-scores below are diagnostics, never significance tests.
         rng = np.random.default_rng(int(params.get("random_state", 0) or 0))
         n_perms = max(99, int(params.get("n_perms", DEFAULT_LISA_PERMUTATIONS) or DEFAULT_LISA_PERMUTATIONS))
         total = np.zeros(len(z), dtype=float)
         total_squares = np.zeros(len(z), dtype=float)
+        expected = -z * z / max(len(z) - 1, 1)
+        observed_distance = np.abs(local_i - expected)
+        exceedances = np.zeros(len(z), dtype=int)
         for _ in range(n_perms):
-            shuffled = rng.permutation(z)
-            null_local = z * (np.asarray(weights @ shuffled).ravel() / degrees)
+            null_local = z * _conditional_lag(weights, z, rng.permutation(len(z)))
+            exceedances += np.abs(null_local - expected) >= observed_distance - 1e-12
             total += null_local
             total_squares += null_local * null_local
         null_mean = total / n_perms
         null_var = np.maximum(total_squares / n_perms - null_mean * null_mean, 0.0)
         null_sd = np.sqrt(null_var)
         # A cell whose null has no spread cannot be distinguished from it.
-        usable = null_sd > 0
+        usable = null_sd > 1e-10
         zscores = np.zeros(len(z), dtype=float)
         zscores[usable] = (local_i[usable] - null_mean[usable]) / null_sd[usable]
         pvalues = np.ones(len(z), dtype=float)
-        pvalues[usable] = np.array([erfc(abs(value) / sqrt(2.0)) for value in zscores[usable]])
+        pvalues[usable] = (exceedances[usable] + 1.0) / (n_perms + 1.0)
         adjusted = _benjamini_hochberg(pvalues)
 
         quadrant = np.where(
@@ -550,6 +559,7 @@ def local_moran_hotspots(
         for index, cell_id in enumerate(cell_ids):
             per_cell.setdefault(cell_id, {})["lisa_%s" % gene] = str(classes[index])
             per_cell[cell_id]["lisa_%s_i" % gene] = _round(float(local_i[index]))
+            per_cell[cell_id]["lisa_%s_p" % gene] = _round(float(pvalues[index]), 8)
             per_cell[cell_id]["lisa_%s_padj" % gene] = _round(float(adjusted[index]), 6)
 
     return {
@@ -559,13 +569,16 @@ def local_moran_hotspots(
         "alpha": alpha,
         "n_perms": max(99, int(params.get("n_perms", DEFAULT_LISA_PERMUTATIONS) or DEFAULT_LISA_PERMUTATIONS)),
         "multiple_testing": "benjamini_hochberg_per_gene",
-        "significance_basis": "conditional_randomisation_z_score",
+        "random_state": int(params.get("random_state", 0) or 0),
+        "significance_basis": "conditional_randomisation_empirical_two_sided",
         "permutation_note": (
-            "Significance comes from a z-score against the conditional-randomisation null, not "
-            "from counting exceedances. A counted permutation p cannot fall below 1/(n_perms + 1), "
-            "and BH over one test per cell multiplies that floor by the cell count -- at 999 "
-            "permutations on 4,000 cells nothing could reach alpha 0.05 and every gene reported "
-            "zero hotspots. The z-score has no floor."
+            "The focal cell is excluded from its randomized neighbor pool. Two-sided empirical "
+            "p-values count absolute deviations from the conditional expectation, include ties, "
+            "and use (exceedances+1)/(permutations+1). BH is applied across cells separately for "
+            "each gene; it does not establish across-gene or post-selection error control. "
+            "Genes selected on this section and overlapping neighborhoods make these exploratory "
+            "candidate maps, not confirmatory region evidence. Limited permutation resolution "
+            "can reduce detection; zero hotspots does not establish absence of structure."
         ),
         "genes": gene_rows,
         "missing_genes": missing,

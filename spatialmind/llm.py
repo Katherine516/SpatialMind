@@ -23,6 +23,10 @@ class LLMProvider:
     def generate_plan_json(self, prompt: str, system_prompt: str) -> Dict[str, object]:
         raise NotImplementedError
 
+    def generate_answer_json(self, prompt: str, system_prompt: str) -> Dict[str, object]:
+        """Reuse the JSON transport without granting the answer any tool authority."""
+        return self.generate_plan_json(prompt, system_prompt)
+
 
 class OpenAIResponsesProvider(LLMProvider):
     """OpenAI Responses API adapter.

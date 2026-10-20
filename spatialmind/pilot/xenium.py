@@ -42,6 +42,8 @@ from spatialmind.tools.spatial_statistics import (
 from spatialmind.pilot.spatial_relationships import build_spatial_relationship_summary
 from spatialmind.schemas import SpatialDataset, ToolResult
 from spatialmind.storage import StorageLayer
+from spatialmind.storage.run_store import snapshot_inputs
+from spatialmind.ingestion.loaders.xenium import xenium_analysis_inputs
 from spatialmind.tools import build_mvp_registry
 from spatialmind.tools.implementations import (
     CLUSTER_ASSIGNMENT_KEY,
@@ -100,6 +102,9 @@ def run_pilot(
     enforce_coverage_floor(min_label_coverage, min_region_coverage, acknowledge_low_coverage)
     normalized_format = normalize_report_format(report_format)
     output_dir.mkdir(parents=True, exist_ok=True)
+    # The fast readiness path does not attest to an executed analysis.
+    input_files = [] if readiness_only else xenium_analysis_inputs(dataset_path)
+    input_snapshot = None if readiness_only else snapshot_inputs(input_files)
     dataset = load_xenium(dataset_path, max_records=max_records)
     dataset.metadata["analysis_dataset_path"] = dataset_path
     label_report = apply_best_available_labels(dataset, dataset_path, fallback=None)
@@ -198,6 +203,7 @@ def run_pilot(
     descriptive: Dict[str, Any] = {"status": "not_run", "reason": "Descriptive analysis was not requested."}
     if not readiness_only:
         descriptive = _run_descriptive_lane(dataset, output_dir)
+        figures.extend(descriptive.get("figures") or [])
 
     analysis_backend_error = ""
     if gate["status"] == "validated_ready" and not readiness_only:
@@ -456,6 +462,13 @@ def run_pilot(
         _write_json(output_dir / "pilot_validation.json", payload)
         return payload
     planned_run_id = "mvp_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), uuid.uuid4().hex[:8])
+    if snapshot_inputs(input_files) != input_snapshot:
+        # Persist failure before publishing a report that could look successful.
+        StorageLayer(root=str(output_dir)).write_mvp_run_record(
+            query=query, tool_trace=list(descriptive.get("tool_trace") or []),
+            params={"workflow_type": "validated_xenium_pilot"}, input_files=input_files,
+            input_snapshot=input_snapshot, run_id=planned_run_id,
+        )
     payload["run_record_path"] = str(output_dir / "runs" / ("%s.json" % planned_run_id))
 
     # Written before the reports, so the report can name the files it produced.
@@ -503,11 +516,25 @@ def run_pilot(
         report_artifacts["region_stratified_neighborhoods"] = str(region_json)
     if cooccurrence_json.exists():
         report_artifacts["distance_dependent_cooccurrence"] = str(cooccurrence_json)
+    for name in descriptive.get("tools") or []:
+        report_artifacts["descriptive_" + name] = str(output_dir / ("descriptive_%s.json" % name))
+    for result in results:
+        report_artifacts[result.tool_name] = str(output_dir / (result.tool_name + ".json"))
+    trace = list(descriptive.get("tool_trace") or [])
+    trace.extend({"tool_name": result.tool_name, "summary": result.summary, "metrics": result.metrics,
+                  "lane": "reviewed" if result.metrics.get("reviewed_only") else "descriptive",
+                  "params": (result.metrics.get("execution_policy") or {}).get("effective_parameters", {})} for result in results)
+    for name in ("spatial_robustness", "region_stratified_neighborhoods", "distance_cooccurrence",
+                 "cell_type_spatial_autocorrelation", "cell_type_point_pattern", "gene_pair_spatial_correlation"):
+        block = payload.get(name) or {}
+        trace.append({"tool_name": name, "lane": "reviewed", "metrics": block,
+                      "status": block.get("status", "unknown")})
     run_record = StorageLayer(root=str(output_dir)).write_mvp_run_record(
         query=query,
-        tool_trace=[{"tool_name": result.tool_name, "summary": result.summary, "metrics": result.metrics} for result in results],
+        tool_trace=trace,
         params={
             "workflow_type": "validated_xenium_pilot",
+            "dataset_path": dataset_path,
             "max_records": max_records,
             "min_label_coverage": min_label_coverage,
             "min_region_coverage": min_region_coverage,
@@ -515,9 +542,12 @@ def run_pilot(
             "require_complete_section": require_complete_section,
             "review_max_records": review_max_records,
             "report_format": normalized_format,
+            "acknowledge_low_coverage": acknowledge_low_coverage,
+            "review_artifacts": review_artifacts,
             "tool_plan": _jsonable(plan),
         },
-        input_files=[dataset_path],
+        input_files=input_files,
+        input_snapshot=input_snapshot,
         artifacts=report_artifacts,
         figures=figures,
         tables=[label_template, region_template]
@@ -722,9 +752,12 @@ def _local_spatial_lines(descriptive: Dict[str, Any]) -> List[str]:
         "among high-expressing neighbours -- a hotspot -- and `low-low` is the opposite. Spatial "
         "outliers (`high-low`, `low-high`) are single cells unlike their surroundings.",
         "",
-        "Graph: %s, %s neighbours. Significance from a conditional-randomisation z-score, "
+        "Graph: %s, %s neighbours. Significance basis: `%s`, %s permutations, "
         "Benjamini-Hochberg corrected across cells within each gene."
-        % (graph.get("family", "knn"), graph.get("n_neighs", "?")),
+        % (graph.get("family", "knn"), graph.get("n_neighs", "?"),
+           block.get("significance_basis", "not recorded"), block.get("n_perms", "not recorded")),
+        "",
+        str(block.get("permutation_note") or ""),
         "",
         "| Gene | Hotspot cells | Coldspot cells | Spatial outliers | Not significant |",
         "| --- | ---: | ---: | ---: | ---: |",
@@ -1016,7 +1049,7 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     named cell types, so it stands without expert annotation.
     """
     registry = build_mvp_registry()
-    payload: Dict[str, Any] = {"status": "computed", "group_key": "cluster", "tools": []}
+    payload: Dict[str, Any] = {"status": "computed", "group_key": "cluster", "tools": [], "tool_trace": []}
     # Stage timings: a full-section run takes minutes, and without per-stage
     # numbers there is no way to tell which stage to optimise.
     timings: Dict[str, float] = {}
@@ -1031,6 +1064,9 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
         return {"status": "not_run", "reason": "Clustering failed: %s" % exc}
     timings["qc_and_cluster"] = round(time.time() - stage_start, 2)
     payload["tools"].append("qc_and_cluster")
+    payload["tool_trace"].append({"tool_name": "qc_and_cluster", "lane": "descriptive", "status": "computed",
+                                  "params": {"resolution": 0.55, "random_state": 0, "strict_engine": True},
+                                  "metrics": clustering.metrics})
     payload["cluster_counts"] = clustering.metrics.get("cluster_counts", {})
     payload["cluster_count"] = len(payload["cluster_counts"])
     payload["expression_qc"] = clustering.metrics.get("expression_qc", {})
@@ -1079,9 +1115,13 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
         except Exception as exc:
             timings[tool_name] = round(time.time() - stage_start, 2)
             payload[key] = {"status": "not_run", "reason": str(exc)}
+            payload["tool_trace"].append({"tool_name": tool_name, "lane": "descriptive",
+                                          "params": params, "status": "failed", "reason": str(exc)})
             continue
         timings[tool_name] = round(time.time() - stage_start, 2)
         payload["tools"].append(tool_name)
+        payload["tool_trace"].append({"tool_name": tool_name, "lane": "descriptive", "params": params,
+                                      "status": "computed", "metrics": result.metrics})
         _write_json(output_dir / ("descriptive_%s.json" % tool_name), result)
         if tool_name == "marker_detection":
             payload[key] = {
@@ -1101,7 +1141,7 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
                 # genes the screen excluded are kept for `tables/genes_spatial.tsv`,
                 # which otherwise reported 15 rows for a 296-gene panel.
                 "top_genes": result.metrics.get("top_genes", [])[:15],
-                "all_tested_genes": result.metrics.get("top_genes", []),
+                "all_tested_genes": result.metrics.get("all_tested_genes", result.metrics.get("top_genes", [])),
                 "screened_out_genes": result.metrics.get("screened_out_genes") or [],
                 "detected_by_gene": result.metrics.get("detected_by_gene") or {},
             }
@@ -1164,6 +1204,12 @@ def _run_descriptive_lane(dataset: SpatialDataset, output_dir: Path) -> Dict[str
     # tenfold while CPU time barely moves. Reporting both makes a contended run
     # identifiable instead of being mistaken for a slow dataset.
     payload["timing_quality"] = _timing_quality(wall_total, cpu_total)
+    for name in ("local_spatial_structure", "cluster_spatial_autocorrelation", "region_proposal"):
+        block = payload[name]
+        payload["tool_trace"].append({"tool_name": name, "lane": "descriptive",
+                                      "status": block.get("status", "unknown"),
+                                      "metrics": {key: value for key, value in block.items()
+                                                  if key not in {"per_cell", "assignments"}}})
     return payload
 
 
@@ -2348,10 +2394,10 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         )
     )
     content = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Validated Xenium Pilot</title>
+<html><head><meta charset="utf-8"><title>%s</title>
 <style>body{font-family:Arial,sans-serif;margin:32px;line-height:1.45;color:#1f2933}code{background:#f6f8fa;padding:1px 4px}section{margin:24px 0}li{margin:4px 0}.gallery{display:grid;grid-template-columns:minmax(280px,1fr);gap:18px;max-width:1100px}.figure{border:1px solid #d6dde5;padding:12px;background:#fff}.figure img{max-width:100%%;height:auto}table{border-collapse:collapse;min-width:380px}td,th{border:1px solid #d6dde5;padding:6px 8px;text-align:left}</style>
 </head><body>
-<h1>Validated Xenium Pilot</h1>
+<h1>%s</h1>
 <p>Status: <code>%s</code></p>
 <p>Dataset: <code>%s</code>. Loaded %d cells and %d features.</p>
 %s
@@ -2374,6 +2420,8 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
 <section><h2>Run Record</h2><p><code>%s</code></p></section>
 <section><h2>Claim Policy</h2><p>Validated biological claims require expert labels and user-provided regions. Weak labels remain software QA only.</p></section>
 </body></html>""" % (
+        html.escape(_pilot_report_title(payload)),
+        html.escape(_pilot_report_title(payload)),
         html.escape(payload["status"]),
         html.escape(payload["dataset_path"]),
         payload["records_loaded"],
@@ -2389,7 +2437,7 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         plan,
         html.escape(payload["expert_label_template"]),
         html.escape(payload["region_label_template"]),
-        result_html or "<p>No analysis tools were run because validation inputs are incomplete.</p>",
+        result_html or "<p>No reviewed biological tools ran. Descriptive results, when available, are reported above.</p>",
         relationship_html,
         region_html,
         cooccurrence_html,
@@ -2400,6 +2448,11 @@ def _write_html_report(path: Path, payload: Dict[str, Any], results: List[ToolRe
         html.escape(payload.get("run_record_path") or "not written"),
     )
     path.write_text(content, encoding="utf-8")
+
+
+def _pilot_report_title(payload: Dict[str, Any]) -> str:
+    return ("Xenium Pilot: Reviewed Analysis" if payload.get("status") == "validated_ready"
+            else "Xenium Pilot: Descriptive Analysis and Review Readiness")
 
 
 def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[ToolResult]) -> None:
@@ -2503,6 +2556,9 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
             ),
             PdfSection(
                 title="Descriptive Cluster Evidence",
+                figures=[PdfFigure(path=item, caption=Path(item).stem.replace("_", " ").title())
+                         for item in descriptive.get("figures", [])
+                         if Path(item).suffix.lower() in {".png", ".jpg", ".jpeg"}],
                 tables=[
                     PdfTable(headers=["Cluster", "Top marker genes"], rows=marker_rows, column_widths=[1, 4]),
                     PdfTable(
@@ -2514,6 +2570,21 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
                 ],
             ),
         ]
+        local = descriptive.get("local_spatial_structure") or {}
+        if local.get("status") == "computed":
+            descriptive_sections.append(PdfSection(
+                title="Exploratory Local Spatial Structure",
+                paragraphs=[
+                    "Method: %s; permutations: %s; correction: %s."
+                    % (local.get("significance_basis"), local.get("n_perms"), local.get("multiple_testing")),
+                    str(local.get("permutation_note") or ""),
+                    str(local.get("interpretation") or ""),
+                ],
+                tables=[PdfTable(headers=["Gene", "Hotspots", "Coldspots", "Outliers"],
+                                 rows=[(row.get("gene"), row.get("hotspot_cells", 0),
+                                        row.get("coldspot_cells", 0), row.get("outlier_cells", 0))
+                                       for row in local.get("genes", [])], column_widths=[2, 1, 1, 1])],
+            ))
     sections = [
         PdfSection(
             title="Executive Summary",
@@ -2710,7 +2781,7 @@ def _write_pilot_pdf_report(path: Path, payload: Dict[str, Any], results: List[T
     )
     write_pdf_report(
         str(path),
-        "Validated Xenium Pilot",
+        _pilot_report_title(payload),
         sections,
         metadata=[
             ("Status", payload.get("status", "unknown")),
@@ -3420,7 +3491,7 @@ def _descriptive_html(payload: Dict[str, Any]) -> str:
         "<h3>QC and clustering diagnostics</h3><table><tr><th>Metric</th><th>Value</th></tr>%s</table>"
         "<h3>Expression clusters (%s)</h3><table><tr><th>Cluster</th><th>Cells</th></tr>%s</table>"
         "<h3>Top markers per cluster</h3><table><tr><th>Cluster</th><th>Marker genes</th></tr>%s</table>"
-        "<h3>Spatially autocorrelated genes</h3><table><tr><th>Gene</th><th>Moran's I</th><th>Adjusted p-value</th></tr>%s</table>"
+        "<h3>Spatially autocorrelated genes</h3><p>%s</p><table><tr><th>Gene</th><th>Moran's I</th><th>Adjusted p-value</th></tr>%s</table>"
         "<h3>Cluster spatial co-occurrence</h3><table><tr><th>Pair</th><th>z-score</th></tr>%s</table>"
         "%s"
         "<p>%s</p></section>"
@@ -3429,6 +3500,7 @@ def _descriptive_html(payload: Dict[str, Any]) -> str:
             html.escape(str(descriptive.get("clustering_method") or "leiden")),
             cluster_rows,
             marker_rows,
+            html.escape(_spatial_screen_note(descriptive.get("spatial_genes") or {})),
             spatial_gene_rows,
             neighborhood_rows,
             _descriptive_figures_html(descriptive),
@@ -3452,6 +3524,14 @@ def _spatial_screen_note(spatial_genes: Dict[str, Any]) -> str:
     screen = spatial_genes.get("screening") or {}
     if not screen:
         return ""
+    if screen.get("method") == "detection_filter_only":
+        return (
+            "Coordinate-independent filter: %s. Tested all %s eligible genes from %s panel genes; "
+            "%s passed adjusted p <= 0.05. BH correction covers the complete eligible family, "
+            "independent of display top-N. Tissue-specific null calibration remains required."
+            % (screen.get("rule"), screen.get("tested_genes"), screen.get("panel_genes"),
+               spatial_genes.get("significant_gene_count_all", "?"))
+        )
     return (
         "Screened before permutation testing: %s. Of %s panel genes, %s were detected and %s were "
         "tested; %s of the tested genes passed FDR <= 0.05. Adjusted p-values are corrected over the "

@@ -2,27 +2,38 @@ name: Build SpatialMind Studio (macOS)
 
 # One app per architecture, each built on that architecture. PyInstaller freezes
 # installed wheels, and the scientific stack ships thin (single-arch) wheels, so
-# a universal2 bundle cannot be produced from one runner. macos-13 is Intel;
-# macos-14 and later are Apple Silicon.
+# a universal2 bundle cannot be produced from one runner with thin wheels.
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_run_id:
+        description: Optional successful build run ID to publish instead of rebuilding
+        required: false
+        default: ""
+        type: string
   push:
     tags: ["v*"]
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || inputs.publish_run_id == ''
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      SPATIALMIND_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15-intel
             arch: x86_64
+            python_arch: x64
             label: Intel (x86_64)
-          - runner: macos-14
+          - runner: macos-15
             arch: arm64
+            python_arch: arm64
             label: Apple Silicon (arm64)
 
     steps:
@@ -31,6 +42,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          architecture: ${{ matrix.python_arch }}
 
       - name: Confirm the runner architecture
         run: |
@@ -45,23 +57,119 @@ jobs:
       # of one dependency set is one description too many.
       - name: Install the Studio's runtime dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-app.txt
+          python -m venv .venv-app
+          .venv-app/bin/python -m pip install --upgrade pip
+          .venv-app/bin/python -m pip install -r requirements-app.txt
+          .venv-app/bin/python -m pip check
+          echo "$PWD/.venv-app/bin" >> "$GITHUB_PATH"
 
       - name: Test
-        run: python -m unittest discover -s tests -p 'test_studio_app.py' -v
+        run: |
+          python -m unittest discover -s tests -p 'test_studio_app.py' -v
+          python -m unittest discover -s tests -p 'test_macos_packaging.py' -v
 
       - name: Audit the environment for this architecture
-        run: python scripts/build_macos_app.py --check
+        run: python scripts/build_macos_app.py --check --expected-arch ${{ matrix.arch }}
+
+      - name: Prepare optional Developer ID signing
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: python scripts/configure_macos_signing.py prepare
 
       - name: Build the app
-        run: python scripts/build_macos_app.py --clean --dmg
+        run: |
+          args=()
+          if [ -n "$SPATIALMIND_NOTARY_PROFILE" ]; then
+            args+=(--notarize-profile "$SPATIALMIND_NOTARY_PROFILE")
+          fi
+          python scripts/build_macos_app.py --clean --dmg --expected-arch ${{ matrix.arch }} "${args[@]}"
+          python -m pip freeze > dist/dependencies.txt
 
       - name: Smoke-test the built app
-        run: python scripts/smoke_test_macos_app.py
+        run: python scripts/smoke_test_macos_app.py --report dist/headless_smoke.json
+
+      - name: Test the real native window
+        run: python scripts/smoke_test_macos_window.py --app "dist/SpatialMind Studio.app" --report dist/native_smoke.json
+
+      - name: Finalize verified downloads
+        run: python scripts/finalize_macos_release.py
 
       - uses: actions/upload-artifact@v4
         with:
           name: SpatialMind-Studio-macos-${{ matrix.arch }}
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.json
+            dist/SHA256SUMS.txt
+            dist/dependencies.txt
+            dist/smoke_example/**
           if-no-files-found: error
+
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-diagnostics-${{ matrix.arch }}
+          path: |
+            dist/*.log
+            dist/*smoke.json
+            dist/smoke_example/**
+            build/**/warn-*.txt
+          if-no-files-found: ignore
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: python scripts/configure_macos_signing.py cleanup
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_RUN_ID: ${{ inputs.publish_run_id }}
+      APP_VERSION: "1.0.1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify successful build origin
+        run: |
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > build_run.json
+          python -c 'import json; r=json.load(open("build_run.json")); assert r["status"] == "completed" and r["conclusion"] == "success"; assert r["path"] == ".github/workflows/build-macos.yml"; print("Verified successful dual-native build", r["head_sha"])'
+          echo "SOURCE_COMMIT=$(jq -r .head_sha build_run.json)" >> "$GITHUB_ENV"
+      # The build workflow runs only the Studio tests and the packaged smoke
+      # checks. The full suite, both eval sets, the import contracts and the doc
+      # counts live in checks.yml, and 1.0.1 was published while that workflow
+      # was red on every commit of its branch. A release is published from a
+      # commit Checks has passed, or not at all.
+      - name: Require a green Checks run on the same commit
+        run: |
+          gh api "repos/$GH_REPO/actions/workflows/checks.yml/runs?head_sha=$SOURCE_COMMIT&status=completed" > checks_runs.json
+          python -c 'import json, os; runs = json.load(open("checks_runs.json"))["workflow_runs"]; green = [r for r in runs if r["conclusion"] == "success"]; assert green, "No successful Checks run on %s; fix Checks before publishing" % os.environ["SOURCE_COMMIT"]; print("Checks green on", os.environ["SOURCE_COMMIT"], "run", green[0]["id"])'
+      - name: Download both verified artifacts
+        run: gh run download "$BUILD_RUN_ID" --pattern 'SpatialMind-Studio-macos-*' --dir artifacts
+      - name: Verify and assemble downloads
+        run: python -m scripts.prepare_macos_release --artifacts artifacts --output release_files --version "$APP_VERSION" --commit "$SOURCE_COMMIT"
+      - name: Upload to maintainer-prepared research prerelease draft
+        run: |
+          test "$(gh api "repos/$GH_REPO/commits/studio-v$APP_VERSION-native" --jq .sha)" = "$SOURCE_COMMIT"
+          gh release view "studio-v$APP_VERSION-native" --json isDraft,isPrerelease,assets > release_draft.json
+          python -c 'import json; r=json.load(open("release_draft.json")); assert r["isDraft"] and r["isPrerelease"] and not r["assets"], "Use an empty maintainer-prepared prerelease draft"'
+          gh release upload "studio-v$APP_VERSION-native" release_files/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: published-macos-evidence
+          path: |
+            release_files/SHA256SUMS.txt
+            release_files/*verification.zip

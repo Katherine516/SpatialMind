@@ -20,6 +20,9 @@ from ..ingestion import (
 )
 from ..pilot import run_pilot
 from ..storage import StorageLayer
+from ..storage.library_store import DatasetLibrary
+from ..storage.run_store import snapshot_inputs
+from ..ingestion.loaders.xenium import xenium_analysis_inputs
 from ..tools import build_default_registry
 from ..tools.exceptions import MissingPreconditionError, InvalidParameterError
 from ..tools.implementations import check_section_fits
@@ -30,7 +33,7 @@ from .. import dataset_context, gatekeeper
 from . import config
 from . import gate as gate_module
 from . import exports, library, plan_report, planner, resources, review, uploads, workflow
-from .catalog import DEFAULT_DISPLAY_CELLS, IndexCache, discover_datasets, panel_genes
+from .catalog import DEFAULT_DISPLAY_CELLS, DatasetEntry, IndexCache, discover_datasets, panel_genes
 from .jobs import JobRunner, step
 
 # macOS gates these behind a consent prompt; a scan of one blocks until answered.
@@ -122,6 +125,9 @@ class Studio:
         self.indexes = IndexCache()
         self.jobs = JobRunner()
         self.reports = library.ReportLibrary(self.output_root)
+        self.state_root = Path(self.output_root) / ".studio"
+        self.dataset_library = DatasetLibrary(self.state_root / "library.sqlite")
+        self.library_lock = Lock()
         self._datasets: Dict[str, Any] = {}
         self._scanned = False
         self._scan_thread: Optional[Thread] = None
@@ -188,9 +194,27 @@ class Studio:
 
     def refresh_datasets(self) -> List[Dict[str, Any]]:
         entries = discover_datasets(self.data_root)
-        self._datasets = {entry.dataset_id: entry for entry in entries}
+        for entry in entries:
+            self.dataset_library.register(entry.to_dict())
+        self._datasets = {}
+        for item in self.dataset_library.list():
+            entry = DatasetEntry(
+                dataset_id=item["dataset_id"], name=item["name"], path=item["path"],
+                relative_path=item["relative_path"], data_type=item["data_type"],
+                reviewable=item["reviewable"], custom_display_name=item.get("display_name", ""),
+                location_mode=item["location_mode"], missing=item["missing"])
+            self._datasets[entry.dataset_id] = entry
         self._scanned = True
-        return [entry.to_dict() for entry in entries]
+        return [entry.to_dict() for entry in self._datasets.values()]
+
+    def register_path(self, path: str, location_mode: str = "linked") -> str:
+        path = Path(path).resolve()
+        if path.suffix.lower() == ".xenium":
+            path = path.parent
+        intake = uploads.describe(str(path))
+        entry = DatasetEntry("", path.name, str(path), str(path),
+                             intake["data_type"], intake["reviewable"])
+        return self.dataset_library.register(entry.to_dict(), explicit=True, location_mode=location_mode)
 
     def entry(self, dataset_id: str):
         self.ensure_scanned()
@@ -231,6 +255,9 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
     def work(job) -> Dict[str, Any]:
         entry = studio.entry(dataset_id)
         plan = effective_plan if effective_plan is not None else planner.build_plan(tool_names, overrides=overrides)
+        extra = review.sidecar_paths(entry.path)
+        input_files = xenium_analysis_inputs(entry.path, extra)
+        input_snapshot = snapshot_inputs(input_files)
         gate = studio.gate(dataset_id) if entry.reviewable else None
         check_execution_gate(entry.path, plan, gate=gate)
         job.steps_total = len(plan) + 2
@@ -250,18 +277,17 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
         # A review that had to go to the sidecar is still the review. Without
         # these paths the gate would read `validated_ready` from tables the run
         # itself never loaded.
-        extra = review.sidecar_paths(entry.path)
         label_report = apply_best_available_labels(dataset, entry.path, extra_label_paths=extra, fallback=None)
         region_report = apply_best_available_regions(dataset, entry.path, extra_region_paths=extra)
 
         output_dir = studio.job_output_dir(job.job_id)
         storage = StorageLayer(root=str(output_dir))
-        input_files = list(dict.fromkeys(path for path in
-                          (entry.path, label_report.source_path, region_report.source_path) if path))
-        run_params = {"workflow_type": "studio_plan", "tools": tool_names, "overrides": overrides,
+        run_params = {"workflow_type": "studio_plan", "dataset_path": entry.path,
+                      "tools": tool_names, "overrides": overrides,
                       "max_records": max_records, "effective_plan": [asdict(spec) for spec in plan]}
         record = storage.write_mvp_run_record(query=job.label, tool_trace=[], params=run_params,
-                                             input_files=input_files, run_id=job.job_id)
+                                             input_files=input_files, run_id=job.job_id,
+                                             input_snapshot=input_snapshot)
 
         registry = build_default_registry()
         available = list(DEFAULT_XENIUM_INPUTS)
@@ -348,19 +374,14 @@ def make_plan_worker(studio: Studio, dataset_id: str, tool_names: List[str],
                                       and payload.get("result_tables", {}).get("status") == "written"
                                       and payload.get("figures") else "partial")
         (output_dir / "plan_results.json").write_text(_dumps(payload), encoding="utf-8")
-        completed = storage.write_mvp_run_record(
+        storage.write_mvp_run_record(
             query=job.label, tool_trace=results, params=run_params, input_files=input_files,
             artifacts={"payload": str(output_dir / "plan_results.json"), **payload.get("report_paths", {})},
             figures=[row["path"] for row in payload.get("figures", [])],
             tables=[row["path"] for row in payload.get("result_tables", {}).get("tables", [])],
             run_id=job.job_id,
+            input_snapshot=input_snapshot,
         )
-        if completed.input_file_md5 != record.input_file_md5:
-            # Never attest to a different input revision than the one loaded.
-            completed.input_file_md5 = record.input_file_md5
-            completed.params["outcome"] = "inputs_changed"
-            storage.write_json(str(output_dir / "runs"), "%s.json" % job.job_id, completed)
-            raise RuntimeError("Inputs changed during analysis. Rerun against an immutable review/data snapshot.")
         return payload
 
     return work
@@ -406,7 +427,7 @@ def _dumps(payload: Any) -> str:
 
 # --------------------------------------------------------------------------- app
 
-def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str] = None):
+def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str] = None, secure: bool = False):
     try:
         from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
         from fastapi.responses import FileResponse, JSONResponse
@@ -417,6 +438,10 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
 
     studio = Studio(data_root=data_root, output_root=output_root)
     app = FastAPI(title="SpatialMind Studio", version="1.0")
+    from .security import install_security
+    from .knowledge_chat import install_routes
+    install_security(app, STATIC_DIR / "index.html", enabled=secure)
+    install_routes(app, studio)
 
     class AssignRequest(BaseModel):
         kind: str = Field(description="labels or regions")
@@ -510,10 +535,50 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         payload.update(studio.scan_status())
         return payload
 
+    @app.get("/api/library/removed")
+    def removed_datasets():
+        return {"datasets": studio.dataset_library.list(removed=True)}
+
+    class RemoveRequest(BaseModel):
+        confirm_name: str
+
+    @app.post("/api/datasets/{dataset_id}/remove")
+    def remove_dataset(dataset_id: str, request: RemoveRequest):
+        with studio.library_lock:
+            entry = _entry_or_404(dataset_id)
+            if request.confirm_name != entry.name:
+                raise HTTPException(status_code=409, detail="Dataset confirmation does not match.")
+            if any(j.dataset_id == dataset_id and j.state in {"queued", "running"}
+                   for j in studio.jobs.list()):
+                raise HTTPException(status_code=409, detail="Wait for this dataset's running tasks to finish.")
+            studio.dataset_library.hide(dataset_id)
+            studio.indexes.invalidate()
+            return {"removed": True, "files_deleted": False, "datasets": studio.refresh_datasets()}
+
+    @app.post("/api/datasets/{dataset_id}/restore")
+    def restore_dataset(dataset_id: str):
+        try:
+            studio.dataset_library.hide(dataset_id, False)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Unknown library entry.")
+        return {"datasets": studio.refresh_datasets()}
+
+    class RenameRequest(BaseModel):
+        name: str
+
+    @app.patch("/api/datasets/{dataset_id}")
+    def rename_dataset(dataset_id: str, request: RenameRequest):
+        _entry_or_404(dataset_id)
+        try:
+            studio.dataset_library.rename(dataset_id, request.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"datasets": studio.refresh_datasets()}
+
     @app.get("/api/datasets/{dataset_id}")
     def dataset_detail(dataset_id: str) -> Dict[str, Any]:
         entry = _entry_or_404(dataset_id)
-        if not entry.reviewable:
+        if not entry.reviewable or entry.missing:
             return {"dataset": entry.to_dict(), "reviewable": False}
         index = studio.index(dataset_id)
         gate = studio.gate(dataset_id)
@@ -731,11 +796,13 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         else:
             raise HTTPException(status_code=400, detail="kind must be 'plan' or 'pilot'")
         try:
-            job = studio.jobs.submit(
-                kind=request.kind, label=request.label, dataset_id=request.dataset_id,
-                dataset_path=entry.path, params={"tools": request.tools, "options": request.options},
-                work=worker,
-            )
+            with studio.library_lock:
+                _entry_or_404(request.dataset_id)
+                job = studio.jobs.submit(
+                    kind=request.kind, label=request.label, dataset_id=request.dataset_id,
+                    dataset_path=entry.path, params={"tools": request.tools, "options": request.options},
+                    work=worker,
+                )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         return jsonable(job.to_dict())
@@ -758,11 +825,11 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
             raise HTTPException(status_code=404, detail="No report for %s yet." % job_id)
         for key in ("report_path", "html_report_path", "report_html_path"):
             candidate = job.result.get(key)
-            if candidate and os.path.exists(str(candidate)):
+            if candidate and Path(str(candidate)).suffix.lower() == ".html" and os.path.exists(str(candidate)):
                 return FileResponse(str(candidate))
         reports = job.result.get("report_paths") or {}
         for candidate in reports.values():
-            if candidate and os.path.exists(str(candidate)):
+            if candidate and Path(str(candidate)).suffix.lower() == ".html" and os.path.exists(str(candidate)):
                 return FileResponse(str(candidate))
         directory = Path(studio.output_root) / job_id
         for candidate in sorted(directory.glob("*.html")):
@@ -798,18 +865,20 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         keep their names beside each other.
         """
         relatives = [item for item in (paths or "").split("\n") if item.strip()]
-        payloads: List[Any] = []
-        for index, item in enumerate(files):
-            relative = relatives[index] if index < len(relatives) else (item.filename or "file")
-            payloads.append((relative, await item.read()))
-        if not payloads:
-            raise HTTPException(status_code=400, detail="No files were uploaded.")
-
-        label = name.strip() or Path(payloads[0][0]).parts[0] or "upload"
-        stored = uploads.store_files(studio.data_root, label, payloads)
-        if stored["status"] != "stored":
-            raise HTTPException(status_code=400, detail=stored.get("reason", "Upload failed."))
+        from starlette.concurrency import run_in_threadpool
+        if relatives and len(relatives) != len(files):
+            raise HTTPException(status_code=400, detail="File/path counts do not match.")
+        payloads = [(relatives[i] if relatives else (item.filename or "file"), item.file)
+                    for i, item in enumerate(files)]
+        try:
+            stored = await run_in_threadpool(uploads.store_streams, studio.data_root, name or "upload", payloads)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            for item in files:
+                await item.close()
         stored["intake"] = uploads.describe(stored["path"])
+        stored["dataset_id"] = studio.register_path(stored["path"], "managed_copy")
         stored["datasets"] = studio.refresh_datasets()
         return jsonable(stored)
 
@@ -833,9 +902,8 @@ def create_studio_app(data_root: Optional[str] = None, output_root: Optional[str
         except ValueError:
             inside_root = False
         linked["in_data_root"] = inside_root
-        linked["note"] = ("" if inside_root else
-                          "That folder is outside the current data root, so it will not appear in "
-                          "the dataset list until the data root is changed to a parent of it.")
+        linked["dataset_id"] = studio.register_path(linked["path"])
+        linked["note"] = "Registered locally. Original files remain in their current location."
         linked["datasets"] = studio.refresh_datasets()
         return jsonable(linked)
 

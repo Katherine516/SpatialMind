@@ -2,10 +2,10 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from spatialmind.contracts import MethodCitation, ResourceProfile
-from spatialmind.schemas import SpatialDataset, ToolResult
+from spatialmind.schemas import SpatialDataset, ToolResult, has_tissue_coordinates
 
 from . import implementations
-from .exceptions import ToolExecutionError
+from .exceptions import ToolExecutionError, MissingPreconditionError, DataModalityError
 from .grouping import reviewed_view
 
 
@@ -156,6 +156,11 @@ class SpatialTool:
                 "must not run. It is excluded from planning; reaching it means a caller went "
                 "around list_plannable()." % self.name
             )
+        needs_spatial = any("spatial coords" in value.lower() for value in self.preconditions) or params.get("cluster_on") == "spatial"
+        if needs_spatial and not has_tissue_coordinates(dataset):
+            raise MissingPreconditionError("%s requires tissue coordinates, not embeddings or cell indices." % self.name)
+        if dataset.modality in {"multiplexed_protein", "protein_imaging", "proteomics"}:
+            raise DataModalityError(self.name, dataset.modality, "an implemented RNA/ATAC assay; protein analysis is not implemented")
         scoped = reviewed_view(dataset, self.name, params)
         result = self.callable(scoped, params)
         if scoped is not dataset:
@@ -225,7 +230,7 @@ class ToolRegistry:
                 unmet.append(precondition)
             if "spatial coords" in lowered:
                 bounds = dataset.bounds()
-                if bounds["max_x"] == bounds["min_x"] and bounds["max_y"] == bounds["min_y"]:
+                if not has_tissue_coordinates(dataset) or (bounds["max_x"] == bounds["min_x"] and bounds["max_y"] == bounds["min_y"]):
                     unmet.append(precondition)
         return unmet
 

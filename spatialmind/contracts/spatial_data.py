@@ -12,7 +12,7 @@ Modality = Literal["transcriptomics", "proteomics", "image", "atac"]
 class CoreSpatialObject:
     sample_id: str
     modality: Modality
-    species: Literal["human", "mouse"] = "human"
+    species: Literal["human", "mouse", "unknown"] = "human"
     spatial_coords: Optional[ArrayRef] = None
     spatial_shapes: Optional[ShapesRef] = None
     feature_table: Optional[TableArtifact] = None
@@ -77,8 +77,8 @@ class SpatialATACContract(CoreSpatialObject):
 
 @dataclass
 class CellByFeatureContract(CoreSpatialObject):
-    assay_subtype: Literal["scrna", "scatac_gene_activity", "xenium_spatial_rna"] = "scrna"
-    feature_type: Literal["gene_counts", "gene_activity", "targeted_panel"] = "gene_counts"
+    assay_subtype: Literal["scrna", "scatac_gene_activity", "xenium_spatial_rna", "spatial_rna", "protein_imaging"] = "scrna"
+    feature_type: Literal["gene_counts", "gene_activity", "targeted_panel", "protein_intensity"] = "gene_counts"
     n_features: int = 0
     is_targeted_panel: bool = False
     panel_name: Optional[str] = None
@@ -90,6 +90,15 @@ class CellByFeatureContract(CoreSpatialObject):
             raise ContractViolationError("CellByFeatureContract.sample_id is required.")
         if self.n_features <= 0:
             raise ContractViolationError("CellByFeatureContract requires at least one feature.")
+        expected = {
+            "scrna": ("transcriptomics", "gene_counts"),
+            "spatial_rna": ("transcriptomics", "gene_counts"),
+            "xenium_spatial_rna": ("transcriptomics", "targeted_panel"),
+            "scatac_gene_activity": ("atac", "gene_activity"),
+            "protein_imaging": ("proteomics", "protein_intensity"),
+        }
+        if self.assay_subtype not in expected or (self.modality, self.feature_type) != expected[self.assay_subtype]:
+            raise ContractViolationError("Assay subtype, modality and feature type must agree.")
         if self.assay_subtype == "xenium_spatial_rna":
             if self.spatial_coords is None:
                 raise ContractViolationError("Xenium contract requires spatial coordinates.")

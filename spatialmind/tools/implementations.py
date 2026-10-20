@@ -24,6 +24,7 @@ from spatialmind.schemas import (
     control_feature_names,
     expression_feature_names as _expression_feature_names,
     is_control_feature,
+    has_tissue_coordinates,
 )
 
 from .exceptions import DataModalityError, InsufficientDataError, InvalidParameterError, MissingPreconditionError
@@ -148,6 +149,8 @@ def spatial_deconvolution(dataset: SpatialDataset, params: Dict[str, object]) ->
 
 def spatial_variable_genes(dataset: SpatialDataset, params: Dict[str, object]) -> ToolResult:
     require_records(dataset)
+    if not has_tissue_coordinates(dataset):
+        raise MissingPreconditionError("Spatial gene analysis requires tissue coordinates, not embeddings or indices.")
     spatial_result = _squidpy_spatial_variable_genes(dataset, params)
     if spatial_result:
         return spatial_result
@@ -2148,7 +2151,7 @@ def _clustering_diagnostics(
         elif representation.startswith("X_pca"):
             values = np.asarray(adata.obsm["X_pca"], dtype=float)
         else:
-            values = np.asarray(adata.X, dtype=float)
+            values = adata.X
         sample_size = min(5000, len(labels))
         silhouette = float(
             silhouette_score(
@@ -2197,17 +2200,14 @@ def _expression_qc_metrics(adata: Any) -> Dict[str, object]:
     else:
         source = "analysis_values_fallback"
         matrix = adata.X
-    if hasattr(matrix, "toarray"):
-        matrix = matrix.toarray()
-    matrix = np.asarray(matrix, dtype=float)
-    if matrix.size == 0:
+    if matrix.shape[0] == 0 or matrix.shape[1] == 0:
         return {
             "source": source,
             "n_cells": int(matrix.shape[0]),
             "n_features": int(matrix.shape[1] if matrix.ndim > 1 else 0),
         }
-    total_counts = matrix.sum(axis=1)
-    features_per_cell = (matrix > 0).sum(axis=1)
+    total_counts = np.asarray(matrix.sum(axis=1)).reshape(-1)
+    features_per_cell = np.asarray((matrix > 0).sum(axis=1)).reshape(-1)
     return {
         "source": source,
         "n_cells": int(matrix.shape[0]),
@@ -2228,11 +2228,7 @@ def _screen_spatial_genes(
     n_top: int,
     random_state: int,
 ) -> Dict[str, Any]:
-    """Pick which genes get permutation-tested, and how many permutations to spend.
-
-    Returns the gene list, the permutation budget, and a machine-readable record
-    of the screen so the report can state what was tested and why.
-    """
+    """Choose a coordinate-independent detection family, never a Moran ranking."""
     import numpy as np  # type: ignore
 
     min_cells = int(params.get("min_detected_cells", 0) or 0)
@@ -2242,65 +2238,20 @@ def _screen_spatial_genes(
     detected = np.asarray((adata.X > 0).sum(axis=0)).reshape(-1)
     all_genes = [str(name) for name in adata.var_names]
     detected_genes = [gene for gene, count in zip(all_genes, detected) if int(count) >= min_cells]
-    if len(detected_genes) < 2:
-        detected_genes = all_genes
-
-    # Candidate cap: permute the strongest signals, not the whole panel.
-    candidate_count = max(int(params.get("screen_candidates", 0) or 0), 0) or max(n_top * 2, 50)
     screened = detected_genes
     method = "detection_filter_only"
-    screened_out: List[Dict[str, Any]] = []
     detected_by_gene = {gene: int(count) for gene, count in zip(all_genes, detected)}
-    if len(detected_genes) > candidate_count:
-        analytic = sq.gr.spatial_autocorr(
-            adata,
-            mode="moran",
-            genes=detected_genes,
-            n_perms=None,          # analytic only: near-free, used purely to rank
-            two_tailed=True,
-            seed=random_state,
-            copy=True,
-            n_jobs=1,
-            show_progress_bar=False,
-        )
-        if analytic is not None and not analytic.empty:
-            ranked = analytic.sort_values("I", ascending=False)
-            screened = [str(gene) for gene in ranked.head(candidate_count).index]
-            method = "analytic_moran_screen"
-            # The genes the screen excluded, with the statistic it excluded them
-            # on. Without these a reader sees only what survived and cannot tell
-            # what was dropped or how close it came -- and the result table would
-            # report 50 genes for a 296-gene panel with no way to audit the gap.
-            screened_out = [
-                {
-                    "gene": str(gene),
-                    "morans_i": round(float(row["I"]), 6),
-                    "detected_cells": detected_by_gene.get(str(gene), 0),
-                }
-                for gene, row in ranked.iloc[candidate_count:].iterrows()
-            ]
-
-    # Keep the permutation budget per gene; the saving comes from testing fewer
-    # genes. Raising it here would spend the saving straight back: 50 genes at 999
-    # permutations is the same work as 491 at 100, which measured no faster.
-    # Callers who want finer resolution near the significance threshold can set
-    # screened_n_perms explicitly, at proportional cost.
+    screened_out = [{"gene": gene, "detected_cells": detected_by_gene[gene],
+                     "exclusion_reason": "below_min_detected_cells"}
+                    for gene in all_genes if detected_by_gene[gene] < min_cells]
     permutations = max(10, int(params.get("n_perms", 100) or 100))
-    requested = int(params.get("screened_n_perms", 0) or 0)
-    if method == "analytic_moran_screen" and requested > 0:
-        permutations = max(permutations, requested)
     return {
         "tested_genes": screened,
         "permutations": permutations,
         "screened_out_genes": screened_out,
         "detected_by_gene": detected_by_gene,
         "report": {
-            "rule": "detected in >= %d cells; %s" % (
-                min_cells,
-                "top %d by analytic Moran's I" % candidate_count
-                if method == "analytic_moran_screen"
-                else "all detected genes tested",
-            ),
+            "rule": "detected in >= %d cells; all eligible genes tested" % min_cells,
             "method": method,
             "panel_genes": len(all_genes),
             "detected_genes": len(detected_genes),
@@ -2337,18 +2288,12 @@ def _squidpy_spatial_variable_genes(
         random_state = int(params.get("random_state", 0) or 0)
         sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=n_neighs)
 
-        # Permutation testing is ~99% of this tool's cost and scales with the gene
-        # count, so screen before spending it. Two filters, both recorded so the
-        # report can state exactly what was tested:
-        #   C. drop genes detected in too few cells -- they cannot support a
-        #      spatial claim and only inflate the multiple-testing burden;
-        #   B. rank the survivors by the near-free analytic Moran's I and permute
-        #      only the strongest candidates, which buys far more permutations
-        #      per tested gene for the same wall clock.
+        # Detection is unchanged by spatial permutations. Never select the
+        # correction family by the same spatial statistic being tested.
         screening = _screen_spatial_genes(sq, adata, params, n_top, random_state)
         tested_genes = screening["tested_genes"]
         if not tested_genes:
-            return None
+            raise InsufficientDataError("No genes meet the prespecified detection filter.")
         n_perms = int(screening.get("permutations", n_perms))
         table = sq.gr.spatial_autocorr(
             adata,
@@ -2374,7 +2319,7 @@ def _squidpy_spatial_variable_genes(
         adjusted_key = adjusted_candidates[0] if adjusted_candidates else ""
         rows = []
         ranked = table.sort_values(score_key, ascending=False)
-        for gene, row in ranked.head(n_top).iterrows():
+        for gene, row in ranked.iterrows():
             item: Dict[str, object] = {
                 "gene": str(gene),
                 "morans_i": round(float(row.get(score_key, 0.0)), 6),
@@ -2390,15 +2335,15 @@ def _squidpy_spatial_variable_genes(
                 item["pval_adj"] = round(float(row[adjusted_key]), 8)
                 item["pval_adj_source"] = adjusted_key
             rows.append(item)
-        significant = sum(1 for row in rows if float(row.get("pval_adj", 1.0)) <= 0.05)
+        significant = sum(1 for row in rows[:n_top] if float(row.get("pval_adj", 1.0)) <= 0.05)
         significant_all = (
             int((table[adjusted_key] <= 0.05).sum()) if adjusted_key and adjusted_key in table.columns else 0
         )
         return ToolResult(
             tool_name="spatial_variable_genes",
             summary=(
-                "Ranked %d genes by Squidpy Moran's I spatial autocorrelation; %d passed FDR <= 0.05."
-                % (len(rows), significant)
+                "Tested %d eligible genes by Squidpy Moran's I; %d passed adjusted p <= 0.05; displaying %d."
+                % (len(rows), significant_all, min(n_top, len(rows)))
             ),
             metrics={
                 "engine": "squidpy",
@@ -2412,13 +2357,14 @@ def _squidpy_spatial_variable_genes(
                 "detected_by_gene": screening.get("detected_by_gene") or {},
                 "significant_gene_count_top_n": significant,
                 "significant_gene_count_all": significant_all,
-                "top_genes": rows,
+                "all_tested_genes": rows,
+                "top_genes": rows[:n_top],
             },
             caveats=[
                 "Moran's I detects global spatial autocorrelation; it does not identify the anatomical region driving a pattern.",
                 "Results depend on the spatial graph, panel composition, segmentation, and field of view.",
-                "Genes were screened before permutation testing (%s); FDR is corrected over the %d screened "
-                "genes, not the full panel, so p-values are conditional on that screen."
+                "Coordinate-independent detection filter: %s. BH correction covers all %d eligible genes; "
+                "display top-N does not change the testing family. Calibration under tissue-specific nulls remains required."
                 % (screening["report"]["rule"], len(tested_genes)),
             ]
             + _type_honesty_caveats(dataset),
@@ -2652,7 +2598,11 @@ def _anndata_fingerprint(dataset: SpatialDataset, genes: List[str]) -> tuple:
     """
     labels = hash(tuple((record.cell_type, record.region) for record in dataset.records))
     return (id(dataset), len(dataset.records), tuple(genes), labels,
-            bool(dataset.normalized), dataset.sample_id)
+            bool(dataset.normalized), dataset.sample_id, dataset.coordinate_system,
+            dataset.metadata.get("coordinate_kind"),
+            dataset.metadata.get("source_value_semantics"),
+            bool(dataset.metadata.get("raw_counts_available")),
+            hash(tuple((r.cell_id, r.x, r.y) for r in dataset.records)))
 
 
 def total_memory_bytes() -> int:
@@ -2708,39 +2658,33 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     if not genes:
         raise MissingPreconditionError("Scanpy/Squidpy wrappers require numeric features.")
 
-    # Fill from what each cell actually measured, not by asking every cell about
-    # every gene. The old form was a nested comprehension over cells x genes --
-    # one dict lookup per pair, in Python, single-threaded. Xenium is sparse: a
-    # breast section carries a median of 70 detected genes per cell out of 471,
-    # so 85% of those lookups returned a default. Measured at 40,000 cells it
-    # took 14.6 s, and every tool and every robustness setting rebuilds it, which
-    # is what made a 164,000-cell run average 0.6 cores for an hour.
-    #
-    # Preallocating and writing only the nonzero entries makes the work
-    # proportional to what was measured. Values and dtype are unchanged, so no
-    # downstream number moves.
+    # Wide assays use CSR without an intermediate dense matrix. Small targeted
+    # panels retain the established dense backend for compatibility.
     column_of = {gene: index for index, gene in enumerate(genes)}
-    matrix = np.zeros((len(dataset.records), len(genes)), dtype=float)
-    for row, record in enumerate(dataset.records):
-        target = matrix[row]
-        for gene, value in record.genes.items():
-            column = column_of.get(gene)
-            if column is not None:
-                target[column] = value
-    # `raw_genes` falls back to `genes` per gene, so start from the analysis
-    # values and overwrite only where a source value exists. Same result as the
-    # old `raw_genes.get(gene, genes.get(gene, 0.0))`, without the second sweep
-    # over every cell-gene pair.
-    source_matrix = matrix.copy()
-    for row, record in enumerate(dataset.records):
-        raw = record.raw_genes
-        if not raw:
-            continue
-        target = source_matrix[row]
-        for gene, value in raw.items():
-            column = column_of.get(gene)
-            if column is not None:
-                target[column] = value
+    def build_matrix(source: bool) -> Any:
+        sparse_mode = len(genes) > 1024
+        if sparse_mode:
+            from scipy.sparse import csr_matrix
+            values, indices, indptr = [], [], [0]
+        else:
+            matrix = np.zeros((len(dataset.records), len(genes)), dtype=float)
+        for row, record in enumerate(dataset.records):
+            features = dict(record.genes, **record.raw_genes) if source else record.genes
+            for gene, value in features.items():
+                column = column_of.get(gene)
+                if column is not None and value != 0:
+                    if sparse_mode:
+                        values.append(value)
+                        indices.append(column)
+                    else:
+                        matrix[row, column] = value
+            if sparse_mode:
+                indptr.append(len(values))
+        if sparse_mode:
+            return csr_matrix((values, indices, indptr), shape=(len(dataset.records), len(genes)), dtype=float)
+        return matrix
+    matrix = build_matrix(False)
+    source_matrix = build_matrix(True)
     obs = pd.DataFrame(
         {
             "sample_id": [record.sample_id for record in dataset.records],
@@ -2760,7 +2704,8 @@ def _dataset_to_anndata(dataset: SpatialDataset) -> Any:
     # use of it was to decide whether to call the numbers "raw_counts". At a
     # 378,000-cell section that label cost 1.15 GB held for the length of the
     # run. The semantics now travel in `uns`, where the rest of them already are.
-    adata.obsm["spatial"] = np.array([[record.x, record.y] for record in dataset.records], dtype=float)
+    if has_tissue_coordinates(dataset):
+        adata.obsm["spatial"] = np.array([[record.x, record.y] for record in dataset.records], dtype=float)
     adata.uns["spatialmind"] = {
         "sample_id": dataset.sample_id,
         "normalized": dataset.normalized,

@@ -117,6 +117,9 @@ def verify_run_record(record_path: str) -> ReplayVerificationReport:
     run_id = str(payload.get("run_id") or Path(record_path).stem)
     checks: List[FileCheck] = []
     warnings: List[str] = []
+    invalid_outcome = (payload.get("params") or {}).get("outcome") == "inputs_changed"
+    if invalid_outcome:
+        warnings.append("Inputs changed during execution; this record cannot attest to a consistent run.")
     for key in ("input_file_md5", "figure_md5", "table_md5"):
         for path, expected in (payload.get(key) or {}).items():
             checks.append(_check_file(path, str(expected)))
@@ -131,7 +134,7 @@ def verify_run_record(record_path: str) -> ReplayVerificationReport:
         warnings.append("Run record contains no path-backed hash fields to verify.")
         return ReplayVerificationReport(run_id=run_id, record_path=record_path, status="unverifiable", warnings=warnings)
     failed = [item for item in checks if item.status != "ok"]
-    status = "verified" if not failed else "failed"
+    status = "failed" if failed or invalid_outcome else ("partial" if warnings else "verified")
     return ReplayVerificationReport(run_id=run_id, record_path=record_path, status=status, checks=checks, warnings=warnings)
 
 
@@ -146,10 +149,14 @@ def replay_run_record(record_path: str, output_dir: Optional[str] = None, verify
     query = str(payload.get("query") or "")
     input_paths = list((payload.get("input_file_md5") or {}).keys())
     params = dict(payload.get("params") or {})
+    dataset_path = str(params.get("dataset_path") or (input_paths[0] if input_paths else ""))
+    if dataset_path and dataset_path not in input_paths:
+        return {"status": "blocked_verification_failed", "verification": verification.to_dict(),
+                "reason": "The recorded dataset path is not in the verified input set."}
     if params.get("workflow_type") == "studio_plan" and input_paths:
         return {
             "status": "verified_studio_replay_ready", "verification": verification.to_dict(),
-            "dataset_path": input_paths[0], "query": query, "params": params,
+            "dataset_path": dataset_path, "query": query, "params": params,
             "replay_output_dir": output_dir or "outputs/replay/%s" % payload["run_id"],
         }
     is_xenium_pilot = (
@@ -167,15 +174,18 @@ def replay_run_record(record_path: str, output_dir: Optional[str] = None, verify
         "status": "verified_replay_ready",
         "verification": verification.to_dict(),
         "replay_output_dir": replay_output,
-        "dataset_path": input_paths[0],
+        "dataset_path": dataset_path,
         "query": query,
         "params": {
             "max_records": _int_param(params, "max_records", 5000),
-            "min_label_coverage": float(params.get("min_label_coverage") or 0.7),
-            "min_region_coverage": float(params.get("min_region_coverage") or 0.7),
+            "min_label_coverage": float(params.get("min_label_coverage", 0.7)),
+            "min_region_coverage": float(params.get("min_region_coverage", 0.7)),
             "allow_single_region": bool(params.get("allow_single_region") or False),
             "require_complete_section": bool(params.get("require_complete_section", True)),
             "review_max_records": _int_param(params, "review_max_records", 5000),
+            "acknowledge_low_coverage": bool(params.get("acknowledge_low_coverage", False)),
+            "review_artifacts": bool(params.get("review_artifacts", True)),
+            "report_format": params.get("report_format", "html"),
         },
     }
 
