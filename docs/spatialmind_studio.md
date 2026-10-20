@@ -4,6 +4,20 @@ The agent packaged as an application: a local web app that wraps the existing
 pipeline so a wet-lab scientist can take a Xenium bundle from blocked to a
 validated report without a terminal.
 
+The October 15 source increment adds a persistent local dataset library,
+non-destructive Remove/Restore, a curated-source Knowledge view, and conversational
+BioBot (formerly Ask). Fresh packaged installations have no research datasets. See
+[current usage and limitations](local_library_knowledge_chat.md); published 1.0.1
+DMGs predate this increment. Offline BioBot retrieves passages; optional hosted
+generation requires explicit consent and environment-based configuration.
+
+The October 17 [research-wiki increment](research_knowledge_workspace.md) adds
+draft compilation, per-claim publication review, page diffs, source revisions,
+integrity checks and answer filing. Use Knowledge > Research wiki; drafts never
+automatically become approved evidence. Historical run imports require recorded
+artifact hashes and stay scoped to their selected dataset. These changes are not
+yet in the published DMGs.
+
 Nothing here reimplements analysis. Ingestion, `pilot_gate()`, the tool
 registry, `validate_tool_plan()` and report generation are the same code the CLI
 runs. The app adds a session, a job queue, and a browser.
@@ -59,8 +73,8 @@ Three consequences worth knowing:
   agent, which is guesswork that breaks whenever WebKit changes its string.
 - A `WKWebView` silently ignores `target="_blank"`, so report links would do
   nothing at all inside the window. They are routed through a small bridge that
-  hands the URL to the real browser, and the bridge refuses anything that is not
-  a `127.0.0.1` or `localhost` address. Reports are standalone HTML meant to be
+  hands the URL to the real browser. The bridge permits loopback report links
+  and HTTPS source citations, but not arbitrary URL schemes. Reports are standalone HTML meant to be
   kept, mailed and printed; the browser is where they belong.
 
 ### Names
@@ -119,7 +133,7 @@ Five home tabs, and three that belong to whichever dataset is selected.
 | Reports | Pin, rename, preview, edit, export | `ReportLibrary` |
 | Readiness | Why can't this run, and what clears it? | `pilot_gate()` |
 | Review Studio | Label cells and draw regions without writing a CSV | cell index + label/region writers |
-| Ask | Answer my question, or tell me you can't | `planner.propose` |
+| BioBot | Source-grounded conversation or an approval-gated analysis proposal | Local knowledge retrieval and `planner.propose` |
 
 ## Reports, edits and exports
 
@@ -150,11 +164,11 @@ tab that cannot delete accumulates until it is useless.
 
 ## Choosing which tool runs
 
-Three routes, one object. Ask, the recipes, and the Tool Bench all produce a
+Three routes, one object. BioBot, the recipes, and the Tool Bench all produce a
 `ToolCallSpec` list that the real `validate_tool_plan()` checks before anything
 executes.
 
-- **Ask** routes a question to a plan and shows the reasoning. When the only
+- **BioBot** routes an analysis question to a plan and shows the reasoning. When the only
   tool that could answer is a registered scaffold, it refuses and names it
   rather than substituting a near-miss.
 - **Recipes** are four saved plans: descriptive QC lane, validated Xenium pilot,

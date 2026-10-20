@@ -160,12 +160,18 @@ class StorageLayer:
         tables: Optional[List[str]] = None,
         random_seed: int = 42,
         run_id: Optional[str] = None,
+        input_snapshot: Optional[Dict[str, str]] = None,
     ) -> MVPRunRecord:
         os.makedirs(os.path.join(self.root, "runs"), exist_ok=True)
         run_id = run_id or "mvp_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), uuid.uuid4().hex[:8])
         artifacts = artifacts or {}
         figures = figures or []
         tables = tables or []
+        observed_inputs = snapshot_inputs(input_files)
+        changed = input_snapshot is not None and observed_inputs != input_snapshot
+        params = dict(params)
+        if changed:
+            params["outcome"] = "inputs_changed"
         record = MVPRunRecord(
             run_id=run_id,
             query=query,
@@ -173,7 +179,7 @@ class StorageLayer:
             params=_to_jsonable(params),
             random_seed=random_seed,
             env_versions=_safe_versions(),
-            input_file_md5={path: _file_md5(path) for path in input_files if os.path.exists(path)},
+            input_file_md5=dict(input_snapshot) if input_snapshot is not None else observed_inputs,
             input_hash_scope={
                 path: (
                     "content of %s; names and sizes for the rest"
@@ -198,7 +204,14 @@ class StorageLayer:
         path = os.path.join(self.root, "runs", "%s.json" % run_id)
         record.run_record_path = path
         self.write_json(os.path.join(self.root, "runs"), "%s.json" % run_id, record)
+        if changed:
+            raise RuntimeError("Inputs changed during analysis. Run record is invalid; rerun against an immutable data/review snapshot.")
         return record
+
+
+def snapshot_inputs(paths: List[str]) -> Dict[str, str]:
+    """Capture the declared read set before ingestion, retaining missing paths."""
+    return {path: _file_md5(path) if os.path.exists(path) else "missing" for path in paths}
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -272,6 +285,7 @@ def _file_md5(path: str) -> str:
         # Everything else: names and sizes only, so an added or removed file is
         # still visible without reading gigabytes that were never parsed.
         for root, _dirs, files in os.walk(path):
+            _dirs.sort()
             for name in sorted(files):
                 file_path = os.path.join(root, name)
                 rel_path = os.path.relpath(file_path, path)

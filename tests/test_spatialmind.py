@@ -4032,17 +4032,14 @@ class SpatialStatisticsTests(unittest.TestCase):
                          "local Moran's I found hotspots in pure noise")
         self.assertEqual(len(result["per_cell"]), len(self._synthetic().records))
 
-    def test_local_moran_significance_has_no_permutation_floor(self):
-        """Counted permutation p-values cannot fall below 1/(n_perms + 1), and BH
-        over one test per cell multiplies that floor by the cell count -- at 999
-        permutations on 4,000 cells nothing could reach alpha and every gene
-        reported zero hotspots. The z-score basis has no floor."""
+    def test_local_moran_reports_its_empirical_permutation_floor(self):
+        """A small permutation budget must not invent precision via normal tails."""
         from spatialmind.tools.spatial_statistics import local_moran_hotspots
 
         result = local_moran_hotspots(self._synthetic(), ["STRIPE"], {"strict_engine": True, "n_perms": 99})
-        self.assertEqual(result["significance_basis"], "conditional_randomisation_z_score")
-        self.assertGreater(result["genes"][0]["hotspot_cells"], 0,
-                           "a 99-permutation budget silently disabled detection")
+        self.assertEqual(result["significance_basis"], "conditional_randomisation_empirical_two_sided")
+        self.assertTrue(all(row["lisa_STRIPE_p"] >= 0.01 for row in result["per_cell"].values()))
+        self.assertIn("Limited permutation resolution", result["permutation_note"])
 
     def test_cell_type_autocorrelation_skips_populations_too_small_to_score(self):
         from spatialmind.tools.spatial_statistics import cell_type_spatial_autocorrelation

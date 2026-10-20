@@ -24,12 +24,11 @@ LANE_DESCRIPTIVE = "descriptive"
 LANE_VALIDATED = "validated"
 
 
-def lane_for_payload(payload: Dict[str, Any]) -> str:
-    label_status = (payload.get("label_report") or {}).get("status") or ""
-    region_status = (payload.get("region_report") or {}).get("status") or ""
-    if label_status == "expert_labels_applied" and region_status == "user_regions_applied":
-        return LANE_VALIDATED
-    if label_status == "expert_labels_applied":
+def lane_for_payload(payload: Dict[str, Any], gate: Optional[Dict[str, Any]] = None) -> str:
+    gate = gate if gate is not None else payload.get("gate") or {}
+    reviewed_results = any((result.get("metrics") or {}).get("reviewed_only") is True
+                           for result in payload.get("results") or [])
+    if gate.get("status") == "validated_ready" and reviewed_results:
         return LANE_VALIDATED
     return LANE_DESCRIPTIVE
 
@@ -37,7 +36,7 @@ def lane_for_payload(payload: Dict[str, Any]) -> str:
 def build_markdown(payload: Dict[str, Any], gate: Optional[Dict[str, Any]] = None) -> str:
     dataset = payload.get("dataset") or {}
     name = dataset.get("display_name") or dataset.get("name") or "dataset"
-    lane = lane_for_payload(payload)
+    lane = lane_for_payload(payload, gate)
     lines: List[str] = []
 
     lines.append("# %s" % (payload.get("title") or ("Analysis of %s" % name)))
@@ -51,13 +50,15 @@ def build_markdown(payload: Dict[str, Any], gate: Optional[Dict[str, Any]] = Non
     lines.append("")
     if lane == LANE_VALIDATED:
         lines.append(
-            "This is a **validated-lane** run: reviewed cell labels were applied, so groups below "
-            "are named cell types and not clusters.")
+            "This is a **validated-lane** run: the review gate passed and reviewed-cell analysis ran. "
+            "Only results explicitly marked `reviewed_only` use reviewed identities. "
+            "Clustering and cluster-grouped results remain descriptive, not cell-type validation.")
     else:
         lines.append(
-            "This is a **descriptive** run. No reviewed label table was applied, so every group "
-            "below is data-derived -- a Leiden cluster, not a cell type. Nothing here names a cell "
-            "type, and no biological claim is made or implied.")
+            "This is a **descriptive** run. The gate and executed tools do not establish a "
+            "reviewed biological analysis. Loading a label file alone does not validate results. "
+            "Expression clusters are not cell types; any supplied identities remain attributed "
+            "input labels unless an individual result explicitly documents reviewed scope.")
     lines.append("")
 
     records = payload.get("records_loaded") or 0
@@ -373,9 +374,9 @@ def write_figures(dataset: Any, payload: Dict[str, Any], output_dir: Path) -> Li
 
     lane = lane_for_payload(payload)
     if lane == LANE_VALIDATED:
-        from ..tools.implementations import resolve_group_labels
-        groups, _ = resolve_group_labels(dataset, {"group_key": "cell_type"})
-        groups = [group or "unreviewed" for group in groups]
+        from ..tools.grouping import cell_is_reviewed
+        groups = [record.cell_type if cell_is_reviewed(dataset, record) else "unreviewed"
+                  for record in records]
         title = "Reviewed cell types"
         caption = "Cells coloured by the reviewed label table."
     else:

@@ -5,9 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>SpatialMind Studio</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
 :root{
   color-scheme:dark;
@@ -160,15 +157,20 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
 .legend i{width:8px;height:8px;border-radius:2px;display:block}
 
 /* ask + plan */
-.ask{display:grid;grid-template-columns:1fr 336px;gap:15px;align-items:start}
+.ask{display:grid;grid-template-columns:minmax(0,1fr) 336px;gap:15px;align-items:start}
+.ask>div{min-width:0}
 .thread{display:flex;flex-direction:column;gap:10px;min-height:80px}
-.msg{border-radius:9px;padding:10px 13px;font-size:13.5px;line-height:1.5;max-width:92%}
+.msg{border-radius:8px;padding:10px 13px;font-size:13.5px;line-height:1.5;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}
 .msg.u{background:var(--accent-soft);align-self:flex-end}
 .msg.a{background:var(--surface);border:1px solid var(--line)}
 .msg .why{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-top:7px;padding-top:7px;
   border-top:1px dotted var(--line)}
 .askform{display:flex;gap:7px;margin-top:12px}
-.askform input{flex:1}
+.askform input{flex:1;min-width:0}
+#rootForm{flex-wrap:wrap;max-width:100%}
+#rootInput{max-width:100%}
+#chatScope,#chatHistory{min-width:0;max-width:100%}
+#sourceDialog::backdrop{background:rgba(0,0,0,.6)}
 .prompts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .prompts button{text-align:left;padding:6px 11px;border:1px solid var(--line-2);border-radius:16px;
   font-size:12.5px;color:var(--ink-2)}
@@ -231,11 +233,17 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
   box-shadow:0 10px 30px -12px rgba(0,0,0,.9);max-width:70ch}
 #toast.err{border-color:var(--stop);color:var(--stop)}
 @media (max-width:1000px){
-  .main{grid-template-columns:1fr}
+  .main{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
   .rail{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line)}
   .rail .grp{display:none}
   .navbtn{white-space:nowrap;width:auto}
   .two,.rev,.ask{grid-template-columns:1fr}
+}
+@media (max-width:600px){
+  .topbar{flex-wrap:wrap;gap:8px}
+  .topbar .ctx{flex-basis:100%;order:4}
+  .topbar #gatePill{order:5;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+  #toast{max-width:calc(100vw - 24px);overflow-wrap:anywhere}
 }
 /* ------------------------------------------------ modals, wizard, reports */
 .modal{position:fixed;inset:0;background:rgba(4,8,9,.78);display:flex;align-items:center;
@@ -360,24 +368,73 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
       <button class="navbtn" data-p="visualization">Visualization<span class="cnt" id="cViz">–</span></button>
       <button class="navbtn" data-p="runs">Tasks<span class="cnt" id="cRuns">–</span></button>
       <button class="navbtn" data-p="reports">Reports<span class="cnt" id="cReports">–</span></button>
+      <button class="navbtn" data-p="knowledge">Knowledge</button>
+      <button class="navbtn" data-p="ask">BioBot</button>
       <div class="grp">Selected dataset</div>
       <button class="navbtn" data-p="gate">Readiness<span class="cnt" id="cGate">–</span></button>
       <button class="navbtn" data-p="review">Review Studio<span class="cnt" id="cRev">–</span></button>
-      <button class="navbtn" data-p="ask">Ask</button>
     </nav>
     <div class="stage" id="stage">
 
       <section class="panel" data-panel="datasets">
         <div class="phead">
-          <div><h2>Datasets</h2><p id="dsSub">Scanned from the data root. Xenium bundles can be reviewed and
-            gated; other formats are listed but cannot drive the review flow.</p></div>
+          <div><h2>Datasets</h2><p id="dsSub">Local library</p></div>
           <form id="rootForm" style="display:flex;gap:6px;align-items:center">
             <label class="mono" style="font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)">Data root</label>
             <input id="rootInput" class="mono" style="font-size:11.5px;width:290px" placeholder="/path/to/data" spellcheck="false">
             <button class="btn" type="submit">Use</button>
           </form>
         </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+          <button class="btn pri" id="addLibraryData">Add data</button>
+          <button class="btn" id="nativeLinkData">Link local folder</button>
+          <button class="btn" id="showRemoved">Removed datasets</button>
+        </div>
+        <div id="removedDatasets" hidden></div>
         <div class="libgrid" id="libGrid"><div class="empty">Scanning…</div></div>
+      </section>
+
+      <section class="panel" data-panel="knowledge" hidden>
+        <div class="phead"><h2>Knowledge</h2><span class="pill mute">Local sources</span></div>
+        <form id="knowledgeSearch" style="display:flex;gap:8px;margin-bottom:16px">
+          <input id="knowledgeQuery" placeholder="Search sources" style="flex:1;min-width:0">
+          <button class="btn" type="submit">Search</button>
+        </form>
+        <form id="knowledgeUpload" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+          <label style="max-width:100%;overflow-wrap:anywhere">Documents <input type="file" id="knowledgeFile" multiple required accept=".docx,.xlsx,.csv,.tsv,.pdf,.pptx,.md,.txt" style="max-width:100%"></label>
+          <label><input type="checkbox" id="knowledgeArchive"> Retain local originals</label>
+          <button class="btn pri" type="submit" id="knowledgeUploadButton">Upload files</button>
+        </form>
+        <div id="knowledgeUploadResults" role="status" aria-live="polite" style="overflow-wrap:anywhere"></div>
+        <div id="knowledgeResults"></div><div id="knowledgeSources"></div>
+        <details style="margin-top:20px"><summary>Add a text source</summary>
+          <form id="knowledgeAdd" style="display:grid;gap:10px;margin-top:12px;max-width:800px">
+            <label>Title <input id="knowledgeTitle" required maxlength="200" style="width:100%"></label>
+            <label>Source URL <input id="knowledgeUrl" type="url" placeholder="https://" style="width:100%"></label>
+            <label>Source text <textarea id="knowledgeText" required rows="8" style="width:100%;resize:vertical"></textarea></label>
+            <button class="btn pri" type="submit">Add for review</button>
+          </form>
+        </details>
+        <div class="phead" style="margin-top:28px"><h3>Research wiki</h3><button class="btn" id="wikiHealth">Check integrity</button></div>
+        <pre id="wikiHealthResults" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+        <form id="wikiCompile" style="display:grid;gap:10px;max-width:800px;margin-bottom:20px">
+          <label>Page title <input id="wikiTitle" required maxlength="200" style="width:100%"></label>
+          <label>Revision target <select id="wikiTarget" style="max-width:100%"><option value="">New page</option></select></label>
+          <label>Sources <select id="wikiSources" multiple required size="6" style="width:100%"></select></label>
+          <label>Type <select id="wikiKind"><option value="concept">Concept</option><option value="source_summary">Source summary</option><option value="method">Method</option><option value="hypothesis">Hypothesis</option><option value="project_finding">Project finding</option></select></label>
+          <label>Scope <select id="wikiScope" style="max-width:100%"><option value="general">General knowledge</option></select></label>
+          <label>Compiler <select id="wikiMode"><option value="offline">Offline evidence digest</option><option value="hosted">Configured model</option></select></label>
+          <label><input type="checkbox" id="wikiConsent"> Authorize sending the selected source passages, title and scope to <span id="wikiDestination">the configured model provider</span></label>
+          <button type="submit" class="btn pri" id="wikiCompileButton">Create draft</button>
+        </form>
+        <div id="wikiPages"></div>
+        <details style="margin-top:20px"><summary>Import historical run evidence</summary>
+          <form id="wikiRunImport" style="display:grid;gap:10px;max-width:800px;margin-top:12px">
+            <label>Dataset <select id="wikiRunDataset" required style="max-width:100%"></select></label>
+            <label>Report <select id="wikiRunReport" required style="max-width:100%"></select></label>
+            <button class="btn" type="submit">Verify and import</button>
+          </form>
+        </details>
       </section>
 
       <section class="panel" data-panel="gate" hidden>
@@ -403,16 +460,26 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
 
       <section class="panel" data-panel="ask" hidden>
         <div class="phead">
-          <div><h2>Ask</h2><p>The agent proposes a typed plan and nothing runs before you approve it.
-            When no implemented tool answers the question, it says so and names the missing one.</p></div>
+          <div><h2>BioBot</h2><span id="chatMode" class="pill mute">Offline source search</span></div>
         </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <select id="chatHistory" aria-label="Conversation history" style="max-width:300px"><option value="">New conversation</option></select>
+          <select id="chatScope" aria-label="Conversation dataset" style="max-width:300px"><option value="">General knowledge</option></select>
+          <button class="btn" id="chatNew">New</button><button class="btn danger" id="chatDelete">Delete conversation</button>
+          <button class="btn" id="chatExport">Export conversation</button>
+          <button class="btn" id="chatFileAnswer">Save last answer to wiki</button>
+        </div>
+        <label style="display:block;margin-bottom:12px">Run evidence <select id="chatRunSource" style="max-width:100%"><option value="">None</option></select></label>
+        <label style="display:block;font-size:12px;margin-bottom:12px"><input type="checkbox" id="chatHosted">
+          Send this question and cited public notes to the configured provider (no dataset upload)</label>
         <div class="ask">
           <div>
             <div class="thread" id="thread"></div>
             <form class="askform" id="askForm">
-              <input id="askInput" placeholder="Which genes are spatially structured across this section?" autocomplete="off">
-              <button class="btn pri" type="submit">Ask</button>
+              <input id="askInput" placeholder="What is Moran's I?" autocomplete="off" maxlength="4000">
+              <button class="btn pri" type="submit">Send</button>
             </form>
+            <div id="chatRelatedPages"></div>
             <div class="prompts" id="prompts"></div>
           </div>
           <div>
@@ -541,13 +608,36 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair;background:var(--su
 </div>
 
 <div id="toast" hidden></div>
+<dialog id="sourceDialog" style="width:760px;max-width:90vw;max-height:85vh;overflow:auto;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:22px">
+  <button class="btn" id="sourceClose" style="float:right">Close</button><h3 id="sourceTitle"></h3>
+  <p id="sourceMeta"></p><pre id="sourceText" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit"></pre>
+  <details id="sourceRevisionPanel"><summary>New source revision</summary><form id="sourceRevisionForm" style="display:grid;gap:10px;margin-top:12px"><textarea id="sourceRevisionText" required rows="10" style="width:100%"></textarea><button type="submit" class="btn">Save pending revision</button></form></details>
+  <a id="sourceLink" target="_blank" rel="noopener noreferrer">Original source</a>
+</dialog>
+<dialog id="wikiDialog" style="width:900px;max-width:94vw;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:22px">
+  <button class="btn" id="wikiClose" style="float:right">Close</button>
+  <h3 id="wikiPageTitle"></h3><p id="wikiPageState"></p>
+  <pre id="wikiPageText" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit"></pre>
+  <details><summary>Revision diff</summary><pre id="wikiPageDiff" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
+  <div id="wikiRelated"></div>
+  <form id="wikiReview" style="display:grid;gap:12px;margin-top:16px">
+    <div id="wikiClaims"></div>
+    <label>Reviewer ID <input id="wikiReviewer" required maxlength="200" style="max-width:100%"></label>
+    <button class="btn pri" type="submit">Publish reviewed draft</button>
+  </form>
+</dialog>
 <script>
+/* STUDIO_SESSION */
 (function(){
 "use strict";
+const requestedArtifact = new URLSearchParams(location.search).get("open");
+if (requestedArtifact && /^\/(artifacts\/|api\/(reports|runs)\/)/.test(requestedArtifact) && !requestedArtifact.includes("\\")) {
+  location.replace(requestedArtifact);
+}
 
 /* ------------------------------------------------------------------ api */
 async function api(path, options){
-  const res = await fetch(path, Object.assign({headers:{"Content-Type":"application/json"}}, options||{}));
+  const res = await fetch(path, Object.assign({headers:{"Content-Type":"application/json", "X-SpatialMind-Token":window.STUDIO_TOKEN || ""}}, options||{}));
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch (e) { body = {detail:text}; }
@@ -628,6 +718,8 @@ function showPanel(name){
   if (name === "runs") loadRuns();
   if (name === "reports") loadReports();
   if (name === "visualization") loadVisualizations();
+  if (name === "knowledge") loadKnowledge();
+  if (name === "ask") loadChatHistory();
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -642,6 +734,7 @@ async function boot(){
     $("#rootInput").value = health.data_root;
     $("#ctx").innerHTML = '<span class="meta">data root ' + esc(health.data_root) + '</span>';
     await loadDatasets();
+    await loadChatHistory();
   } catch (err) {
     $("#ctx").textContent = "Cannot reach the Studio API: " + err.message;
     toast(err.message, true);
@@ -666,6 +759,10 @@ async function loadDatasets(refresh){
 }
 function applyDatasets(payload){
   S.datasets = payload.datasets || [];
+  const scope = $("#chatScope"), previousScope = scope.value;
+  scope.innerHTML = '<option value="">General knowledge</option>' + S.datasets.map(d =>
+    '<option value="' + esc(d.dataset_id) + '">' + esc(d.display_name || d.name) + '</option>').join("");
+  scope.value = previousScope;
   if (payload.data_root){
     S.dataRoot = payload.data_root;
     const input = $("#rootInput");
@@ -698,7 +795,7 @@ async function selectDataset(datasetId){
   // Drop the previous dataset's detail first, or its coverage bar renders on the
   // newly selected card for as long as the fetch takes.
   S.detail = null; S.cells = null; S.gateOpen = false;
-  S.selCluster = null; S.rect = null; S.plan = []; S.overrides = {}; S.planInfo = null; S.thread = [];
+  S.selCluster = null; S.rect = null; S.plan = []; S.overrides = {}; S.planInfo = null;
   renderDatasets();
   $("#gatePill").className = "pill mute"; $("#gatePill").innerHTML = "<i></i>loading";
   try {
@@ -781,9 +878,7 @@ function renderDatasets(){
     return;
   }
   if (!S.datasets.length){
-    grid.innerHTML = '<div class="empty">No datasets under <span class="mono">' + esc(S.dataRoot || "the data root") +
-      '</span>.<br><br>Point the Data root above at a folder containing Xenium output bundles ' +
-      '(a folder with <span class="mono">experiment.xenium</span> in it).</div>';
+    grid.innerHTML = '<div class="empty">No datasets yet.</div>';
     return;
   }
   grid.innerHTML = "";
@@ -807,9 +902,22 @@ function renderDatasets(){
         num(detail.n_cells) + ' cells · ' + Object.keys(detail.cluster_sizes || {}).length + ' clusters</div>' : '') +
       (d.reviewable ? '<div><div class="covrow"><span>label coverage</span><b>' + pct(cov) + '</b></div>' +
         '<div class="meter' + (cov >= 0.7 ? ' done' : '') + '"><b style="width:' + (cov*100) + '%"></b></div></div>' : '');
-    if (d.reviewable) btn.addEventListener("click", () => selectDataset(d.dataset_id));
-    else btn.addEventListener("click", () => toast(d.name + " is a " + d.data_type + " dataset. The review and gate flow needs a Xenium bundle."));
-    grid.appendChild(btn);
+    btn.addEventListener("click", () => d.missing ? toast("Source files are missing from disk.", true) : selectDataset(d.dataset_id));
+    if (d.missing) btn.innerHTML += '<span class="pill stop">Source missing</span>';
+    const wrapper = document.createElement("div"); wrapper.appendChild(btn); btn.style.width = "100%";
+    const actions = document.createElement("div"); actions.style.cssText = "display:flex;gap:8px;padding:8px 0;flex-wrap:wrap";
+    const mode = document.createElement("span"); mode.className = "pill mute"; mode.textContent = d.location_mode === "managed_copy" ? "Local copy" : "Linked";
+    actions.appendChild(mode);
+    const rename = document.createElement("button"); rename.className = "btn"; rename.textContent = "Rename";
+    rename.onclick = async () => { const name = prompt("Display name", d.display_name || d.name); if (!name) return;
+      try { applyDatasets(await api("/api/datasets/" + d.dataset_id, {method:"PATCH",body:JSON.stringify({name})})); } catch(e){toast(e.message,true);} };
+    const remove = document.createElement("button"); remove.className = "btn danger"; remove.textContent = "Remove";
+    remove.onclick = async () => {
+      if (!confirm("Remove " + (d.display_name || d.name) + " from this library? Original files and reports will NOT be deleted.")) return;
+      try { applyDatasets(await post("/api/datasets/" + d.dataset_id + "/remove", {confirm_name:d.name})); toast("Removed. Original files preserved."); }
+      catch(e){toast(e.message,true);}
+    };
+    actions.append(rename, remove); wrapper.appendChild(actions); grid.appendChild(wrapper);
   });
 }
 
@@ -1298,6 +1406,9 @@ $("#refreshBtn").addEventListener("click", async () => { await loadDatasets(true
 
 /* ------------------------------------------------------------------ ask */
 const SUGGESTED = [
+  "What is Moran's I?",
+  "How do I add or remove datasets?",
+  "What is the difference between clustering and annotation?",
   "Which cell types sit next to each other?",
   "Which genes are spatially structured across this section?",
   "What are the markers of each cluster?",
@@ -1305,6 +1416,48 @@ const SUGGESTED = [
   "Find the malignant cells by copy number",
   "Predict ligand-receptor communication"
 ];
+let chatSession = null, chatBusy = false;
+
+async function loadChatHistory(){
+  try {
+    const body = await get("/api/chat/sessions");
+    $("#chatHistory").innerHTML = '<option value="">New conversation</option>' + body.sessions.map(s =>
+      '<option value="' + esc(s.id) + '">' + esc(s.title) + '</option>').join("");
+    $("#chatHistory").value = chatSession ? chatSession.id : "";
+  } catch(e){toast(e.message,true);}
+}
+function newChat(){
+  chatSession = null; S.thread = []; S.plan = []; S.planInfo = null;
+  $("#chatHistory").value = ""; renderThread(); renderPlan();
+  $("#chatRelatedPages").textContent=""; loadRunSources();
+}
+$("#chatNew").onclick = newChat;
+$("#chatScope").onchange = newChat;
+$("#chatHistory").onchange = async () => {
+  if (!$("#chatHistory").value){newChat();return;}
+  try {
+    chatSession = await get("/api/chat/sessions/" + $("#chatHistory").value);
+    $("#chatScope").value = chatSession.dataset_id;
+    loadRunSources();
+    S.thread = chatSession.messages.map(m => ({role:m.role === "user" ? "u" : "a",text:m.answer,
+      citations:m.citations,why:(m.limitations || []).join(" "),provider:m.provider}));
+    S.plan = []; S.planInfo = null; renderThread(); renderPlan();
+  } catch(e){toast(e.message,true);}
+};
+$("#chatDelete").onclick = async () => {
+  if (!chatSession || !confirm("Delete this local conversation? Dataset files and reports are unchanged.")) return;
+  try { await api("/api/chat/sessions/" + chatSession.id, {method:"DELETE"}); newChat(); await loadChatHistory(); }
+  catch(e){toast(e.message,true);}
+};
+$("#chatExport").onclick = async () => {
+  if (!chatSession) return;
+  try {
+    const body = await get("/api/chat/sessions/" + chatSession.id);
+    const blob = new Blob([JSON.stringify(body,null,2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob), a = document.createElement("a");
+    a.href = url; a.download = "spatialmind-conversation.json"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch(e){toast(e.message,true);}
+};
 function renderPrompts(){
   const host = $("#prompts"); host.innerHTML = "";
   SUGGESTED.forEach((q) => {
@@ -1320,31 +1473,234 @@ $("#askForm").addEventListener("submit", (e) => {
   if (q) askQuestion(q);
 });
 async function askQuestion(question){
-  if (!S.dsId){ toast("Select a dataset first.", true); return; }
+  if (chatBusy) return;
+  chatBusy = true;
+  $("#askForm button").disabled = true;
+  $("#chatHistory").disabled = true; $("#chatScope").disabled = true;
+  $("#chatNew").disabled = true; $("#chatDelete").disabled = true;
   S.thread.push({role:"u", text:question});
   renderThread();
   try {
-    const reply = await post("/api/ask", {question:question, dataset_id:S.dsId});
-    S.thread.push({role:"a", text:reply.answer, why:reply.rationale, refusal:reply.refusal});
-    if (reply.tools && reply.tools.length){ S.plan = reply.tools.slice(); await refreshPlan(); }
+    if (!chatSession) chatSession = await post("/api/chat/sessions", {dataset_id:$("#chatScope").value});
+    const hosted = $("#chatHosted").checked;
+    const reply = await post("/api/chat/sessions/" + chatSession.id + "/messages", {
+      question, hosted, consent_to_send_question_and_public_notes:hosted,run_source_id:$("#chatRunSource").value});
+    S.thread.push({role:"a", text:reply.answer, why:(reply.limitations || []).join(" "), citations:reply.citations, provider:reply.provider});
+    $("#chatMode").textContent = reply.provider === "offline" ? "Offline source search" : "Cited answer: " + reply.provider;
+    if (reply.tools && reply.tools.length){
+      if (S.dsId !== chatSession.dataset_id) await selectDataset(chatSession.dataset_id);
+      S.plan = reply.tools.slice(); await refreshPlan();
+    }
     renderThread();
+    const related=$("#chatRelatedPages");related.textContent="";
+    (reply.related_pages || []).forEach(p=>{const b=document.createElement("button");b.className="btn";b.textContent=p.title;b.onclick=()=>viewWikiPage(p.id);related.appendChild(b);});
     $("#askInput").value = "";
-  } catch (err) { toast(err.message, true); }
+    await loadChatHistory();
+  } catch (err) { S.thread.push({role:"a",text:"Request failed: " + err.message}); renderThread(); toast(err.message, true); }
+  finally {
+    chatBusy = false; $("#askForm button").disabled = false;
+    $("#chatHistory").disabled = false; $("#chatScope").disabled = false;
+    $("#chatNew").disabled = false; $("#chatDelete").disabled = false;
+  }
 }
 function renderThread(){
   const host = $("#thread"); host.innerHTML = "";
   if (!S.thread.length){
-    host.innerHTML = '<div class="empty">Ask a question about this section, or pick one below.</div>';
+    host.innerHTML = '<div class="empty">Start a conversation.</div>';
     return;
   }
   S.thread.forEach((m) => {
     const div = document.createElement("div");
     div.className = "msg " + m.role;
     div.innerHTML = esc(m.text) + (m.why ? '<div class="why">why · ' + esc(m.why) + '</div>' : "");
+    (m.citations || []).forEach(c => {
+      const cite = document.createElement("button"); cite.className = "btn"; cite.style.cssText = "display:block;margin-top:8px;max-width:100%;white-space:normal;text-align:left";
+      cite.textContent = "Source: " + c.title + " (" + c.version + ")";
+      cite.onclick = () => viewSource(c.source_id); div.appendChild(cite);
+    });
     host.appendChild(div);
   });
   host.lastElementChild.scrollIntoView({block:"nearest"});
 }
+
+/* ----------------------------------------------------- local knowledge/library */
+$("#addLibraryData").onclick = () => $("#createBtn").click();
+$("#nativeLinkData").onclick = async () => {
+  try {
+    const bridge = window.pywebview && window.pywebview.api;
+    const selected = bridge && bridge.choose_dataset ? await bridge.choose_dataset(true) : [prompt("Local dataset folder path")];
+    if (!selected || !selected[0]) return;
+    applyDatasets(await post("/api/uploads/link", {path:selected[0]}));
+    toast("Dataset linked locally.");
+  } catch(e){toast(e.message,true);}
+};
+$("#showRemoved").onclick = async () => {
+  const host = $("#removedDatasets"); host.hidden = !host.hidden;
+  if (host.hidden) return;
+  try {
+    const body = await get("/api/library/removed"); host.textContent = "";
+    if (!body.datasets.length) host.textContent = "No removed datasets.";
+    body.datasets.forEach(d => {
+      const row = document.createElement("div"); row.style.cssText="display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap";
+      const title = document.createElement("span"); title.textContent = d.display_name || d.name;
+      const restore = document.createElement("button"); restore.className="btn";restore.textContent="Restore";
+      restore.onclick=async()=>{try{applyDatasets(await post("/api/datasets/"+d.dataset_id+"/restore"));row.remove();}catch(e){toast(e.message,true);}};
+      row.append(title,restore);host.appendChild(row);
+    });
+  } catch(e){toast(e.message,true);}
+};
+let viewedSource=null;
+$("#sourceClose").onclick = () => $("#sourceDialog").close();
+$("#sourceRevisionForm").onsubmit=async e=>{e.preventDefault();try{await post("/api/knowledge/sources/"+encodeURIComponent(viewedSource.id)+"/revisions",{title:viewedSource.title,body:$("#sourceRevisionText").value,url:viewedSource.url});$("#sourceDialog").close();await loadKnowledge();toast("New revision awaits review; dependent wiki pages are stale.");}catch(err){toast(err.message,true);}};
+async function viewSource(id){
+  try {
+    const source = await get("/api/knowledge/source?source_id=" + encodeURIComponent(id));
+    viewedSource=source;$("#sourceRevisionPanel").hidden=["bundled","deleted"].includes(source.status);$("#sourceRevisionText").value=source.body || "";
+    $("#sourceTitle").textContent=source.title;
+    $("#sourceMeta").textContent=source.status + " | version " + source.version + (source.enabled ? " | enabled" : " | disabled") + (source.reviewer ? " | reviewer: " + source.reviewer : "");
+    if(source.metadata && source.metadata.filename){
+      const m=source.metadata;
+      $("#sourceMeta").textContent += " | " + m.filename + " | " + m.parser + " " + m.parser_version + " | SHA-256: " + m.file_sha256 + "\n" + (m.warnings || []).join("\n");
+      $("#sourceMeta").style.cssText="white-space:pre-wrap;overflow-wrap:anywhere";
+    }
+    $("#sourceText").textContent=source.body || "Source content removed.";
+    const link=$("#sourceLink");link.hidden=!source.url;link.href=source.url || "#";
+    link.onclick=e=>{e.preventDefault();if(source.url)openExternal(source.url);};
+    $("#sourceDialog").showModal();
+  } catch(e){toast(e.message,true);}
+}
+async function loadKnowledge(){
+  try {
+    const body=await get("/api/knowledge/sources"),host=$("#knowledgeSources");host.textContent="";
+    const generation=body.generation || {},modelOption=$("#wikiMode").querySelector('option[value="hosted"]');
+    modelOption.disabled=!generation.configured;modelOption.textContent=generation.configured?generation.provider+" / "+generation.model:"Model not configured";
+    $("#wikiDestination").textContent=generation.configured?generation.provider+" ("+generation.model+")":"the configured model provider";
+    if(!generation.configured)$("#wikiMode").value="offline";
+    const selected=new Set(Array.from($("#wikiSources").selectedOptions).map(o=>o.value));
+    $("#wikiSources").replaceChildren();
+    body.sources.filter(s=>s.enabled && ["bundled","reviewed"].includes(s.status)).forEach(s=>{const o=new Option(s.title+" ["+s.status+"]",s.id);o.selected=selected.has(s.id);$("#wikiSources").appendChild(o);});
+    const scope=$("#wikiScope").value;$("#wikiScope").replaceChildren(new Option("General knowledge","general"));
+    $("#wikiRunDataset").replaceChildren(new Option("Select dataset", ""));
+    (S.datasets || []).forEach(d=>{ $("#wikiScope").appendChild(new Option(d.display_name||d.name,"dataset:"+d.dataset_id));$("#wikiRunDataset").appendChild(new Option(d.display_name||d.name,d.dataset_id));});
+    $("#wikiScope").value=scope || "general";
+    body.sources.filter(s=>s.status!=="deleted").forEach(s=>{
+      const row=document.createElement("div");row.style.cssText="display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--line);padding:12px 0;flex-wrap:wrap";
+      const title=document.createElement("span");title.style.cssText="flex:1;min-width:180px;overflow-wrap:anywhere";title.textContent=s.title;
+      const state=document.createElement("span");state.className="pill mute";state.textContent=s.status+(s.enabled?"":" / disabled");
+      const view=document.createElement("button");view.className="btn";view.textContent="View";view.onclick=()=>viewSource(s.id);
+      const toggle=document.createElement("button");toggle.className="btn";toggle.textContent=s.enabled?"Disable":"Enable";
+      toggle.onclick=async()=>{try{await api("/api/knowledge/source?source_id="+encodeURIComponent(s.id),{method:"PATCH",body:JSON.stringify({enabled:!s.enabled})});loadKnowledge();}catch(e){toast(e.message,true);}};
+      row.append(title,state,view,toggle);
+      if(s.status==="pending"){
+        const review=document.createElement("button");review.className="btn";review.textContent="Record review";
+        review.onclick=async()=>{const reviewer=prompt("After reviewing this source for knowledge retrieval, enter your reviewer ID. This does not approve any dataset labels or protocols.");if(!reviewer)return;
+          try{await api("/api/knowledge/source?source_id="+encodeURIComponent(s.id),{method:"PATCH",body:JSON.stringify({approve:true,enabled:true,reviewer})});loadKnowledge();}catch(e){toast(e.message,true);}};
+        row.appendChild(review);
+      }
+      const remove=document.createElement("button");remove.className="btn danger";remove.textContent="Delete";
+      remove.onclick=async()=>{if(!confirm("Delete this source, its retained knowledge copy, and derived page content; redact stored answers citing it? Your original source files and external backups are preserved."))return;
+        try{await api("/api/knowledge/source?source_id="+encodeURIComponent(s.id),{method:"DELETE"});loadKnowledge();newChat();}catch(e){toast(e.message,true);}};
+      row.appendChild(remove);host.appendChild(row);
+    });
+    await loadWiki();await loadRunSources();
+    const reports=await get("/api/reports");$("#wikiRunReport").replaceChildren(new Option("Select report", ""));
+    reports.reports.forEach(r=>$("#wikiRunReport").appendChild(new Option(r.title,r.report_id)));
+  } catch(e){toast(e.message,true);}
+}
+$("#knowledgeSearch").onsubmit=async e=>{e.preventDefault();try{
+  const body=await get("/api/knowledge/search?q="+encodeURIComponent($("#knowledgeQuery").value)),host=$("#knowledgeResults");host.textContent="";
+  if(!body.passages.length && !(body.pages || []).length)host.textContent="No matching enabled sources or published pages.";
+  (body.pages || []).forEach(p=>{const b=document.createElement("button");b.className="btn";b.textContent="Wiki: "+p.title;b.onclick=()=>viewWikiPage(p.id);host.appendChild(b);});
+  body.passages.forEach(p=>{const item=document.createElement("div");item.style.marginBottom="16px";const b=document.createElement("button");b.className="btn";b.textContent=p.title;b.onclick=()=>viewSource(p.source_id);const text=document.createElement("p");text.textContent=p.passage;item.append(b,text);host.appendChild(item);});
+}catch(err){toast(err.message,true);}};
+$("#knowledgeUpload").onsubmit=async e=>{
+  e.preventDefault();
+  const files=Array.from($("#knowledgeFile").files),button=$("#knowledgeUploadButton"),results=$("#knowledgeUploadResults");
+  if(!files.length)return;
+  button.disabled=true;$("#knowledgeFile").disabled=true;results.textContent="";
+  try{
+    for(let i=0;i<files.length;i++){
+      const file=files[i],row=document.createElement("p");results.appendChild(row);
+      button.textContent="Importing " + (i+1) + "/" + files.length;
+      row.textContent=file.name + ": extracting...";
+      try{
+        if(file.size>25*1024*1024)throw new Error("File exceeds 25 MiB. Split it before importing.");
+        const data=new FormData();data.append("file",file);data.append("retain_original",String($("#knowledgeArchive").checked));
+        const response=await fetch("/api/knowledge/uploads",{method:"POST",headers:{"X-SpatialMind-Token":window.STUDIO_TOKEN||""},body:data});
+        const body=await response.json();
+        if(!response.ok)throw new Error(typeof body.detail==="string" ? body.detail : "Import failed ("+response.status+").");
+        row.textContent=file.name + ": pending review. " + (body.metadata.warnings || []).join(" ");
+        const preview=document.createElement("button");preview.type="button";preview.className="btn";preview.textContent="Preview";
+        preview.onclick=()=>viewSource(body.source_id);row.appendChild(preview);
+      }catch(err){row.textContent=file.name + ": " + err.message;}
+    }
+    await loadKnowledge();
+  }finally{button.disabled=false;button.textContent="Upload files";$("#knowledgeFile").disabled=false;}
+};
+$("#knowledgeAdd").onsubmit=async e=>{e.preventDefault();try{
+  await post("/api/knowledge/sources",{title:$("#knowledgeTitle").value,body:$("#knowledgeText").value,url:$("#knowledgeUrl").value});
+  e.target.reset();toast("Added as pending review.");await loadKnowledge();
+}catch(err){toast(err.message,true);}};
+
+/* ---------------------------------------------------------- knowledge wiki */
+let wikiPage=null;
+$("#wikiClose").onclick=()=>$("#wikiDialog").close();
+async function loadWiki(){
+  const body=await get("/api/knowledge/wiki"),host=$("#wikiPages");host.textContent="";
+  const target=$("#wikiTarget"),previous=target.value;target.replaceChildren(new Option("New page",""));body.pages.forEach(p=>target.appendChild(new Option(p.title+" / r"+p.revision,p.id)));target.value=previous;
+  if(!body.pages.length)host.textContent="No wiki pages yet.";
+  body.pages.forEach(p=>{
+    const row=document.createElement("div");row.style.cssText="display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)";
+    const title=document.createElement("span");title.style.cssText="flex:1;min-width:140px;overflow-wrap:anywhere";title.textContent=p.title;
+    const status=document.createElement("span");status.className="pill mute";status.textContent=p.status+" / r"+p.revision;
+    const view=document.createElement("button");view.className="btn";view.textContent="Review";view.onclick=()=>viewWikiPage(p.id);
+    const rebuild=document.createElement("button");rebuild.className="btn";rebuild.textContent="New revision";
+    rebuild.onclick=async()=>{try{rebuild.disabled=true;const page=await get("/api/knowledge/wiki/"+p.id);const ids=Array.from(new Set(page.payload.evidence.map(e=>e.source_id)));if(!ids.length)throw new Error("Source evidence was deleted. Create a new draft from available sources.");await post("/api/knowledge/compile",{title:p.title,source_ids:ids,scope:p.scope,kind:p.kind,page_id:p.id});await loadWiki();await viewWikiPage(p.id);}catch(e){toast(e.message,true);}finally{rebuild.disabled=false;}};
+    row.append(title,status,view,rebuild);host.appendChild(row);
+  });
+}
+async function viewWikiPage(id){
+  try{
+    wikiPage=await get("/api/knowledge/wiki/"+id);
+    $("#wikiPageTitle").textContent=wikiPage.title;$("#wikiPageState").textContent=wikiPage.status+" | revision "+wikiPage.revision+" | "+wikiPage.scope;
+    $("#wikiPageText").textContent=wikiPage.markdown;$("#wikiPageDiff").textContent=wikiPage.diff;
+    const links=$("#wikiRelated");links.textContent="";(wikiPage.related||[]).forEach(p=>{const b=document.createElement("button");b.className="btn";b.textContent="Related: "+p.title;b.onclick=()=>viewWikiPage(p.id);links.appendChild(b);});
+    const host=$("#wikiClaims");host.textContent="";$("#wikiReview").hidden=wikiPage.status!=="draft";$("#wikiReviewer").value="";
+    wikiPage.payload.claims.forEach(c=>{
+      const group=document.createElement("fieldset");group.style.cssText="display:grid;gap:8px;margin:12px 0;min-width:0;border:1px solid var(--line)";group.dataset.claim=c.id;
+      const legend=document.createElement("legend");legend.textContent=c.id;group.appendChild(legend);
+      const claim=document.createElement("p");claim.textContent=c.text;claim.style.overflowWrap="anywhere";group.appendChild(claim);
+      c.evidence_ids.forEach(id=>{const e=wikiPage.payload.evidence.find(e=>e.evidence_id===id);if(e){const b=document.createElement("button");b.type="button";b.className="btn";b.style.cssText="white-space:normal;text-align:left;overflow-wrap:anywhere";b.textContent="Source: "+e.title;b.onclick=()=>viewSource(e.source_id);group.appendChild(b);}});
+      for(const [key,values] of Object.entries({support:["supported","qualified"],applicability:["general_guidance","context_limited","hypothesis_only"],contradictions:["none_identified","disclosed"]})){
+        const label=document.createElement("label");label.textContent=key+" ";const select=document.createElement("select");select.required=true;select.name=key;select.style.maxWidth="100%";select.appendChild(new Option("Not assessed",""));values.forEach(v=>select.appendChild(new Option(v.replaceAll("_"," "),v)));label.appendChild(select);group.appendChild(label);
+      }
+      const label=document.createElement("label");label.textContent="Review note / qualifications ";const note=document.createElement("textarea");note.required=true;note.name="note";note.maxLength=2000;note.rows=2;note.style.width="100%";label.appendChild(note);group.appendChild(label);host.appendChild(group);
+    });
+    if(!$("#wikiDialog").open)$("#wikiDialog").showModal();
+  }catch(e){toast(e.message,true);}
+}
+$("#wikiReview").onsubmit=async e=>{
+  e.preventDefault();const button=e.target.querySelector('button[type="submit"]');button.disabled=true;
+  try{const assessments={};$("#wikiClaims").querySelectorAll("fieldset").forEach(g=>{assessments[g.dataset.claim]=Object.fromEntries(Array.from(g.querySelectorAll("select,textarea")).map(x=>[x.name,x.value]));});await post("/api/knowledge/wiki/"+wikiPage.id+"/publish",{revision:wikiPage.revision,reviewer:$("#wikiReviewer").value,assessments});await viewWikiPage(wikiPage.id);await loadWiki();}catch(err){toast(err.message,true);}finally{button.disabled=false;}
+};
+$("#wikiCompile").onsubmit=async e=>{
+  e.preventDefault();const button=$("#wikiCompileButton");button.disabled=true;button.textContent="Compiling...";
+  try{const ids=Array.from($("#wikiSources").selectedOptions).map(o=>o.value),hosted=$("#wikiMode").value==="hosted",consent=$("#wikiConsent").checked;
+    if(hosted&&!consent)throw new Error("Authorize the selected evidence before using the configured model.");
+    const page=await post("/api/knowledge/compile",{title:$("#wikiTitle").value,source_ids:ids,kind:$("#wikiKind").value,scope:$("#wikiScope").value,page_id:$("#wikiTarget").value,hosted,consent,allowed_private_ids:consent?ids:[]});
+    await loadWiki();await viewWikiPage(page.id);
+  }catch(err){toast(err.message,true);}finally{button.disabled=false;button.textContent="Create draft";}
+};
+$("#wikiHealth").onclick=async()=>{try{const body=await get("/api/knowledge/health");$("#wikiHealthResults").textContent=JSON.stringify(body,null,2);await loadWiki();}catch(e){toast(e.message,true);}};
+$("#wikiRunImport").onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector("button");button.disabled=true;button.textContent="Verifying...";try{await post("/api/knowledge/import-run",{report_id:$("#wikiRunReport").value,dataset_id:$("#wikiRunDataset").value});await loadKnowledge();toast("Historical evidence imported as pending review.");}catch(err){toast(err.message,true);}finally{button.disabled=false;button.textContent="Verify and import";}};
+async function loadRunSources(){
+  try{const body=await get("/api/knowledge/sources"),select=$("#chatRunSource");select.replaceChildren(new Option("None",""));body.sources.filter(s=>s.enabled&&s.status==="reviewed"&&s.scope==="dataset:"+$("#chatScope").value).forEach(s=>select.appendChild(new Option(s.title,s.id)));}catch(e){toast(e.message,true);}
+}
+$("#chatFileAnswer").onclick=async()=>{
+  if(!chatSession)return toast("No saved conversation yet.",true);
+  const title=prompt("Title for this derived wiki draft");if(!title)return;
+  try{const session=await get("/api/chat/sessions/"+chatSession.id);let index=session.messages.length-1;while(index>=0&&session.messages[index].role!=="assistant")index--;const page=await post("/api/chat/sessions/"+chatSession.id+"/file-answer",{message_index:index,title});await viewWikiPage(page.id);}catch(e){toast(e.message,true);}
+};
 
 /* ------------------------------------------------------------------ plan */
 async function refreshPlan(){
@@ -1533,7 +1889,7 @@ function pollJob(jobId){
 
 function renderRuns(){
   const host = $("#runsBody");
-  if (!S.jobs.length){ host.innerHTML = '<div class="empty">No runs yet. Approve a plan in Ask to start one.</div>'; return; }
+  if (!S.jobs.length){ host.innerHTML = '<div class="empty">No runs yet. Approve a plan in BioBot to start one.</div>'; return; }
   const active = S.jobs.filter((j) => ["queued","running"].indexOf(j.state) >= 0)[0];
   let html = "";
   if (active){
@@ -1708,9 +2064,18 @@ async function uploadFiles(files){
     });
     form.append("paths", paths.join("\n"));
     form.append("name", files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : files[0].name);
-    const res = await fetch("/api/uploads", {method:"POST", body:form});
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || ("HTTP " + res.status));
+    const body = await new Promise((resolve,reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", "/api/uploads");
+      request.setRequestHeader("X-SpatialMind-Token", window.STUDIO_TOKEN || "");
+      request.upload.onprogress = event => {
+        if(event.lengthComputable)wizMsg("Local transfer " + Math.round(100*event.loaded/event.total) + "%");
+      };
+      request.upload.onload = () => wizMsg("Verifying and storing local files...");
+      request.onload = () => {try{const body=JSON.parse(request.responseText);if(request.status<200||request.status>=300)reject(new Error(body.detail||"Import failed"));else resolve(body);}catch(e){reject(e);}};
+      request.onerror = () => reject(new Error("Local transfer failed. Original files are unchanged."));
+      request.send(form);
+    });
     W.intake = body.intake;
     applyDatasets({data_root:S.dataRoot, datasets:body.datasets});
     W.dsId = pickDatasetByPath(body.intake.path) || W.dsId;

@@ -978,6 +978,8 @@ class StudioAppTests(unittest.TestCase):
         finally:
             # The data root is shared by every test in this class, and an upload
             # left behind changes the dataset count the discovery tests assert.
+            self.client.post("/api/datasets/%s/remove" % body["dataset_id"],
+                             json={"confirm_name": Path(body["path"]).name})
             shutil.rmtree(body.get("directory") or body["path"], ignore_errors=True)
             self.client.get("/api/datasets", params={"refresh": True})
 

@@ -1,7 +1,27 @@
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 from spatialmind.ingestion.pipeline import DataIngestionLayer
 from spatialmind.schemas import SpatialDataset
+
+
+def xenium_analysis_inputs(path: str, extra_paths: Optional[List[str]] = None) -> List[str]:
+    """Read-set paths for pre-ingestion provenance, including alternate review tables."""
+    from spatialmind.ingestion.pipeline import _resolve_xenium_input_path
+    from spatialmind.ingestion.labels import discover_label_tables, discover_region_label_tables
+
+    root = Path(_resolve_xenium_input_path(path))
+    if Path(path).is_dir() and Path(path).resolve() == root:
+        root = Path(path)
+    candidates = [path, str(root)]
+    candidates.extend(discover_label_tables(str(root), extra_paths))
+    candidates.extend(discover_region_label_tables(str(root), extra_paths))
+    # These supported input variants otherwise receive only directory size hashes.
+    for name in ("cells.csv", "cells.parquet.gz", "analysis.zip"):
+        if (root / name).is_file():
+            candidates.append(str(root / name))
+    candidates.extend(str(item) for item in sorted((root / "analysis").rglob("clusters.csv")))
+    return list(dict.fromkeys(candidates))
 
 
 def load_xenium(

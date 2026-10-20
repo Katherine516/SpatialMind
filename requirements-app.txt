@@ -51,8 +51,10 @@ reportlab
 # Export formats the Studio hands to people who do not open this app:
 # Word for the report, Excel for the result tables, and the multipart parser
 # FastAPI needs to accept an upload at all.
-python-docx
+python-docx>=1.2
 openpyxl
+pypdf>=6.20.1,<7
+python-pptx>=1.0.2,<2
 python-multipart
 
 # Packaging and tests

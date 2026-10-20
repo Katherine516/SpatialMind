@@ -19,6 +19,48 @@ These files cannot be downloaded as generic replacements for review. The first t
 
 For a pilot, one domain expert plus one computational reviewer is acceptable. For a publication-grade benchmark, use at least two independent reviewers and adjudicate disagreements without exposing the held-out test labels to model development.
 
+## Current Handoff (October 12, 2026)
+
+No reviewers are assigned. The refreshed readiness check found zero accepted
+labels and zero accepted regions in each 750-cell brain cohort. No biological
+training or external test has been authorized by this check.
+
+1. Obtain explicit acceptance from a qualified brain single-cell specialist and
+   neuropathologist. These are real human roles, not LLM sub-agents. Start with
+   `outputs/brain_specialist_handoff_20260927/REVIEW_INSTRUCTIONS.md` and record
+   assignments through `scripts/manage_brain_specialist_review.py`.
+2. Review each tissue's `expert_cell_labels_for_review.csv` and
+   `cell_regions_for_review.csv`. Use a blinded first pass; candidate evidence
+   belongs in a second pass. Keep uncertain calls uncertain and preserve the
+   frozen cohort and spatial-block split assignments.
+3. Obtain registered H&E/IHC from the sample owner/pathology team where existing
+   morphology cannot support anatomy or tumor state. Record image/slide/ROI
+   evidence, registration quality and adjudication, not just reviewer names.
+4. Have the reference curator complete
+   `outputs/brain_p1_implementation_20261003/reference_review/reference_decisions.json`
+   following its `REVIEW_GUIDE.md`: eight references, 28 label mappings and 114
+   collection-level donor entries await curation. Confirm canonical donor identity,
+   expression semantics, label mappings and tumor-state evidence. The software
+   does not establish donor independence or reviewer authenticity.
+5. Approve the existing prespecified development protocol before selecting models.
+   Train and tune on development data only. Reserve an independently labeled donor
+   for the locked external evaluation. A reviewed 750-cell cohort does not provide
+   full-section label/ROI coverage and cannot be copied into the full-section gate
+   as though all cells had been reviewed.
+
+Check progress without running training:
+
+```bash
+.venv/bin/python scripts/advance_brain_validation.py status \
+  --packet outputs/brain_specialist_handoff_20260927 \
+  --reference-packet outputs/brain_p1_implementation_20261003/reference_review \
+  --protocol outputs/brain_p1_implementation_20261003/development_protocol.json \
+  --out outputs/brain_review_readiness
+```
+
+Exit code 2 currently means required review evidence is missing, not a runtime
+failure. Do not relax gates to obtain a successful-looking training run.
+
 ## Frozen Brain Benchmark Packet
 
 The September 27 specialist handoff preserves the frozen cohorts below and adds stricter decision validation:
@@ -72,14 +114,19 @@ The draft contains cell coordinates, current/provisional labels, graph clusters,
 6. Mark ambiguous cells as `unresolved` or an agreed parent class rather than forcing a specific label.
 7. Save the approved table in the glioblastoma Xenium folder as `expert_cell_labels.csv`.
 
-Minimum accepted columns:
+Basic import columns (not sufficient for validated review):
 
 ```csv
 cell_id,expert_label,confidence,notes
 aaaaicom-1,microglial cell,0.95,PTPRC AIF1 C1QA support; reviewed by NP01
 ```
 
-Recommended additions are `cl_id`, `secondary_state`, `reviewer_id`, `reviewed_at`, `reference_source`, and `review_status`. Confidence should use one documented scale, preferably `0.0` to `1.0`.
+The specialist handoff additionally requires explicit review status, reviewer ID,
+review date, confidence and evidence references. Region decisions also require
+an anatomical evidence basis. Add `cl_id`, `secondary_state` and reference version
+where applicable. Confidence should use one documented scale, preferably `0.0`
+to `1.0`. Follow the packet's current schema and validator, not the basic import
+example above, when preparing benchmark truth.
 
 ### Useful resources
 

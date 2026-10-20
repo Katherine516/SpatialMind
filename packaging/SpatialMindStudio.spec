@@ -32,7 +32,7 @@ BUNDLE_PACKAGES = [
     # `lxml` is a binary extension it imports at write time -- neither is
     # reachable by static analysis, so a bundle without them builds cleanly and
     # then fails on the first Word export.
-    "docx", "lxml", "openpyxl", "et_xmlfile", "multipart",
+    "docx", "lxml", "openpyxl", "et_xmlfile", "multipart", "pypdf", "pptx", "xlsxwriter",
     # squidpy's import chain, above. Collected rather than merely un-excluded:
     # each carries package data and entry points that static analysis misses.
     "spatialdata", "dask", "datashader", "plotly", "xarray", "zarr",

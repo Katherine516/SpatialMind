@@ -1,0 +1,20 @@
+{
+  "version": "1",
+  "review_status": "developer_authored_smoke_only",
+  "reviewer": "",
+  "cases": [
+    {"id": "moran", "question": "What is Moran's I spatial autocorrelation?", "expected_source_ids": ["builtin:moran:2026-10-15.1"]},
+    {"id": "neighbors", "question": "What is neighborhood enrichment?", "expected_source_ids": ["builtin:neighborhood:2026-10-15.1"]},
+    {"id": "ontology", "question": "What does Cell Ontology identify for astrocytes?", "expected_source_ids": ["builtin:ontology:2026-10-15.1"]},
+    {"id": "h5ad", "question": "AnnData H5AD matrix layers", "expected_source_ids": ["builtin:h5ad:2026-10-15.1"]},
+    {"id": "cluster", "question": "Clustering versus annotation", "expected_source_ids": ["builtin:clustering:2026-10-15.1"]},
+    {"id": "panel", "question": "Targeted panel absent gene", "expected_source_ids": ["builtin:panel:2026-10-15.1"]},
+    {"id": "remove", "question": "Removing local datasets", "expected_source_ids": ["builtin:library:2026-10-15.1"]},
+    {"id": "review", "question": "Expert labels and anatomical regions review", "expected_source_ids": ["builtin:review:2026-10-15.1"]},
+    {"id": "reliability", "question": "Biological reliability score evidence", "expected_source_ids": ["builtin:reliability:2026-10-15.1"]},
+    {"id": "bundle", "question": "Xenium experiment file bundle", "expected_source_ids": ["builtin:xenium:2026-10-15.1"]},
+    {"id": "unknown_token", "question": "zzzzunsupportedtoken", "expected_source_ids": []},
+    {"id": "unsupported_domain", "question": "Volcanic ash crystallization", "expected_source_ids": []},
+    {"id": "unsupported_fact", "question": "What was the conference attendance?", "expected_source_ids": []}
+  ]
+}

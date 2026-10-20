@@ -17,6 +17,74 @@ is still pending.
 
 SpatialMind turns platform-processed spatial omics data into reviewable workflows and reports. Its active path supports Xenium, H5AD, and tabular inputs, QC, expert-review packets, gated analyses, visualizations, and replayable provenance. Biological claims require reviewed cell labels and tissue regions. The current brain cohorts still lack specialist review, matched H&E/IHC, and a verified independent donor test; the rare-class adjustment has only been selected on breast validation data.
 
+## Local Library and Knowledge Chat (October 15, 2026)
+
+**October 17 research-wiki increment:** Knowledge now supports versioned Markdown
+drafts, source-linked claims, per-claim human review, publication, revision diffs,
+shared-source backlinks and integrity checks. BioBot reads multiple source excerpts
+and can file an answer as a derived draft. A verified historical-run import bridge
+preserves dataset scope. Offline compilation is an evidence digest; model drafting
+requires explicit provider/sharing configuration. See the
+[research knowledge workspace](docs/research_knowledge_workspace.md) for workflow,
+limits, evaluation and remaining priorities. No specialist approval is automated.
+
+The updated **source app** adds a persistent local dataset library, a Knowledge
+view, and conversational **BioBot** (formerly Ask). The published 1.0.1 DMGs above predate these changes.
+
+- A fresh packaged installation contains **no research datasets**. Add files or
+  link a local folder; your existing data on your own machine are not removed.
+- External-folder links survive restart. Remove hides the library entry without
+  deleting original files or reports; Removed datasets provides Restore.
+- Browser imports copy locally in bounded chunks, with an 8 GiB/512-file limit,
+  progress, hashes and hidden staging. Link larger Xenium folders instead.
+- Knowledge starts with 11 original product/method notes. Upload Word (`.docx`),
+  Excel (`.xlsx`), PowerPoint (`.pptx`), text-based PDF, CSV, TSV, TXT or Markdown;
+  inspect extracted content, record a reviewer, search, disable or delete sources.
+  Multiple files are processed individually, with a 25 MiB limit per file.
+  Legacy `.doc/.xls/.ppt` need conversion; scanned PDFs need external OCR.
+  Pending sources are excluded from answers. These notes are not expert labels.
+- BioBot works without a dataset for general questions, saves local conversations,
+  shows source citations, and proposes analysis without executing it. Offline
+  answers are retrieved passages, **not a local generative model**.
+
+Optional hosted prose generation requires `SPATIALMIND_CHAT_PROVIDER` (`openai`
+or `anthropic`), `SPATIALMIND_CHAT_MODEL`, the corresponding API-key environment
+variable, and explicit consent in BioBot. Only the current question and bundled
+public-note evidence are sent; private knowledge sources stay offline. Questions
+themselves may be sensitive. Live hosted generation has not been validated here.
+
+Library/history state is stored under `<output_root>/.studio/`; keep that directory
+when upgrading. Launch through `python -m spatialmind.app` for loopback session
+protection. The in-process `create_studio_app` factory defaults to unprotected
+test mode; embedding callers must explicitly select `secure=True`.
+
+See [usage, verification and remaining scope](docs/local_library_knowledge_chat.md)
+and the [phased design](docs/local_library_knowledge_chat_plan.md). No biological
+review requirement is relaxed by importing a document or using chat.
+
+## Reliability Repairs (October 12, 2026)
+
+The source workflow now snapshots inputs before ingestion, rejects runs whose
+declared inputs change, records descriptive execution and figures, and preserves
+pilot settings on replay. Studio's report lane requires both a passed review gate
+and an executed reviewed-cell result; a label file alone is not validation.
+
+Local Moran candidate maps now exclude each focal cell from its conditional
+permutation pool and use two-sided empirical p-values with per-gene BH correction.
+The default 999 permutations have finite resolution, and selection of genes on
+the same section remains exploratory. These maps do not validate anatomical ROIs.
+PDF reports include the cluster map, marker heatmap and local-inference caveats;
+HTML and PDF titles identify blocked runs as descriptive/review-readiness runs.
+
+`pip install -r requirements.txt` now automatically includes
+`packaging/constraints.txt`, matching the constrained scientific stack used by CI
+and packaging. These are dependency constraints, not a complete transitive lock.
+The existing GitHub DMGs have **not** been rebuilt with these source repairs.
+See the [repair and verification record](docs/reliability_repairs_20261012.md)
+and [current human-review handoff](docs/expert_review_workflow.md#current-handoff-october-12-2026).
+
+## Architecture Overview
+
 1. Contracts and recorded review evidence
 2. Ingestion, scientific tools, storage, memory and LLM providers
 3. Validation gates
@@ -128,6 +196,13 @@ validation; it does not establish validated brain performance.
 workflow, the architecture, every function, the reliability model, and the current
 state with its gaps. Open it in a browser.
 
+The [October 20 cleanup review](docs/project_cleanup_20261020.md) records removal
+of the unused v1 analysis engine and disposable build/cache files, with an
+[exact deletion inventory](docs/cleanup_inventory_20261020.md). Research data,
+run history, knowledge content and packaged applications were preserved.
+Direct imports of `spatialmind.algorithms.AlgorithmEngine` must migrate to the
+canonical tools and shared execution runtime.
+
 ## SpatialMind Studio (desktop app)
 
 The agent packaged as a local application: a browser UI over the same pipeline,
@@ -146,7 +221,7 @@ running under a transparent title bar. Run it from a checkout:
 `--browser` and `--headless` switch off the window when you want the old
 behaviour or a bare server.
 
-Seven surfaces -- Datasets, Readiness, Review Studio, Ask, Tool Bench, Runs --
+Studio surfaces include Datasets, Readiness, Review Studio, BioBot, Tool Bench and Runs --
 over the same `pilot_gate()`, `ToolRegistry` and `validate_tool_plan()` the CLI
 uses. Review Studio is the part that did not exist before: click a cell to
 select its 10x cluster and apply a Cell Ontology label, or drag a rectangle to

@@ -20,6 +20,10 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import http.cookiejar
+
+urllib.request.install_opener(urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())))
 
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "dist" / "SpatialMind Studio.app"
@@ -82,6 +86,9 @@ def wait_for_health(process, timeout: float = 120.0) -> dict:
             raise SystemExit("The app exited early with code %s.\n%s"
                              % (process.returncode, (process.stdout.read() if process.stdout else "")))
         try:
+            # New builds protect API reads; the UI bootstrap establishes a local session.
+            with urllib.request.urlopen(BASE + "/", timeout=3.0):
+                pass
             return get("/api/health", timeout=3.0)
         except Exception as exc:
             last = exc

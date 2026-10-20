@@ -1,13 +1,12 @@
 """LEGACY (v1). The reasoning layer for `SpatialMindAgent` only.
 
-`LLMReasoningLayer` plans against `AlgorithmEngine`'s three tools. It is the only
-place an LLM plans anything: every other path -- the agent loop, the Studio's
-Ask surface, the pilot -- uses deterministic keyword routing or a fixed typed
-plan, and validates the result with `validate_tool_plan` before execution.
+`LLMReasoningLayer` emits the three legacy intent names. `SpatialMindAgent`
+maps them to canonical tools and executes through `agent.runtime`; the retired
+`AlgorithmEngine` implementation has been removed. This parser supports optional
+LLM intent extraction, not a separate analysis backend.
 
-That validator is what would make LLM planning safe to switch on for the v2
-stack. Until then this module is reachable only through the legacy orchestrator,
-and the LLM path stays off by default.
+The LLM path stays off by default. Canonical plans must still pass the shared
+runtime's validation and scientific policy checks.
 
 Do not extend this. Planning for the current stack lives in
 `spatialmind.agent.runtime` (typed plans and validation) and

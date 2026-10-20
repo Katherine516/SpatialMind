@@ -5,6 +5,18 @@ repairs the eight findings from the [layer evaluation](layer_evaluation_20261003
 and starts the [data-expansion roadmap](multimodal_roadmap_20261003.md).
 Passing software tests does not establish assay or biological validation.
 
+The [October 15 local-library and knowledge increment](local_library_knowledge_chat.md)
+adds persistent dataset registrations, local source retrieval, and a read-only
+conversation orchestrator. Knowledge is a tier-2 capability consumed by the
+agent; chat cannot execute scientific tools or approve biological evidence.
+
+The [October 17 research-wiki increment](research_knowledge_workspace.md) adds
+versioned derived pages, source dependencies, per-claim human review, Markdown
+projections, source revocation, optional model compilation and scoped historical
+run evidence. BioBot uses wiki navigation to reach original sources; generated
+pages do not count as independent biological evidence. P3 image/semantic/local-model
+extensions and specialist QA evaluation remain pending.
+
 The [P1 reference-readiness increment](reference_readiness_20261003.md) adds
 explicit matrix/feature pairing, donor filtering before label reads, measured
 panel metadata and source-observation provenance. Collection-level donor plans
@@ -19,7 +31,7 @@ This is the single end-to-end explanation of the agent: what each layer does, wh
 runs when, and where the gates sit. The README is the command reference;
 `development_tracking.md` is the historical work log. Start here.
 
-Last verified: 2026-10-03. Full suite 637/637 in 191.843 s.
+Historical scientific-workflow verification: 2026-10-03. Full suite 637/637 in 191.843 s.
 Import-linter 6/6, legacy routing 16/16
 and MVP routing 13/13 passed. These are software checks, not brain biological
 accuracy. Current verification is in `outputs/brain_p1_implementation_20261003/`;
@@ -29,7 +41,7 @@ Historical held-out annotation results are in [the benchmark record](annotation_
 and were not rescored or promoted in this upgrade. The ordered brain review gates
 and breast-only rare-class experiment are documented in [the brain review execution record](brain_review_execution.md).
 
-Inventory counts: 650 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
+Inventory counts: 718 discovered unit tests; 16 legacy cases; 13 MVP cases; 6 import contracts. Counts are not execution results.
 
 ## The one-sentence version
 
@@ -51,7 +63,7 @@ tiers below it.
 | 5 | **Execution** — `agent`, `pilot`, `workflows` | ~3,880 | Turning a plan into a run |
 | 4 | **Derived products** — `viz`, `methods`, `datasets`, `governance` | ~2,570 | Reports, figures, reliability scores, manifests |
 | 3 | **The gate** — `gatekeeper` | 278 | The one tier whose job is to say no |
-| 2 | **Capability** — `ingestion`, `tools`, `storage`, `memory`, `llm` | ~7,100 | Things that can do work, knowing no workflow |
+| 2 | **Capability** — `ingestion`, `tools`, `storage`, `memory`, `llm`, `knowledge` | Historical estimate | Things that can do work, knowing no workflow |
 | 1 | **Contracts** — `contracts`, `schemas` | ~860 | The vocabulary every tier speaks |
 
 **Tier 1** must import nothing else in the project. The moment the vocabulary
@@ -96,8 +108,8 @@ effective parameters in each result.
 
 `SpatialMindAgent` retains v1 intent parsing for saved prompts, but maps intents
 to canonical annotation, neighborhood enrichment and gene-overlay tools. Repeated
-gene overlays have numbered artifacts. `AlgorithmEngine` remains a compatibility
-module, not an active backend. The local loop and legacy intent parser are not
+gene overlays have numbered artifacts. The unused `AlgorithmEngine` module was
+removed on 2026-10-20 after its callers had migrated. The local loop and legacy intent parser are not
 yet a single planning vocabulary; the shared executor prevents the remaining
 planning differences from bypassing policy.
 

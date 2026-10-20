@@ -3,7 +3,6 @@
 __all__ = [
     "agent",
     "agent_loop",
-    "algorithms",
     "api",
     "batch",
     "datasets",

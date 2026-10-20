@@ -25,6 +25,9 @@ the door, so the user can see what the app made of it.
 import os
 import re
 import shutil
+import hashlib
+import json
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -42,6 +45,9 @@ KNOWN_SUFFIXES = {
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini", "__macosx"}
 
 MAX_NAME = 96
+MAX_UPLOAD_BYTES = 8 * 1024 ** 3
+MAX_UPLOAD_FILES = 512
+COPY_CHUNK_BYTES = 1024 ** 2
 
 
 def safe_name(name: str) -> str:
@@ -61,7 +67,7 @@ def safe_relative(path: str) -> Optional[str]:
     Returns None for anything that escapes, is absolute, or is junk.
     """
     raw = str(path or "").replace("\\", "/")
-    if not raw or raw.startswith("/"):
+    if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
         return None
     parts: List[str] = []
     for part in raw.split("/"):
@@ -75,6 +81,63 @@ def safe_relative(path: str) -> Optional[str]:
     if not parts:
         return None
     return "/".join(parts)
+
+
+def store_streams(data_root, dataset_name, files):
+    """Publish a complete local copy, never accumulating file contents in RAM.
+
+    Input streams are owned/closed by the request. Staging is deliberately hidden
+    from discovery; a crash leaves a recoverable journal, not a ready dataset.
+    """
+    if not files or len(files) > MAX_UPLOAD_FILES:
+        raise ValueError("Choose 1-%d files. Link larger folders instead." % MAX_UPLOAD_FILES)
+    root = upload_root(data_root)
+    root.mkdir(parents=True, exist_ok=True)
+    operation = uuid.uuid4().hex
+    staging = root / (".import-" + operation)
+    staging.mkdir()
+    target = root / (safe_name(dataset_name) + "_" + operation[:12])
+    written, skipped, seen, total = [], [], set(), 0
+    try:
+        for relative, stream in files:
+            clean = safe_relative(relative)
+            if not clean:
+                if any(part.lower() in JUNK_NAMES for part in str(relative).split("/")):
+                    skipped.append(relative)
+                    continue
+                raise ValueError("Unsafe file path: %s" % relative)
+            key = clean.casefold()
+            if key in seen:
+                raise ValueError("Duplicate normalized filename: %s" % clean)
+            seen.add(key)
+            destination = staging / clean
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            digest, size = hashlib.sha256(), 0
+            with destination.open("xb") as output:
+                while True:
+                    block = stream.read(COPY_CHUNK_BYTES)
+                    if not block:
+                        break
+                    total += len(block)
+                    size += len(block)
+                    if total > MAX_UPLOAD_BYTES:
+                        raise ValueError("Browser imports are limited to 8 GiB. Link this folder instead.")
+                    if shutil.disk_usage(staging).free < len(block) + 64 * 1024 ** 2:
+                        raise ValueError("Insufficient disk space for this local copy.")
+                    output.write(block)
+                    digest.update(block)
+            written.append({"path": clean, "bytes": size, "sha256": digest.hexdigest()})
+        if not written:
+            raise ValueError("No usable files in the upload.")
+        journal = {"operation_id": operation, "state": "copied", "files": written,
+                   "bytes": total, "target": str(target)}
+        (staging / ".import.json").write_text(json.dumps(journal, indent=2), encoding="utf-8")
+        staging.rename(target)
+        return {"status": "stored", "path": str(_collapse_single_child(target)),
+                "directory": str(target), "files": written, "skipped": skipped, "bytes": total}
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def upload_root(data_root: str) -> Path:

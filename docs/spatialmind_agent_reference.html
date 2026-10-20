@@ -377,7 +377,7 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
       <text x="830" y="288" font-size="10" fill="currentColor" opacity=".55">without a cycle</text>
 
       <rect x="150" y="312" width="600" height="56" rx="7" fill="none" stroke="none"/>
-      <text x="600" y="354" text-anchor="end" font-size="10" fill="#E0A84E">legacy here: algorithms · planner</text>
+      <text x="600" y="354" text-anchor="end" font-size="10" fill="#E0A84E">legacy intent parser: planner</text>
     </svg>
     <figcaption>The gate is thin and sits alone because of who has to reach it: it imports only
       <code>ingestion</code>, <code>tools</code> and <code>schemas</code>, so every executing tier above can
@@ -428,32 +428,27 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
   </div>
 
   <h3>Legacy components</h3>
-  <p class="sub">Two tier-2 modules are v1 survivors, now marked as such in their own docstrings.</p>
+  <p class="sub">Cleanup update, 2026-10-20: the unused v1 engine has been removed; intent compatibility remains.</p>
   <div class="scroll"><table>
     <thead><tr><th>Module</th><th>Superseded by</th><th>Still reachable from</th></tr></thead>
     <tbody>
       <tr><td class="mono">algorithms.py<br><span style="color:var(--ink-3)">AlgorithmEngine, 3 tools</span></td>
-          <td class="mono">tools<br><span style="color:var(--ink-3)">ToolRegistry, 30 tools</span></td>
-          <td class="mono">SpatialMindAgent</td></tr>
+          <td class="mono">tools + agent.runtime</td>
+          <td>Removed; no active callers remained</td></tr>
       <tr><td class="mono">planner.py<br><span style="color:var(--ink-3)">LLMReasoningLayer</span></td>
           <td class="mono">agent.runtime + app.planner</td>
           <td class="mono">SpatialMindAgent</td></tr>
     </tbody>
   </table></div>
   <div class="prose" style="margin-top:15px">
-    <p>Both are reachable only through <code>SpatialMindAgent</code>, and only with <strong>non-Xenium</strong>
-    data: the CLI and <code>POST /runs</code> each check the data type first and route a Xenium bundle to
-    <code>run_pilot</code>. <code>--replay-run-id</code> adds no route of its own, since only the orchestrator
-    writes the <code>source_path</code> that branch reads. The legacy stack is confined to the demo and
-    non-Xenium formats — though <code>DataIngestionLayer.load</code> still accepts a Xenium directory, which
-    is why a direct library call had to be gated too.</p>
-    <p>The tool sets are <strong>disjoint</strong>: nothing in <code>AlgorithmEngine</code> appears in
-    <code>ToolRegistry</code>. That is why the gatekeeper classifies two of them as label-gated <em>by
-    name</em> — preconditions cannot do it, because these tools are not in the registry that carries
-    preconditions.</p>
-    <p>Neither is deleted, because removing them means deciding what <code>SpatialMindAgent</code> should run
-    instead. That is the parallel-stacks question: four execution paths and three tool registries, alive
-    because nothing ever forced a choice.</p>
+    <p><code>SpatialMindAgent</code> retains <code>LLMReasoningLayer</code> for legacy intent parsing,
+    then maps its requests to canonical annotation, neighborhood enrichment and gene-overlay tools.
+    Execution uses <code>agent.runtime.execute_tool_step</code> and shared policy checks.
+    The CLI and <code>POST /runs</code> route Xenium bundles to the pilot.</p>
+    <p>Direct external imports of <code>spatialmind.algorithms.AlgorithmEngine</code> are no longer
+    supported. Migrate to the canonical registry and validated execution path. Old binned
+    co-localization reports are retained as historical artifacts, not treated as equivalent to
+    current neighborhood-enrichment results.</p>
   </div>
 
   <div class="note"><b>Three self-descriptions that disagreed.</b> <code>orchestrator.py</code> said "six
@@ -695,7 +690,7 @@ footer{padding:28px 0 48px;font-family:var(--mono);font-size:11.5px;color:var(--
       <tr><td><b>Scaffolds could execute</b> <span class="pill ok">fixed</span></td>
           <td><code>list_plannable()</code> hid them from planners, but <code>get(name).run(...)</code> ran one for anyone asking by name — and the v1 router asks. The trace recorded a successful call whose result was a placeholder.</td>
           <td>Done: <code>SpatialTool.run</code> refuses when capability is <code>unavailable</code>. Found by the new eval cases on their first run.</td></tr>
-      <tr><td><b>Parallel stacks</b></td><td>Four execution paths and three tool registries; <code>AlgorithmEngine</code> holds 3 tools disjoint from the 30</td><td>Collapse to one, delete the rest</td></tr>
+      <tr><td><b>Intent compatibility</b></td><td>Legacy intents map to the canonical runtime; the unused v1 engine was removed</td><td>Keep execution policy shared while consolidating planning vocabulary</td></tr>
       <tr><td><b>Reliability uncalibrated for biology</b></td><td>Scores are conservative floors, not probabilities a claim is true</td><td>A reviewed claim-truth table</td></tr>
       <tr><td><b>Intel-only build</b></td><td>Apple Silicon users have no binary</td><td>Run the <code>macos-14</code> CI job</td></tr>
       <tr><td><b>Not notarised</b></td><td>First launch needs right-click → Open</td><td>An Apple Developer ID</td></tr>

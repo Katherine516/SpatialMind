@@ -1,0 +1,18 @@
+{
+  "version": "1",
+  "review_status": "unreviewed_template_not_a_benchmark",
+  "reviewer": "",
+  "protocol_approval": "pending",
+  "cases": [
+    {
+      "id": "replace_with_reviewed_case_id",
+      "question": "Replace with a specialist-authored question before evaluation.",
+      "scope": "general",
+      "expected_source_ids": [],
+      "answerable": null,
+      "required_claims": [],
+      "forbidden_inferences": [],
+      "review_notes": "Specify answerability, exact source revisions, required support, conflicts and scope. Do not index this file into the knowledge corpus."
+    }
+  ]
+}

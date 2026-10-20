@@ -2,6 +2,225 @@
 
 This log tracks implementation work against the current v2 build plan. It is updated as development proceeds so decisions, blockers, and verification steps remain visible.
 
+## 2026-10-20: Conservative Project Cleanup
+
+- Audited tracked/untracked files, entry points, source references, build inputs
+  and storage categories; parsed 210 Python files before removal.
+- Removed the unused v1 `spatialmind/algorithms.py` implementation after confirming
+  that the orchestrator already maps its intents to canonical tools. Updated the
+  package export, import-layer contract and architecture descriptions accordingly.
+- Removed 238 generated files: old PyInstaller intermediates, import-linter
+  caches, first-party bytecode (including two orphan cache entries) and Finder
+  metadata outside protected data/report/application trees.
+- Total removed: 239 files, 252,507,537 logical bytes (240.81 MiB). Exact paths
+  and hashes are in [the inventory](cleanup_inventory_20261020.md).
+- Preserved datasets, outputs, release archives, installed environments, package
+  deliverables, compatibility wrappers and all unrelated in-progress changes.
+- Verification: 718 tests ran in 252.103 seconds (717 passed, one skipped);
+  legacy routing evaluation 16/16 and MVP evaluation 13/13; all six import
+  contracts, syntax parsing, documentation counts and whitespace checks passed.
+  Logs and caveats are recorded in [the cleanup review](project_cleanup_20261020.md).
+
+## 2026-10-17: Evidence-Bound Research Wiki
+
+Status: P0/P1 engineering increment and P2 evaluation tooling implemented. Real
+specialist evaluation, P3 experimental extensions and package release remain pending.
+
+- Added additive SQLite migrations for page revisions, dependencies, scopes and
+  append-only compilation/review events. Exported a readable Markdown workspace
+  with optional original retention, manifests and a generated index.
+- Added bounded offline digests and optional provider-generated claims, exact
+  citation/numeric checks, explicit source-sharing consent, per-claim review,
+  publication, diffs, replacement-source revisions and integrity checks.
+- Source disable/revision invalidates dependent pages; deletion clears derived
+  content and optional retained copies. External Markdown edits invalidate approval.
+  Source and scientific review remain separate; no expert identity was invented.
+- BioBot now diversifies source excerpts, navigates published pages back to original
+  evidence and files cited answers as new drafts. General/project scopes remain
+  separate. Added a replay-checked, explicit historical-run evidence bridge.
+- Added a local knowledge CLI, retrieval evaluator, 13-case development benchmark,
+  unscorable specialist-review template and reproducible three-page pilot script.
+- Development retrieval Recall@5/MRR@5 were 1.0. A common-word false match caused
+  baseline abstention of 2/3; expanding stop words improved the same development
+  cases to 3/3. These are tuned smoke results, not independent biological accuracy.
+- Existing healthy-brain report import was correctly blocked: the historical run
+  has no recorded artifact hashes. It must be regenerated with the current runtime.
+- Browser automation could not access the in-app browser in this session. Native
+  Intel/ARM packaging and live hosted generation are not verified; no DMG or push.
+- Final verification: 718 full-suite tests ran in 633.336 seconds, with 717
+  passing and one skipped. Separately, 54 focused knowledge tests and 79 Studio
+  tests passed; the 19 workspace tests also passed after the search-index change.
+  All six import contracts, Python compilation, JavaScript syntax and whitespace
+  checks passed. Non-fatal sparse-efficiency and test resource warnings remain.
+- Live HTTP checks preserved the existing 17 datasets and 11 knowledge sources.
+  One clearly marked, unapproved neighborhood-methods draft was created in the
+  live workspace. No expert review or biological validation was manufactured.
+
+Details and limitations: [Research Knowledge Workspace](research_knowledge_workspace.md).
+Example: `outputs/knowledge_wiki_20261017/example/pilot_report.md`.
+
+## 2026-10-15: BioBot and Knowledge Document Uploads
+
+Status: Implemented in the source app; existing published DMGs are unchanged.
+
+- Renamed the visible Ask navigation and conversation heading to BioBot; retained
+  internal route and element IDs for compatibility.
+- Added multi-file knowledge upload with per-file extraction results and previews
+  for DOCX, XLSX, PPTX, PDF, CSV, TSV, TXT and Markdown. Originals stay untouched;
+  only extracted text, locators and provenance are stored in the local registry.
+- Kept all imports pending review and excluded from retrieval until a person
+  records approval. Private reviewed sources remain unavailable to hosted chat.
+- Added filename/hash/parser-version metadata, extraction warnings, backwards-
+  compatible SQLite migration and page/slide/sheet/row/paragraph/line locators.
+- Added bounded file/text/archive/table/page limits, macro/encryption rejection,
+  single-parser concurrency, child-process isolation and timeout cleanup. This
+  is not an OS security sandbox or a portable memory quota.
+- Added parser dependencies to both requirement files, the full package extra,
+  native build checks, package collection and shared constraints. Installed
+  pypdf 6.20.1 and python-pptx 1.0.2 in the current development environment.
+- Verification: 35 knowledge/chat/document tests and 79 Studio tests passed
+  (114 total); all six import contracts, compilation and JavaScript syntax pass.
+  Full-suite discovery now reports 699 tests; the whole suite was not rerun for
+  this increment. Existing Studio tests emitted non-fatal resource/sparse warnings.
+- Browser acceptance used a disposable library: Word, Excel, PowerPoint, PDF and
+  CSV uploaded together successfully and remained pending. PDF preview displayed
+  page locators and provenance. The existing 17 research datasets and 11 bundled
+  sources in the real workspace were preserved; fixtures were not added there.
+- Added narrow-window header wrapping after viewport testing exposed overflow.
+- Legacy DOC/XLS/PPT conversion, scanned-document OCR, visual figure interpretation,
+  native Intel/ARM packaging checks and a new DMG release remain outside this work.
+
+Evidence: `outputs/biobot_documents_20261015/knowledge_upload.png`;
+implementation details: [Local library and BioBot](local_library_knowledge_chat.md).
+
+## 2026-10-15: Local Library and Knowledge Chat Implemented
+
+Status: First source increment complete; native package release and broader
+retrieval/biological quality evaluation remain pending.
+
+- Added a workspace-scoped SQLite library preserving discovered IDs and external
+  registrations across restart. Remove/Restore is reversible and never deletes
+  original data or reports; discovery respects removal tombstones.
+- Added display-name editing, missing-source status, a native folder chooser,
+  and local import progress. Imports now use bounded reads, file/count/request
+  limits, traversal/collision rejection, per-file SHA256 and hidden staging.
+- Added 11 versioned original product/method notes, local FTS5 retrieval,
+  text/Markdown source import, explicit review attribution, disable/delete, and
+  redaction of stored answers citing deleted sources.
+- Added persistent Ask conversations, general questions without a dataset,
+  source inspection, limited follow-ups, live readiness explanation, and typed
+  analysis proposals requiring approval. Numerical result questions abstain
+  until selected-run adapters are implemented.
+- Added optional consent-gated hosted synthesis over public bundled notes only.
+  Default replies are offline source excerpts, not simulated local-model output.
+  No live provider request or model training was performed.
+- Added loopback session/Host/Origin checks to supported launchers, receive-size
+  limits, isolated report HTML, and removed external font requests. Fixed the
+  source native-window launcher passing an app instead of an app factory.
+- Verification: 686 tests ran in 481.532 seconds, with 685 passed and one skipped;
+  22 focused feature tests also passed separately, as did the 79 Studio tests.
+  All six import contracts, Python compilation and JavaScript syntax checks pass.
+  Documentation inventory now reports 686 discovered tests.
+- The live source server discovered the existing 17 local dataset entries and
+  11 bundled notes. A simulated fresh packaged-user home has zero datasets.
+  Real source data and specialist decisions were not modified.
+- Browser visual verification was attempted but the browser tool could not open
+  a usable surface. Native chooser operation and fresh Intel/ARM binaries remain
+  unverified. No DMG rebuild, GitHub publication or push was performed.
+
+Evidence: `outputs/local_library_knowledge_chat_20261015/full_tests.log`.
+See [implementation details and remaining milestones](local_library_knowledge_chat.md).
+The original design remains a roadmap, not a claim that resumable imports,
+physical deletion, full revision migration, PDFs/OCR, semantic retrieval, or a
+human-reviewed answer benchmark are already complete.
+
+## 2026-10-15: Local Library, Knowledge Base, and Chat Design
+
+Status: Planning only; no runtime features implemented or app packages rebuilt.
+
+- Inspected Studio intake, discovery, Ask routing, desktop configuration, memory,
+  provider interfaces, jobs, and provenance storage.
+- Documented existing uploads, the nonpersistent external-folder link behavior,
+  whole-file upload buffering, and the distinction between plan routing and chat.
+- Added [the implementation plan](local_library_knowledge_chat_plan.md) covering
+  persistent dataset identities, migration, safe removal, bounded imports,
+  curated local retrieval, cited conversations, privacy and scientific gates.
+- Defined ordered milestones, proposed API/module changes, source resources,
+  acceptance metrics, and Intel/Apple Silicon packaged-app verification.
+- Raw data, review decisions, current runtime code, and existing changes were
+  preserved. Proposed performance/quality targets are not measured results.
+
+## 2026-10-12: Reliability Repairs Implemented in Priority Order
+
+Implemented the six actionable findings from the post-Claude review, followed
+by a refreshed human-review handoff. See
+[repair details and evaluation](reliability_repairs_20261012.md).
+
+- Captured pilot/Studio input hashes before ingestion; changed inputs fail with
+  an invalid record, even if later restored. Included alternate review tables,
+  manifest-resolved bundles, 10x clustering inputs, descriptive traces and figures.
+- Made Studio lane wording depend on both gate status and actual reviewed-cell
+  execution. Effective execution parameters and per-tool grouping are preserved.
+- Corrected local Moran conditional sampling to exclude the focal cell. Replaced
+  normal-tail significance extrapolation with two-sided empirical p-values and
+  explicit finite-resolution, per-gene correction and exploratory-selection caveats.
+- Added descriptive cluster/heatmap figures and local-method evidence to PDF;
+  HTML/PDF headings now identify descriptive/readiness runs accurately.
+- Applied shared installation constraints through `requirements.txt` and preserved
+  replay thresholds, acknowledgement, review-artifact settings, format and dataset
+  identity. No global dependency upgrade was performed.
+- Added 14 regression tests. Final-source regression passed 664/664 in 337.425
+  seconds; source acceptance
+  passed 13/13, routing passed 16/16 and 13/13, six import contracts passed, and
+  dependency/version checks passed. Final test logs are in the evidence directory.
+- Full-section reruns retained 24,362 healthy-brain cells (nine clusters) and
+  40,786 glioblastoma cells (eleven clusters). Each verified 24/24 input/artifact
+  checks and produced HTML plus PDF with the descriptive figures. No backend errors.
+- Exact conditional-draw enumeration and implanted-stripe/noise controls passed;
+  the bounded synthetic null diagnostic had zero rejections across 90 gene families.
+  A synthetic gated run verified 38/38 hashes; an actual CLI replay also completed.
+- Refreshed readiness: zero accepted labels/regions in either 750-cell brain
+  cohort; specialist assignments, reference/state/donor curation and protocol
+  approval remain missing. No biological training, truth fabrication, independent
+  donor testing, GitHub push or packaged-app rebuild occurred.
+
+Evidence: `outputs/reliability_repairs_20261012/`. Existing raw data and frozen
+review cohorts were preserved. Next: recruit the real reviewers, obtain the
+required anatomical evidence, finish reference curation and approve the protocol
+before biological model selection. Current released DMGs predate these fixes.
+
+## 2026-10-12: Post-Claude Review and Full Brain Workflow Evaluation
+
+Reviewed clean source `8c9b996` and the recent shared-constraints, CI and release
+guard changes. [Detailed findings and priorities](agent_review_20261012.md).
+
+- Local regression: 650/650 passed in 372.033 seconds; routing 16/16 and 13/13;
+  six import contracts, documentation inventory, compilation and dependency
+  checks passed. Exact-commit GitHub Checks passed on Python 3.9 and 3.11.
+- Studio source acceptance passed 13/13 checks, including real scientific tools,
+  review writes/refusal and HTML/PDF/DOCX/XLSX exports. No app rebuild occurred.
+- Full-section healthy brain retained 24,362/24,406 cells and found nine clusters;
+  glioblastoma retained 40,786/40,887 cells and found eleven. Both generated
+  HTML/PDF reports and five result tables. Biological gates remained blocked.
+- Global spatial testing found 289/296 and 307/307 eligible genes significant,
+  respectively, using the pilot's 100 permutations. Descriptive stages took
+  106.65 and 168.09 seconds; timings are not isolated performance benchmarks.
+- A separate 300-cell synthetic pilot exercised gated analyses and robustness.
+  Region-stratified testing correctly refused insufficient within-region class
+  support. Synthetic review entries were never written to real data.
+- Nine H5AD references were audited without errors; eight human references
+  passed bounded donor-filtered loading. Both 750-cell specialist cohorts still
+  have zero accepted labels/regions, and reference/protocol approval is absent.
+- Recorded six open findings: pilot input/descriptor provenance, incorrect
+  Studio lane wording, local Moran conditional-null mismatch, PDF figure
+  omissions, unconstrained workstation installation, and replay option drift.
+  Controlled probes reproduced the applicable defects on temporary data.
+
+Evidence: `outputs/agent_review_20261012/`. This was a review and evaluation;
+production code and raw data were not changed, no biological training or external
+test was performed, and no changes were pushed. Next: repair the reliability
+issues and obtain real specialist review before biological model selection.
+
 ## 2026-10-08: Native Intel and Apple Silicon Packaging
 
 Implemented a dual-native build path for SpatialMind Studio 1.0.1, with macOS
